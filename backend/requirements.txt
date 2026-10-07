@@ -7,3 +7,4 @@ sympy
 rapidfuzz
 pix2text
 PyMuPDF
+requests

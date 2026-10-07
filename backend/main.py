@@ -5,7 +5,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from google import genai
@@ -503,7 +503,7 @@ async def process_answer_sheet(
 
     answer_sheet: UploadFile = File(...),
 
-    rubric: str = ""
+    rubric: str = Form("")
 
 ):
 
@@ -535,6 +535,11 @@ async def process_answer_sheet(
                 status_code=400,
                 detail="Invalid rubric JSON."
             )
+        if rubric_data.get("approved") is not True:
+            raise HTTPException(
+            status_code=400,
+            detail="Rubric must be approved before processing the answer sheet."
+    )
 
 
         # -------------------------------------------------

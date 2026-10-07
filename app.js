@@ -1070,6 +1070,7 @@ function approveRubric() {
 
     rubricApproved =
         true;
+        currentRubric.approved = true;
 
 
     const approvalMessage =
