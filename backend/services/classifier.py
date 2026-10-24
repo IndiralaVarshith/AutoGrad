@@ -7,7 +7,7 @@ THEORY, NUMERICAL, or DIAGRAM.
 
 from __future__ import annotations
 
-from config import get_gemini_client, GEMINI_MODEL
+from config import gemini_generate_with_retry
 
 
 # =========================================================
@@ -50,10 +50,7 @@ def classify_question(question_text: str) -> str:
         One of: "THEORY", "NUMERICAL", "DIAGRAM"
     """
 
-    client = get_gemini_client()
-
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
+    response = gemini_generate_with_retry(
         contents=[
             CLASSIFIER_PROMPT,
             f"QUESTION:\n{question_text}"

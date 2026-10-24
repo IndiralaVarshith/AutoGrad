@@ -11,7 +11,7 @@ import json
 import hashlib
 import os
 
-from config import get_gemini_client, GEMINI_MODEL
+from config import get_gemini_client, gemini_generate_with_retry
 from models.schemas import QuestionRubric, RubricCriterion
 
 try:
@@ -207,7 +207,6 @@ def generate_rubric_for_question(
 
     context = "\n\n---\n\n".join(context_chunks) if context_chunks else ""
 
-    client = get_gemini_client()
 
     prompt = f"""
 Based on this textbook content, propose a marking rubric
@@ -224,8 +223,7 @@ and "max_marks" (number). The sum of all max_marks MUST equal
 {max_marks}. Keep criteria clear and practical.
 """
 
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
+    response = gemini_generate_with_retry(
         contents=[prompt],
         config={
             "response_mime_type": "application/json",

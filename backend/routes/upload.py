@@ -17,6 +17,7 @@ from fastapi import (
 from config import get_gemini_client, get_firestore, get_storage_bucket
 from models.schemas import QuestionRubric, RubricCriterion, StudentMeta
 from pipeline import process_paper
+from services.ocr import extract_student_meta
 
 
 router = APIRouter(tags=["Upload"])
@@ -132,6 +133,22 @@ async def _process_in_background(
                 file=tmp_path,
                 config={"mime_type": mime_type}
             )
+
+            # Auto-read name/ID from the sheet if not reliably provided
+            _is_placeholder = (
+                not hall_ticket
+                or hall_ticket.startswith("STUDENT_")
+                or hall_ticket.startswith("HT_")
+                or not student_name
+                or student_name.startswith("Student ")
+            )
+            if _is_placeholder:
+                print(f"[Upload] Auto-extracting student meta from sheet…")
+                meta = extract_student_meta([uploaded])
+                if meta["hall_ticket"]:
+                    hall_ticket = meta["hall_ticket"]
+                if meta["student_name"]:
+                    student_name = meta["student_name"]
 
             result = process_paper(
                 exam_id=exam_id,

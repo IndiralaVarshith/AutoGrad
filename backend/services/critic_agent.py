@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 
 from models.schemas import CriterionResult, QuestionRubric, CriticVerdict
-from config import get_gemini_client, GEMINI_MODEL
+from config import gemini_generate_with_retry
 
 
 # =========================================================
@@ -99,7 +99,6 @@ def critique_grade(
         The critic's verdict with challenged criteria and reason.
     """
 
-    client = get_gemini_client()
 
     grading_json = json.dumps(
         [c.model_dump() for c in grader_criteria],
@@ -132,8 +131,7 @@ Review this grading. Return JSON only.
 
     contents = [user_prompt] + image_parts
 
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
+    response = gemini_generate_with_retry(
         contents=contents,
         config={
             "system_instruction": CRITIC_SYSTEM_PROMPT,

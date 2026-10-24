@@ -14,7 +14,7 @@ import re
 import sympy as sp
 
 from models.schemas import MathResult
-from config import get_gemini_client, GEMINI_MODEL
+from config import gemini_generate_with_retry
 
 try:
     from pix2text import Pix2Text
@@ -94,10 +94,7 @@ Return only the corrected LaTeX. Nothing else.
 
 def _fix_latex_with_gemini(raw_latex: str) -> str:
     """Use Gemini to fix LaTeX syntax errors."""
-    client = get_gemini_client()
-
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
+    response = gemini_generate_with_retry(
         contents=[LATEX_FIX_PROMPT, raw_latex],
         config={"temperature": 0.1}
     )

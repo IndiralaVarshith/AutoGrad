@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import math
 
-from config import get_gemini_client, GEMINI_MODEL
+from config import gemini_generate_with_retry
 
 
 # =========================================================
@@ -100,19 +100,14 @@ def extract_text(
         OCR confidence in [0.0, 1.0] computed from logprobs.
     """
 
-    client = get_gemini_client()
-
     contents = [OCR_PROMPT] + image_parts
 
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
+    response = gemini_generate_with_retry(
         contents=contents,
         config={
             "response_mime_type": "application/json",
             "response_json_schema": OCR_RESPONSE_SCHEMA,
             "temperature": 0.1,
-            "response_logprobs": True,
-            "logprobs": 5,
         }
     )
 
@@ -198,3 +193,73 @@ def _compute_c_ocr(
 
     # Clamp to [0.0, 1.0]
     return max(0.0, min(1.0, c_ocr))
+
+
+# =========================================================
+# STUDENT METADATA EXTRACTION
+# =========================================================
+
+_META_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "hall_ticket": {"type": "string"},
+        "student_name": {"type": "string"},
+    },
+    "required": ["hall_ticket", "student_name"],
+}
+
+_META_PROMPT = """
+You are reading the cover/header section of a student's handwritten exam answer sheet.
+
+Extract ONLY:
+1. hall_ticket — the student's roll number, hall ticket number, register number, or exam ID
+   (usually a number like "5069140" or alphanumeric like "21CS001")
+2. student_name — the student's full name as written on the sheet
+
+Rules:
+- If you cannot find the hall ticket, return an empty string "".
+- If you cannot find the name, return an empty string "".
+- Do NOT guess or invent values. Only return what is clearly written.
+- Return JSON only.
+"""
+
+
+def extract_student_meta(image_parts: list) -> dict:
+    """
+    Use Gemini vision to extract student name and hall ticket
+    from the answer sheet cover page.
+
+    Parameters
+    ----------
+    image_parts : list
+        Image content parts (same format as extract_text).
+
+    Returns
+    -------
+    dict with keys:
+        hall_ticket : str  (empty string if not found)
+        student_name : str (empty string if not found)
+    """
+    try:
+        response = gemini_generate_with_retry(
+            contents=[_META_PROMPT] + image_parts,
+            config={
+                "response_mime_type": "application/json",
+                "response_json_schema": _META_SCHEMA,
+                "temperature": 0.0,
+            }
+        )
+
+        if not response.text:
+            return {"hall_ticket": "", "student_name": ""}
+
+        data = json.loads(response.text)
+        hall_ticket = str(data.get("hall_ticket", "")).strip()
+        student_name = str(data.get("student_name", "")).strip()
+
+        print(f"[OCR] Student meta → hall_ticket={hall_ticket!r}, name={student_name!r}")
+        return {"hall_ticket": hall_ticket, "student_name": student_name}
+
+    except Exception as exc:
+        print(f"[OCR] Student meta extraction failed: {exc}")
+        return {"hall_ticket": "", "student_name": ""}

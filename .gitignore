@@ -1,2 +1,10 @@
 .DS_Store
-.DS_Store
+
+# Environment variables & secrets — never commit
+.env
+.env.*
+*.env
+*-firebase-adminsdk-*.json
+*firebase-adminsdk*.json
+serviceAccountKey.json
+firebase-service-account.json

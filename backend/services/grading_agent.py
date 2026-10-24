@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 
 from models.schemas import CriterionResult, QuestionRubric
-from config import get_gemini_client, GEMINI_MODEL
+from config import gemini_generate_with_retry
 
 
 # =========================================================
@@ -102,7 +102,6 @@ def grade_answer(
         Total marks awarded.
     """
 
-    client = get_gemini_client()
 
     rubric_json = json.dumps(
         [
@@ -128,8 +127,7 @@ the student answer as verbatim_quote. Return JSON only.
 
     contents = [user_prompt] + image_parts
 
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
+    response = gemini_generate_with_retry(
         contents=contents,
         config={
             "system_instruction": GRADING_SYSTEM_PROMPT,
