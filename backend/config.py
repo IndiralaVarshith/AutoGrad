@@ -206,10 +206,15 @@ def gemini_generate_with_retry(
                 is_not_found = any(
                     code in err_str for code in ("404", "NOT_FOUND")
                 )
-
                 if is_not_found:
                     print(f"[Gemini] Model {current_model} not found, trying next in chain.")
                     break  # Skip remaining retries, move to next model
+
+                # Check if daily quota is exhausted (no point in retrying in 2 seconds)
+                is_daily_exhausted = "per day limit exceeded" in err_str.lower()
+                if is_daily_exhausted:
+                    print(f"[Gemini] Daily quota exceeded for {current_model}, switching to next model immediately.")
+                    break
 
                 if is_retryable and attempt < _MAX_RETRIES - 1:
                     wait = (2 ** attempt) + random.uniform(0, 1)
