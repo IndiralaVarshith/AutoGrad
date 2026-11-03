@@ -1,19 +1,40 @@
 """
 AutoGrade — Exam Setup Routes
 
-POST /exam/setup         — Generate proposed rubric via RAG
-POST /exam/rubric/approve — Save approved rubric to Firestore
+POST /exam/setup              — Analyze question paper, extract structure, generate proposed rubric
+POST /exam/rubric/approve     — Save approved rubric to Firestore (with write-verify)
+GET  /exam                    — List all exams
+GET  /exam/{exam_id}          — Get exam metadata
+GET  /exam/{exam_id}/rubric   — Retrieve approved rubric for an exam
+
+Route ordering is critical:
+  /exam/rubric/approve  (static segment "rubric") MUST be registered before
+  /exam/{exam_id}       (wildcard) to prevent shadowing.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import re
 import tempfile
+import time
 from pathlib import Path
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 
-from config import get_gemini_client, get_firestore, GEMINI_MODEL
+from config import get_gemini_client, get_firestore, GEMINI_MODEL, AI_PROVIDER
+from services.router import model_router
+from services.db import db_service
+from services.rubric_cache import (
+    compute_doc_fingerprint,
+    compute_generation_fingerprint,
+    get_cached_draft,
+    store_draft_cache,
+    validate_rubric_structure,
+    RUBRIC_SCHEMA_VERSION,
+    RUBRIC_PROMPT_VERSION,
+)
 from models.schemas import (
     QuestionRubric,
     RubricCriterion,
@@ -38,43 +59,49 @@ ALLOWED_MIME = {
 
 
 # =========================================================
-# RUBRIC SCHEMA FOR GEMINI
+# RUBRIC GENERATION PROMPT (versioned)
 # =========================================================
 
-RUBRIC_RESPONSE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "questions": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "question_number": {"type": "integer"},
-                    "question_text": {"type": "string"},
-                    "max_marks": {"type": "number"},
-                    "criteria": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "description": {"type": "string"},
-                                "max_marks": {"type": "number"},
-                            },
-                            "required": ["description", "max_marks"]
-                        }
-                    }
-                },
-                "required": [
-                    "question_number",
-                    "question_text",
-                    "max_marks",
-                    "criteria",
-                ]
-            }
-        }
-    },
-    "required": ["questions"]
+RUBRIC_GENERATION_PROMPT = """You are the Rubric Generation Module of AutoGrade — an AI-powered examination grading system.
+
+Carefully analyze the uploaded question paper image(s).
+
+For EVERY question and sub-question visible in the paper:
+1. Extract the question number exactly as printed (e.g., 1, 2a, 2b, Q3, Part-A Q1).
+2. Extract the complete question text accurately.
+3. Identify the question type: THEORY, NUMERICAL, DIAGRAM, or MIXED.
+4. Identify the marks allocated to this question (look for marks in brackets like [5], (10 marks), etc.).
+5. If marks are not explicitly stated for a sub-question, infer from the section total.
+6. Create 2-4 clear marking criteria for the question. IMPORTANT: the sum of all criteria max_marks MUST EXACTLY EQUAL the question's max_marks.
+7. Note any internal choices (OR questions) — list each option as a separate entry with an 'is_choice_of' field.
+8. Note sections (Section A, Section B, etc.) using a 'section' field.
+
+CRITICAL RULES:
+- Never invent marks. Only extract what is explicitly or implicitly stated in the paper.
+- Never invent question text. Only extract what is visible.
+- Do NOT assume equal marks across all questions.
+- The sum of criteria marks for each question must EXACTLY equal the question's max_marks.
+
+Return ONLY valid JSON in this exact structure — no markdown, no explanation:
+{
+  "questions": [
+    {
+      "question_number": 1,
+      "question_text": "...",
+      "question_type": "THEORY",
+      "max_marks": 5.0,
+      "section": "A",
+      "criteria": [
+        {"description": "...", "max_marks": 2.0},
+        {"description": "...", "max_marks": 3.0}
+      ]
+    }
+  ],
+  "total_marks": 50.0,
+  "sections": ["A", "B"],
+  "extraction_warnings": []
 }
+"""
 
 
 # =========================================================
@@ -86,18 +113,27 @@ async def exam_setup(
     exam_id: str = Form(...),
     question_paper: UploadFile = File(...),
     textbook: UploadFile | None = File(None),
-    max_marks_per_question: str = Form("{}"),
+    force_regenerate: str = Form("false"),
 ):
     """
-    Upload question paper + optional textbook.
-    Runs RAG pipeline and returns proposed rubric for teacher approval.
+    Upload question paper.
+    1. Computes SHA-256 fingerprint of the document.
+    2. Checks in-memory cache for an existing rubric draft with the same fingerprint.
+    3. If cached → returns cached draft (same paper always gives same rubric).
+    4. If not cached or force_regenerate=true → generates fresh rubric, caches result.
     """
 
     question_path = None
     textbook_path = None
 
     try:
-        # Validate question paper
+        # --------------------------------------------------
+        # Validate inputs
+        # --------------------------------------------------
+        exam_id = exam_id.strip()
+        if not exam_id:
+            raise HTTPException(400, "exam_id is required.")
+
         if not question_paper.filename:
             raise HTTPException(400, "Question paper is required.")
 
@@ -108,114 +144,254 @@ async def exam_setup(
 
         q_bytes = await question_paper.read()
         if not q_bytes:
-            raise HTTPException(400, "Question paper is empty.")
+            raise HTTPException(400, "Question paper file is empty.")
 
-        # Save temp file
+        should_force = force_regenerate.lower() in ("true", "1", "yes")
+
+        # --------------------------------------------------
+        # Document fingerprint
+        # --------------------------------------------------
+        doc_fingerprint = compute_doc_fingerprint(q_bytes)
+
+        # Reference material fingerprint
+        ref_bytes = b""
+        if textbook and textbook.filename:
+            t_ext = Path(textbook.filename).suffix.lower()
+            if ALLOWED_MIME.get(t_ext):
+                ref_bytes = await textbook.read() or b""
+        ref_fingerprint = compute_doc_fingerprint(ref_bytes) if ref_bytes else ""
+
+        # Determine model name for fingerprint
+        if AI_PROVIDER == "ollama":
+            model_name = model_router.ai_config.complex_model  # gemma4:e4b for visual
+        else:
+            model_name = GEMINI_MODEL
+
+        gen_fingerprint = compute_generation_fingerprint(
+            doc_fingerprint=doc_fingerprint,
+            model_name=model_name,
+            schema_version=RUBRIC_SCHEMA_VERSION,
+            prompt_version=RUBRIC_PROMPT_VERSION,
+            ref_fingerprint=ref_fingerprint,
+        )
+
+        # --------------------------------------------------
+        # Check cache first (unless force-regenerate)
+        # --------------------------------------------------
+        if not should_force:
+            cached = get_cached_draft(gen_fingerprint)
+            if cached:
+                print(f"[ExamSetup] Cache hit for gen_fingerprint={gen_fingerprint[:12]}… returning cached rubric.")
+                # Register exam (idempotent)
+                _register_exam(exam_id, cached)
+                return {
+                    "success": True,
+                    "exam_id": exam_id,
+                    "rubric": cached,
+                    "doc_fingerprint": doc_fingerprint,
+                    "gen_fingerprint": gen_fingerprint,
+                    "from_cache": True,
+                }
+
+        # --------------------------------------------------
+        # Write question paper to temp file
+        # --------------------------------------------------
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
             tmp.write(q_bytes)
             question_path = tmp.name
 
-        # Upload to Gemini
-        client = get_gemini_client()
-        question_file = client.files.upload(
-            file=question_path,
-            config={"mime_type": mime}
-        )
-
-        # Optional textbook — process for RAG
-        textbook_file = None
-        if textbook and textbook.filename:
+        # Write reference material if any
+        if ref_bytes:
             t_ext = Path(textbook.filename).suffix.lower()
-            t_mime = ALLOWED_MIME.get(t_ext)
-            if not t_mime:
-                raise HTTPException(400, "Textbook must be PDF, JPG, or PNG.")
+            with tempfile.NamedTemporaryFile(delete=False, suffix=t_ext) as tmp:
+                tmp.write(ref_bytes)
+                textbook_path = tmp.name
 
-            t_bytes = await textbook.read()
-            if t_bytes:
-                with tempfile.NamedTemporaryFile(delete=False, suffix=t_ext) as tmp:
-                    tmp.write(t_bytes)
-                    textbook_path = tmp.name
+        rubric_data = None
 
-                textbook_file = client.files.upload(
-                    file=textbook_path,
-                    config={"mime_type": t_mime}
+        if AI_PROVIDER == "ollama":
+            # --------------------------------------------------
+            # LOCAL OLLAMA PATH — Gemma 4 E4B for visual papers
+            # --------------------------------------------------
+            print(f"[ExamSetup] Generating rubric via local ModelRouter (doc_fp={doc_fingerprint[:12]}…)")
+            paper_images = []
+            if ext == ".pdf":
+                paper_images = model_router.ollama.render_pdf_to_images(question_path, max_pages=6, dpi=150)
+            else:
+                paper_images = [question_path]
+
+            # Include reference material images if any
+            if textbook_path:
+                ref_ext = Path(textbook_path).suffix.lower()
+                if ref_ext == ".pdf":
+                    ref_images = model_router.ollama.render_pdf_to_images(textbook_path, max_pages=3, dpi=100)
+                    paper_images = paper_images + ref_images
+                elif ref_ext in (".jpg", ".jpeg", ".png"):
+                    paper_images = paper_images + [textbook_path]
+
+            res = model_router.generate(
+                task_type="rubric_generation",
+                prompt=RUBRIC_GENERATION_PROMPT,
+                images=paper_images,
+                format_json=True,
+                temperature=0,          # Deterministic generation
+                is_rubric_from_scanned_paper=True,
+            )
+
+            if not res.parsed_json or not isinstance(res.parsed_json, dict):
+                raise HTTPException(
+                    500,
+                    f"Local model returned invalid rubric structure. Raw response: {res.text[:300]}"
                 )
+            rubric_data = res.parsed_json
 
-                # Extract text from textbook for RAG indexing
-                try:
-                    text_response = client.models.generate_content(
-                        model=GEMINI_MODEL,
-                        contents=[
-                            "Extract all text content from this document. "
-                            "Return plain text only, preserving structure.",
-                            textbook_file,
-                        ],
-                        config={"temperature": 0.0}
+        else:
+            # --------------------------------------------------
+            # PRESERVED GEMINI CLOUD PATH
+            # --------------------------------------------------
+            client = get_gemini_client()
+            if not client:
+                raise HTTPException(500, "Gemini client not initialized.")
+
+            question_file = client.files.upload(
+                file=question_path,
+                config={"mime_type": mime}
+            )
+
+            textbook_file = None
+            if textbook_path:
+                t_ext = Path(textbook_path).suffix.lower()
+                t_mime = ALLOWED_MIME.get(t_ext)
+                if t_mime:
+                    textbook_file = client.files.upload(
+                        file=textbook_path,
+                        config={"mime_type": t_mime}
                     )
-                    if text_response.text:
-                        setup_rubric_knowledge(exam_id, text_response.text)
-                except Exception as error:
-                    print(f"[ExamSetup] RAG indexing error: {error}")
 
-        # Generate rubric via Gemini
-        contents = [
-            """
-You are the Rubric Generation Module of AutoGrade.
-Analyze the uploaded question paper. For every question:
-1. Extract the question number
-2. Extract the question text accurately
-3. Identify total marks
-4. Create a clear marking rubric with criteria
-5. The sum of all criteria max_marks MUST equal the
-   total marks of that question
+            contents = [RUBRIC_GENERATION_PROMPT, question_file]
+            if textbook_file:
+                contents.extend(["\nREFERENCE TEXTBOOK:\n", textbook_file])
 
-Return only the required JSON.
-""",
-            question_file,
-        ]
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=contents,
+                config={
+                    "response_mime_type": "application/json",
+                    "temperature": 0,
+                }
+            )
 
-        if textbook_file:
-            contents.append("\nREFERENCE TEXTBOOK:\n")
-            contents.append(textbook_file)
+            if not response.text:
+                raise HTTPException(500, "Gemini returned empty rubric.")
+            rubric_data = json.loads(response.text)
 
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=contents,
-            config={
-                "response_mime_type": "application/json",
-                "response_json_schema": RUBRIC_RESPONSE_SCHEMA,
-                "temperature": 0.1,
+        # --------------------------------------------------
+        # VALIDATE & NORMALIZE RUBRIC DATA
+        # --------------------------------------------------
+        questions_list = rubric_data.get("questions", [])
+        if not questions_list:
+            raise HTTPException(500, "No questions were extracted from the question paper.")
+
+        validated_questions = []
+        for idx, q in enumerate(questions_list):
+            q_num_raw = q.get("question_number", idx + 1)
+            try:
+                q_num_str = re.sub(r"[^\d]", "", str(q_num_raw))
+                q_num = int(q_num_str) if q_num_str else (idx + 1)
+            except Exception:
+                q_num = idx + 1
+
+            q_text = str(q.get("question_text", f"Question {q_num}")).strip()
+            q_type = str(q.get("question_type", "THEORY")).upper()
+            if q_type not in {"THEORY", "NUMERICAL", "DIAGRAM", "MIXED"}:
+                q_type = "THEORY"
+
+            section = str(q.get("section", "")).strip()
+            total_marks = float(q.get("max_marks", q.get("total_marks", 0.0)))
+
+            criteria_raw = q.get("criteria", [])
+            validated_criteria = []
+            criteria_sum = 0.0
+
+            for c in criteria_raw:
+                desc = str(c.get("description", "Evaluation criterion")).strip()
+                c_marks = float(c.get("max_marks", c.get("marks", 0.0)))
+                validated_criteria.append({"description": desc, "max_marks": c_marks})
+                criteria_sum += c_marks
+
+            if not validated_criteria:
+                validated_criteria.append({
+                    "description": "Comprehensive and accurate answer demonstrating full understanding",
+                    "max_marks": total_marks
+                })
+                criteria_sum = total_marks
+
+            # Enforce mathematical consistency: sum(criteria) == total_marks
+            if total_marks > 0 and abs(criteria_sum - total_marks) > 0.01 and criteria_sum > 0:
+                scale = total_marks / criteria_sum
+                new_sum = 0.0
+                for c in validated_criteria:
+                    c["max_marks"] = round(c["max_marks"] * scale, 1)
+                    new_sum += c["max_marks"]
+                diff = round(total_marks - new_sum, 1)
+                validated_criteria[-1]["max_marks"] = max(0.5, validated_criteria[-1]["max_marks"] + diff)
+            elif total_marks == 0 and criteria_sum > 0:
+                # Marks missing from question — use criteria sum as fallback
+                total_marks = criteria_sum
+
+            entry = {
+                "question_number": q_num,
+                "question_text": q_text,
+                "question_type": q_type,
+                "max_marks": total_marks,
+                "criteria": validated_criteria,
             }
-        )
+            if section:
+                entry["section"] = section
 
-        if not response.text:
-            raise HTTPException(500, "Gemini returned empty rubric.")
+            validated_questions.append(entry)
 
-        rubric_data = json.loads(response.text)
+        # Compute totals
+        computed_total = sum(q.get("max_marks", 0.0) for q in validated_questions)
+        sections = sorted(set(
+            q.get("section", "") for q in validated_questions if q.get("section")
+        ))
 
-        # Parse max_marks overrides
-        try:
-            marks_override = json.loads(max_marks_per_question)
-        except json.JSONDecodeError:
-            marks_override = {}
+        # Run structural validation — collect warnings, don't block
+        warnings = validate_rubric_structure({"questions": validated_questions})
 
-        # Apply overrides
-        for q in rubric_data.get("questions", []):
-            q_num = q.get("question_number")
-            if q_num and str(q_num) in marks_override:
-                q["max_marks"] = marks_override[str(q_num)]
+        rubric_data = {
+            "questions": validated_questions,
+            "total_marks": computed_total,
+            "sections": sections,
+            "extraction_warnings": warnings,
+            "doc_fingerprint": doc_fingerprint,
+            "gen_fingerprint": gen_fingerprint,
+            "schema_version": RUBRIC_SCHEMA_VERSION,
+            "prompt_version": RUBRIC_PROMPT_VERSION,
+        }
+
+        # Cache the validated result
+        store_draft_cache(gen_fingerprint, rubric_data)
+
+        # Register exam in Firestore (idempotent)
+        _register_exam(exam_id, rubric_data)
 
         return {
             "success": True,
             "exam_id": exam_id,
             "rubric": rubric_data,
+            "doc_fingerprint": doc_fingerprint,
+            "gen_fingerprint": gen_fingerprint,
+            "from_cache": False,
         }
 
     except HTTPException:
         raise
 
     except Exception as error:
-        print(f"[ExamSetup] Error: {repr(error)}")
+        import traceback
+        print(f"[ExamSetup] Error: {traceback.format_exc()}")
         raise HTTPException(500, str(error))
 
     finally:
@@ -231,42 +407,162 @@ Return only the required JSON.
                 pass
 
 
+def _register_exam(exam_id: str, rubric_data: dict) -> None:
+    """Idempotent exam registration in Firestore."""
+    try:
+        total_marks = rubric_data.get("total_marks", 0.0)
+        db_service.save_exam(
+            exam_id=exam_id,
+            exam_name=exam_id,
+            total_marks=total_marks,
+            status="PROPOSED",
+        )
+    except Exception as e:
+        print(f"[ExamSetup] DB exam registration skipped: {e}")
+
+
 # =========================================================
 # POST /exam/rubric/approve
 # =========================================================
+# IMPORTANT: This route MUST be registered BEFORE GET /{exam_id}
+# to prevent FastAPI treating "rubric" as exam_id.
 
 @router.post("/rubric/approve")
 async def approve_rubric(request: RubricApproveRequest):
-    """Save the teacher-approved rubric to Firestore."""
+    """
+    Save teacher-approved rubric to Firestore with write-verify.
 
+    1. Validates rubric.
+    2. Saves to Firestore.
+    3. Reads back the saved document to verify persistence.
+    4. Returns the verified rubric_id and version.
+    """
     try:
-        db = get_firestore()
-        if db is None:
-            # Local dev mode — just return success
+        exam_id = request.exam_id.strip()
+        if not exam_id:
+            raise HTTPException(400, "exam_id is required.")
+
+        if not request.rubric:
+            raise HTTPException(400, "Rubric questions list is empty.")
+
+        # Validate before saving
+        rubric_dict = {"questions": [
+            q.model_dump() if hasattr(q, "model_dump") else q
+            for q in request.rubric
+        ]}
+        warnings = validate_rubric_structure(rubric_dict)
+
+        if not db_service.is_connected():
             return {
                 "success": True,
-                "exam_id": request.exam_id,
-                "message": "Rubric approved (Firestore unavailable — local mode).",
+                "exam_id": exam_id,
+                "rubric_id": f"{exam_id}_v1",
+                "version": 1,
+                "warnings": warnings,
+                "message": "Rubric approved (Firestore offline — local fallback mode).",
             }
 
-        doc_ref = (
-            db.collection("exams")
-            .document(request.exam_id)
-            .collection("rubric")
-            .document("approved")
+        # Save to Firestore
+        saved = db_service.save_approved_rubric(
+            exam_id=exam_id,
+            questions=request.rubric,
+            doc_fingerprint=getattr(request, "doc_fingerprint", ""),
+            gen_fingerprint=getattr(request, "gen_fingerprint", ""),
         )
 
-        doc_ref.set({
-            "exam_id": request.exam_id,
-            "questions": [q.model_dump() for q in request.rubric],
-            "approved": True,
-        })
+        # WRITE-VERIFY: read back the saved document
+        rubric_id = saved.get("rubric_id")
+        version = saved.get("version", 1)
+
+        verify_result = db_service.get_approved_rubric(exam_id)
+        if not verify_result:
+            raise HTTPException(
+                500,
+                f"Rubric {rubric_id} was saved but could not be read back from Firestore. "
+                "Check Firestore rules and connectivity."
+            )
+
+        # Confirm it belongs to correct exam
+        if verify_result.get("exam_id") != exam_id:
+            raise HTTPException(
+                500,
+                f"Write-verify failed: retrieved rubric has exam_id="
+                f"'{verify_result.get('exam_id')}', expected '{exam_id}'."
+            )
 
         return {
             "success": True,
-            "exam_id": request.exam_id,
-            "message": "Rubric approved and saved to Firestore.",
+            "exam_id": exam_id,
+            "rubric_id": rubric_id,
+            "version": version,
+            "total_marks": saved.get("total_marks", 0.0),
+            "questions_count": len(saved.get("questions", [])),
+            "warnings": warnings,
+            "verified": True,
+            "message": (
+                f"Rubric version {version} approved, saved, and verified in Firestore."
+                + (f" ({len(warnings)} warnings)" if warnings else "")
+            ),
         }
 
+    except HTTPException:
+        raise
+
     except Exception as error:
+        import traceback
+        print(f"[ExamApprove] Error: {traceback.format_exc()}")
         raise HTTPException(500, f"Failed to save rubric: {error}")
+
+
+# =========================================================
+# GET /exam  (List all exams)
+# =========================================================
+# Registered BEFORE /{exam_id} to prevent route shadowing.
+
+@router.get("")
+@router.get("/")
+async def list_exams():
+    """Retrieve list of all exams from Firestore."""
+    try:
+        exams = db_service.list_exams()
+        return {"exams": exams, "count": len(exams)}
+    except Exception as error:
+        raise HTTPException(500, f"Failed to list exams: {error}")
+
+
+# =========================================================
+# GET /exam/{exam_id}/rubric  (Retrieve approved rubric)
+# =========================================================
+# MUST be registered BEFORE /exam/{exam_id} so FastAPI doesn't
+# swallow the /rubric suffix as part of the exam_id wildcard.
+
+@router.get("/{exam_id}/rubric")
+async def get_exam_rubric(exam_id: str):
+    """
+    Retrieve the teacher-approved rubric for an exam.
+    Checks both the sub-collection path and the top-level rubrics collection.
+    """
+    exam_id = exam_id.strip()
+    rubric_doc = db_service.get_approved_rubric(exam_id)
+    if not rubric_doc:
+        raise HTTPException(
+            404,
+            f"No approved rubric found in Firestore for exam '{exam_id}'. "
+            "Please generate and approve a rubric in the Setup Exam tab first."
+        )
+    return rubric_doc
+
+
+# =========================================================
+# GET /exam/{exam_id}  (Get exam details)
+# =========================================================
+# Registered AFTER all static-segment routes.
+
+@router.get("/{exam_id}")
+async def get_exam_details(exam_id: str):
+    """Retrieve exam record and its approved rubric metadata."""
+    exam_id = exam_id.strip()
+    exam_doc = db_service.get_exam(exam_id)
+    if not exam_doc:
+        raise HTTPException(404, f"Exam '{exam_id}' not found.")
+    return exam_doc

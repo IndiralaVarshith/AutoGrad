@@ -173,15 +173,16 @@ MATH_SCHEMA = {
 
 class GradingEngine:
 
-    def __init__(self, api_key):
-        self.client = genai.Client(
-            api_key=api_key
-        )
+    def __init__(self, api_key=None):
+        self.api_key = api_key or os.getenv("GEMINI_API_KEY", "")
+        self.client = None
+        if self.api_key:
+            try:
+                self.client = genai.Client(api_key=self.api_key)
+            except Exception:
+                pass
 
-        self.openrouter_api_key = os.getenv(
-            "OPENROUTER_API_KEY"
-        )
-
+        self.openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
         self.pix2text = None
 
 
@@ -213,10 +214,14 @@ class GradingEngine:
         function,
         operation_name
     ):
+        from services.router import ai_config
+        if ai_config.is_local():
+            print(f"[OllamaRouter via Gemini wrapper] {operation_name}")
+            return function()
+
         print(
             f"[Gemini] {operation_name} - single attempt"
         )
-
         return function()
 
 
@@ -228,15 +233,37 @@ class GradingEngine:
         operation_name,
         max_tokens=3000
     ):
+        from services.router import model_router, ai_config
 
-        if not self.openrouter_api_key:
-            raise RuntimeError(
-                "OPENROUTER_API_KEY is missing from backend/.env"
+        # In local mode, route all inference through OllamaClient
+        if ai_config.is_local():
+            print(f"[OllamaRouter] {operation_name}")
+            task_type = "grading"
+            op = (operation_name or "").lower()
+            if "ocr" in op or "extract" in op:
+                task_type = "ocr_extraction"
+            elif "critic" in op:
+                task_type = "critique"
+            elif "rubric" in op:
+                task_type = "rubric_generation"
+            elif "classify" in op:
+                task_type = "classification"
+
+            images = []
+            if file_path and os.path.exists(file_path):
+                if file_path.lower().endswith(".pdf"):
+                    images = model_router.ollama.render_pdf_to_images(file_path, max_pages=6, dpi=120)
+                else:
+                    images = [file_path]
+
+            res = model_router.generate(
+                task_type=task_type,
+                prompt=prompt,
+                images=images if images else None,
+                format_json=True,
+                max_tokens=max_tokens,
             )
-
-        print(
-            f"[OpenRouter] {operation_name}"
-        )
+            return res.text
 
         content = [
             {

@@ -34,6 +34,7 @@ from services.resolver import resolve
 from services.math_agent import verify_math
 from services.evidence_verifier import verify_evidence
 from services.confidence_engine import compute_c_agree, compute_confidence
+from services.db import db_service
 from config import get_firestore
 
 
@@ -135,12 +136,14 @@ def process_paper(
         # -------------------------------------------------
         # Step 4b: Grading Agent
         # -------------------------------------------------
-        grader_criteria, grader_score = grade_answer(
+        grader_criteria, grader_score, model_used, routing_reason = grade_answer(
             question_text=rubric.question_text,
             extracted_text=extracted_text,
-            image_parts=image_parts,
+            image_parts=image_parts if q_type in {"DIAGRAM", "MIXED"} else [],
             rubric=rubric,
             max_marks=max_marks,
+            question_type=q_type,
+            illegible_count=len(illegible_regions),
         )
 
         # -------------------------------------------------
@@ -203,6 +206,8 @@ def process_paper(
             c_evid=c_evid,
             c_math=c_math,
             question_type=q_type,
+            total_illegible=len(illegible_regions),
+            total_questions=len(ocr_results),
         )
 
         # Override routing if resolver forced flag
@@ -227,6 +232,8 @@ def process_paper(
                 c_final=c_final,
                 routing=routing,
                 illegible_regions=illegible_regions,
+                model_used=model_used,
+                routing_reason=routing_reason,
             )
         )
 
@@ -280,21 +287,16 @@ def _save_to_firestore(
     hall_ticket: str,
     result: PaperResult,
 ) -> None:
-    """Save PaperResult to Firestore under /exams/{exam_id}/results/{hall_ticket}."""
+    """Save PaperResult to Firestore across grading_results/ and exams/{exam_id}/results."""
     try:
-        db = get_firestore()
-        if db is None:
+        if db_service.is_connected():
+            db_service.save_grading_result(
+                exam_id=exam_id,
+                hall_ticket=hall_ticket,
+                paper_result=result,
+            )
+            print(f"[Pipeline] Successfully saved evaluation to Firestore for {hall_ticket}")
+        else:
             print("[Pipeline] Firestore unavailable — skipping save.")
-            return
-
-        doc_ref = (
-            db.collection("exams")
-            .document(exam_id)
-            .collection("results")
-            .document(hall_ticket)
-        )
-        doc_ref.set(result.model_dump())
-        print(f"[Pipeline] Saved to Firestore: exams/{exam_id}/results/{hall_ticket}")
-
     except Exception as error:
         print(f"[Pipeline] Firestore write error: {error}")

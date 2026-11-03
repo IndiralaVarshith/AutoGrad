@@ -75,18 +75,38 @@ def _chunk_text(text: str, chunk_size: int = CHUNK_SIZE) -> list[str]:
 # =========================================================
 
 def _embed_texts(texts: list[str]) -> list[list[float]]:
-    """Embed a list of texts using Gemini text-embedding-004."""
+    """
+    Embed a list of texts using Gemini if available, or deterministic
+    local word-frequency embeddings if running offline/local-only.
+    """
     client = get_gemini_client()
-    embeddings = []
+    if client:
+        try:
+            embeddings = []
+            for text in texts:
+                response = client.models.embed_content(
+                    model=EMBEDDING_MODEL,
+                    contents=text,
+                )
+                embeddings.append(response.embeddings[0].values)
+            return embeddings
+        except Exception as e:
+            print(f"[RAG] Gemini embedding failed ({e}), falling back to local representation.")
 
+    # Local fallback: 768-dimensional normalized deterministic hash embedding
+    dim = 768
+    fallback_embeddings = []
     for text in texts:
-        response = client.models.embed_content(
-            model=EMBEDDING_MODEL,
-            contents=text,
-        )
-        embeddings.append(response.embeddings[0].values)
+        vec = [0.0] * dim
+        words = text.lower().split()
+        for idx, word in enumerate(words):
+            h = hash(word) % dim
+            vec[h] += 1.0 / (idx + 1)
+        norm = sum(x * x for x in vec) ** 0.5 or 1.0
+        normalized = [x / norm for x in vec]
+        fallback_embeddings.append(normalized)
 
-    return embeddings
+    return fallback_embeddings
 
 
 # =========================================================

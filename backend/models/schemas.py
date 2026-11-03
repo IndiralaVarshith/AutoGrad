@@ -57,6 +57,8 @@ class QuestionGrade(BaseModel):
     c_final: float = 0.0
     routing: str = "FLAGGED"  # AUTO_ACCEPT | FLAGGED | MANUAL
     illegible_regions: list[str] = Field(default_factory=list)
+    model_used: str = ""
+    routing_reason: str = ""
 
 
 class PaperResult(BaseModel):
@@ -86,6 +88,8 @@ class RubricApproveRequest(BaseModel):
     """Request body for POST /exam/rubric/approve."""
     exam_id: str
     rubric: list[QuestionRubric]
+    doc_fingerprint: str = ""
+    gen_fingerprint: str = ""
 
 
 class StudentMeta(BaseModel):

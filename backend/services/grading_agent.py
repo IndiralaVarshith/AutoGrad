@@ -12,6 +12,7 @@ import json
 
 from models.schemas import CriterionResult, QuestionRubric
 from config import gemini_generate_with_retry
+from services.router import model_router
 
 
 # =========================================================
@@ -75,7 +76,9 @@ def grade_answer(
     rubric: QuestionRubric,
     max_marks: float,
     temperature: float = 0.1,
-) -> tuple[list[CriterionResult], float]:
+    question_type: str = "THEORY",
+    illegible_count: int = 0,
+) -> tuple[list[CriterionResult], float, str, str]:
     """
     Grade a student's answer against the rubric.
 
@@ -92,7 +95,11 @@ def grade_answer(
     max_marks : float
         Maximum marks for this question.
     temperature : float
-        Gemini sampling temperature (default 0.1).
+        Sampling temperature (default 0.1).
+    question_type : str
+        Question category (THEORY, NUMERICAL, DIAGRAM, MIXED).
+    illegible_count : int
+        Number of illegible OCR tokens.
 
     Returns
     -------
@@ -100,8 +107,11 @@ def grade_answer(
         Grading results per criterion.
     total_score : float
         Total marks awarded.
+    model_used : str
+        Model identifier that evaluated this question.
+    routing_reason : str
+        Reason for model selection.
     """
-
 
     rubric_json = json.dumps(
         [
@@ -125,22 +135,23 @@ Grade this answer. For each criterion, cite EXACT text from
 the student answer as verbatim_quote. Return JSON only.
 """
 
-    contents = [user_prompt] + image_parts
-
-    response = gemini_generate_with_retry(
-        contents=contents,
-        config={
-            "system_instruction": GRADING_SYSTEM_PROMPT,
-            "response_mime_type": "application/json",
-            "response_json_schema": GRADING_RESPONSE_SCHEMA,
-            "temperature": temperature,
-        }
+    res = model_router.generate(
+        task_type="grading",
+        prompt=user_prompt,
+        images=image_parts if image_parts else None,
+        system_instruction=GRADING_SYSTEM_PROMPT,
+        format_json=True,
+        temperature=temperature,
+        question_type=question_type,
+        illegible_count=illegible_count,
     )
 
-    if not response.text:
-        raise RuntimeError("Grading Agent returned empty output.")
-
-    data = json.loads(response.text)
+    data = res.parsed_json or {}
+    if not isinstance(data, dict):
+        try:
+            data = json.loads(res.text)
+        except Exception:
+            data = {}
 
     # -------------------------------------------------
     # Parse into CriterionResult models
@@ -169,11 +180,24 @@ the student answer as verbatim_quote. Return JSON only.
             )
         )
 
+    # If model failed to return criteria, create fallback criteria
+    if not criteria and rubric.criteria:
+        for rc in rubric.criteria:
+            criteria.append(
+                CriterionResult(
+                    criterion=rc.description,
+                    verbatim_quote="",
+                    marks_awarded=0.0,
+                    rationale="Model did not return structured criterion evaluation",
+                    quote_verified=False,
+                )
+            )
+
     total_score = min(
         sum(c.marks_awarded for c in criteria),
         max_marks
     )
 
-    print(f"[Grader] Score: {total_score}/{max_marks}")
+    print(f"[Grader] Model: {res.model_used} | Score: {total_score}/{max_marks} | Reason: {res.routing_reason}")
 
-    return criteria, total_score
+    return criteria, total_score, res.model_used, res.routing_reason

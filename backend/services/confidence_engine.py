@@ -8,6 +8,8 @@ DIAGRAM questions get c_final multiplied by 0.85 before routing.
 
 from __future__ import annotations
 
+from math import isfinite
+from operator import index
 
 # =========================================================
 # WEIGHT CONSTANTS — do not hardcode inline
@@ -21,9 +23,22 @@ W_MATH: float = 0.20
 # DIAGRAM post-formula adjustment
 DIAGRAM_PENALTY: float = 0.85
 
+# Keep illegibility weighting consistent with the OCR confidence formula.
+ILLEGIBLE_OCR_PENALTY_RATE: float = 0.30
+
 # Routing thresholds
 AUTO_ACCEPT_THRESHOLD: float = 0.85
 FLAGGED_THRESHOLD: float = 0.65
+
+
+def _nonnegative_int(value: object, default: int) -> int:
+    if isinstance(value, bool):
+        return default
+
+    try:
+        return max(0, index(value))
+    except TypeError:
+        return default
 
 
 # =========================================================
@@ -56,16 +71,21 @@ def compute_confidence(
     c_evid: float,
     c_math: float,
     question_type: str,
+    total_illegible: int | None = 0,
+    total_questions: int | None = 1,
 ) -> tuple[float, str]:
     """
     Compute final confidence and routing decision.
 
     Formula:
+        effective_c_ocr = c_ocr * max(
+            0, 1 - 0.30 * total_illegible / total_questions
+        )
+        base = W_OCR*effective_c_ocr + W_AGREE*c_agree + W_EVID*c_evid + W_MATH*c_math
         if question_type == "DIAGRAM":
-            base = W_OCR*c_ocr + W_AGREE*c_agree + W_EVID*c_evid + W_MATH*c_math
             c_final = base * DIAGRAM_PENALTY
         else:
-            c_final = W_OCR*c_ocr + W_AGREE*c_agree + W_EVID*c_evid + W_MATH*c_math
+            c_final = base
 
     Routing:
         c_final >= 0.85  → AUTO_ACCEPT
@@ -84,6 +104,11 @@ def compute_confidence(
         Math verification confidence [0, 1].
     question_type : str
         One of THEORY, NUMERICAL, DIAGRAM.
+    total_illegible : int | None, optional
+        Number of illegible regions in this question.
+    total_questions : int | None, optional
+        Number of OCR answers used to normalize the illegibility penalty.
+        Defaults to one question.
 
     Returns
     -------
@@ -93,8 +118,16 @@ def compute_confidence(
         AUTO_ACCEPT | FLAGGED | MANUAL
     """
 
+    illegible_count = _nonnegative_int(total_illegible, 0)
+    question_count = _nonnegative_int(total_questions, 1) or 1
+    illegible_penalty = min(
+        ILLEGIBLE_OCR_PENALTY_RATE * illegible_count / question_count,
+        1.0,
+    )
+    effective_c_ocr = c_ocr * (1.0 - illegible_penalty)
+
     base = (
-        W_OCR * c_ocr
+        W_OCR * effective_c_ocr
         + W_AGREE * c_agree
         + W_EVID * c_evid
         + W_MATH * c_math
@@ -104,6 +137,11 @@ def compute_confidence(
         c_final = base * DIAGRAM_PENALTY
     else:
         c_final = base
+
+    if not isfinite(c_final):
+        c_final = 0.0
+    else:
+        c_final = max(0.0, min(1.0, c_final))
 
     # Routing decision
     if c_final >= AUTO_ACCEPT_THRESHOLD:
@@ -116,7 +154,7 @@ def compute_confidence(
     print(
         f"[Confidence] c_final={c_final:.4f}, "
         f"routing={routing} "
-        f"(OCR={c_ocr:.2f}, AGREE={c_agree:.2f}, "
+        f"(OCR={effective_c_ocr:.2f}[illegible={illegible_count}], AGREE={c_agree:.2f}, "
         f"EVID={c_evid:.2f}, MATH={c_math:.2f})"
     )
 

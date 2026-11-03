@@ -60,7 +60,7 @@ def resolve(
     print("[Resolver] Running 2 additional grading passes...")
 
     # Run 2 more grading passes at T=0.1
-    criteria_2, score_2 = grade_answer(
+    criteria_2, score_2, _, _ = grade_answer(
         question_text=question_text,
         extracted_text=extracted_text,
         image_parts=image_parts,
@@ -69,7 +69,7 @@ def resolve(
         temperature=0.1,
     )
 
-    criteria_3, score_3 = grade_answer(
+    criteria_3, score_3, _, _ = grade_answer(
         question_text=question_text,
         extracted_text=extracted_text,
         image_parts=image_parts,

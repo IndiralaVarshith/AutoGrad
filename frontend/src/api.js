@@ -28,11 +28,39 @@ export const api = {
     return res.data;
   },
 
+  // List all configured exams
+  getExams: async () => {
+    const res = await client.get('/exam');
+    return res.data;
+  },
+
+  // Get specific exam details
+  getExamDetails: async (examId) => {
+    const res = await client.get(`/exam/${examId}`);
+    return res.data;
+  },
+
+  // Get approved rubric for exam
+  getExamRubric: async (examId) => {
+    const res = await client.get(`/exam/${examId}/rubric`);
+    return res.data;
+  },
+
   // Rubric Approval
-  approveRubric: async (examId, rubric) => {
+  approveRubric: async (examId, rubric, docFingerprint = '', genFingerprint = '') => {
     const res = await client.post('/exam/rubric/approve', {
       exam_id: examId,
       rubric: rubric,
+      doc_fingerprint: docFingerprint,
+      gen_fingerprint: genFingerprint,
+    });
+    return res.data;
+  },
+
+  // Single Student Direct Evaluation
+  evaluateSingleStudent: async (formData) => {
+    const res = await client.post('/evaluate', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
     });
     return res.data;
   },
