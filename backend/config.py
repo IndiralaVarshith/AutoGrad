@@ -5,6 +5,8 @@ Loads environment variables and initialises Firebase Admin SDK.
 All API keys and Firebase credentials come from environment
 variables only — never hardcoded.
 """
+from __future__ import annotations
+
 import os
 import time
 import random
