@@ -41,6 +41,7 @@ def route_answer(
     critic_score: float,
     critic_verdict: str,
     c_evid: float,
+    max_marks: float,
     force_flag: bool = False,
     illegible_count: int = 0,
     math_unverified: bool = False,
@@ -64,6 +65,10 @@ def route_answer(
         return "FLAGGED", "ZERO_ON_WRITTEN_ANSWER"
     if c_evid < 1.0:
         return "FLAGGED", "EVIDENCE_NOT_VERIFIED"
+    # On the tuning sheets partial marks were wrong more often than right, while full
+    # marks nearly always held, so only full marks stand without a teacher.
+    if grader_score < max_marks:
+        return "FLAGGED", "PARTIAL_MARK"
     return "AUTO_ACCEPT", ""
 
 

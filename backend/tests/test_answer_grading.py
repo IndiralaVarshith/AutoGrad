@@ -99,14 +99,15 @@ def test_blank_and_missing_answers_are_told_apart_and_never_marked(firestore_cli
     ({}, ("AUTO_ACCEPT", "")),
     ({"critic_verdict": "REJECT"}, ("FLAGGED", "CRITIC_DISAGREED")),
     ({"force_flag": True}, ("FLAGGED", "CRITIC_DISAGREED")),
-    ({"critic_score": 0.5}, ("FLAGGED", "SCORE_GAP")),
+    ({"critic_score": 1.0}, ("FLAGGED", "SCORE_GAP")),
     ({"c_evid": 0.5}, ("FLAGGED", "EVIDENCE_NOT_VERIFIED")),
     ({"illegible_count": 1}, ("MANUAL", "UNCLEAR_READING")),
     ({"math_unverified": True}, ("MANUAL", "MATH_NOT_VERIFIED")),
     ({"grader_score": 0.0, "critic_score": 0.0}, ("FLAGGED", "ZERO_ON_WRITTEN_ANSWER")),
+    ({"grader_score": 1.0, "critic_score": 1.0}, ("FLAGGED", "PARTIAL_MARK")),
 ])
 def test_routing_rules(kwargs, expected):
-    base = {"grader_score": 1.5, "critic_score": 1.5, "critic_verdict": "ACCEPT", "c_evid": 1.0}
+    base = {"grader_score": 2.0, "critic_score": 2.0, "critic_verdict": "ACCEPT", "c_evid": 1.0, "max_marks": 2.0}
     assert route_answer(**{**base, **kwargs}) == expected
 
 
@@ -119,9 +120,17 @@ def test_flagged_draft_does_not_count_toward_the_total(firestore_client):
 
 
 def test_accepted_short_answer_counts(firestore_client):
-    result = run({(2, ""): read("the answer")}, [short(2)])
-    assert result.questions[0].routing == "AUTO_ACCEPT" and result.total_score == 1.5
+    result = run({(2, ""): read("the answer")}, [short(2)],
+                 grader=lambda **_: (awarded(2.0), 2.0, "local-model", "test"),
+                 critic=lambda **_: CriticVerdict(verdict="ACCEPT", suggested_score=2.0))
+    assert result.questions[0].routing == "AUTO_ACCEPT" and result.total_score == 2.0
     assert result.questions[0].suggested_score is None
+
+
+def test_agreed_partial_mark_goes_to_the_teacher_with_its_draft(firestore_client):
+    question = run({(2, ""): read("the answer")}, [short(2)]).questions[0]
+    assert question.routing == "FLAGGED" and question.flag_reason == "PARTIAL_MARK"
+    assert question.final_score == 0 and question.suggested_score == 1.5
 
 
 @pytest.mark.parametrize("failing", ["grader", "critic"])
@@ -181,10 +190,10 @@ def gemini_reply(score):
     })
 
 
-def run_with_gemini(score, critic_score=0.0, calls_left=20):
+def run_with_gemini(score, critic_score=0.0, calls_left=20, grader_score=1.5):
     page, image = page_with_region()
     critic = lambda **_: CriticVerdict(verdict="ACCEPT", suggested_score=critic_score)  # noqa: E731
-    grader = lambda **_: (awarded(region_ids=["r1", "head"]), 1.5, "local-model", "test")  # noqa: E731
+    grader = lambda **_: (awarded(grader_score, region_ids=["r1", "head"]), grader_score, "local-model", "test")  # noqa: E731
     with patch.dict("os.environ", {"GEMINI_VERIFICATION_ENABLED": "true"}), \
             patch.object(model_router, "gemini_calls_left", return_value=calls_left), \
             patch.object(model_router, "generate_gemini_verification",
@@ -207,7 +216,7 @@ def test_gemini_disagreement_stays_with_the_teacher(firestore_client):
 
 
 def test_gemini_is_not_called_for_accepted_answers(firestore_client):
-    question, verify = run_with_gemini(1.5, critic_score=1.5)
+    question, verify = run_with_gemini(2.0, critic_score=2.0, grader_score=2.0)
     verify.assert_not_called()
     assert question.routing == "AUTO_ACCEPT"
 

@@ -895,6 +895,7 @@ def process_paper(
             critic_score=critic_score,
             critic_verdict=critic_verdict.verdict,
             c_evid=c_evid,
+            max_marks=max_marks,
             force_flag=force_flag,
             illegible_count=len(illegible_regions),
             math_unverified=math_requires_manual_review,

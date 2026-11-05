@@ -47,7 +47,7 @@ OLLAMA_PAPER_READER_MODEL: str = (
 )
 # The one setting for which local model reads student answer sheets.
 OLLAMA_SHEET_READER_MODEL: str = (
-    os.getenv("OLLAMA_SHEET_READER_MODEL", "").strip() or OLLAMA_COMPLEX_MODEL
+    os.getenv("OLLAMA_SHEET_READER_MODEL", "").strip() or "qwen3.5:4b"
 )
 # The one setting for which local model gives the first mark on a written answer.
 # The second marker is always a different model.
