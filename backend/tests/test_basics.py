@@ -145,3 +145,10 @@ def test_secrets_stay_out_of_git():
     ignored = (BACKEND / ".gitignore").read_text()
     for name in (".env", "queue_data/", "gemini_usage/", "evaluation/runs/"):
         assert name in ignored
+
+
+def test_page_can_read_the_export_file_name():
+    response = signed_in_client().get(
+        "/export/none", headers={"Origin": "http://localhost:5173"}
+    )
+    assert "content-disposition" in response.headers["access-control-expose-headers"].lower()

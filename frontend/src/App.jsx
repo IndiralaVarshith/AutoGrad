@@ -163,6 +163,7 @@ export default function App() {
 
         <div style={{ display: currentPage === 'upload' ? 'block' : 'none' }}>
           <Upload
+            active={currentPage === 'upload'}
             examId={currentExamId}
             onExamIdChange={handleExamIdChange}
             onGoToDashboard={() => handlePageChange('dashboard')}
@@ -183,6 +184,7 @@ export default function App() {
           <Review
             examId={currentExamId}
             initialHallTicket={selectedHallTicket}
+            active={currentPage === 'review'}
             onBackToDashboard={() => handlePageChange('dashboard')}
           />
         </div>

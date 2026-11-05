@@ -96,7 +96,7 @@ export default function Dashboard({ examId = 'EXAM_2026_01', onGoToReview }) {
         </div>
 
         <div className="bg-[#121316] border border-[#22242a] rounded p-3.5">
-          <div className="text-[10px] text-[#717680] uppercase tracking-wider">Auto Accepted</div>
+          <div className="text-[10px] text-[#717680] uppercase tracking-wider">No Flags Left</div>
           <div className="text-xl font-semibold text-[#4ade80] mt-0.5">{autoCount}</div>
         </div>
 
@@ -132,7 +132,7 @@ export default function Dashboard({ examId = 'EXAM_2026_01', onGoToReview }) {
           >
             <option value="ALL">All ({results.length})</option>
             <option value="FLAGGED">Flagged ({flaggedCount})</option>
-            <option value="AUTO">Accepted ({autoCount})</option>
+            <option value="AUTO">No flags left ({autoCount})</option>
           </select>
         </div>
       </div>
@@ -202,7 +202,7 @@ export default function Dashboard({ examId = 'EXAM_2026_01', onGoToReview }) {
                             </span>
                           ) : (
                             <span className="text-[#4ade80]">
-                              Complete
+                              {paper.finality_status === 'FINAL' ? 'Final' : 'Not approved yet'}
                             </span>
                           )}
                         </td>

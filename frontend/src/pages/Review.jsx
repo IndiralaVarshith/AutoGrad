@@ -36,7 +36,7 @@ function sheetRank(paper) {
 }
 
 function AnswerEditor({ examId, paper, question, onSaved }) {
-  const originalText = question.teacher_corrected_text ?? question.extracted_text ?? '';
+  const originalText = question.teacher_corrected_text || question.extracted_text || '';
   const startMark = question.routing === 'AUTO_ACCEPT'
     ? question.final_score
     : (question.suggested_score ?? '');
@@ -164,7 +164,7 @@ function AnswerEditor({ examId, paper, question, onSaved }) {
   );
 }
 
-export default function Review({ examId = '', initialHallTicket = null, onBackToDashboard }) {
+export default function Review({ examId = '', initialHallTicket = null, onBackToDashboard, active = true }) {
   const [papers, setPapers] = useState([]);
   const [ticket, setTicket] = useState(initialHallTicket);
   const [selected, setSelected] = useState('');
@@ -192,9 +192,10 @@ export default function Review({ examId = '', initialHallTicket = null, onBackTo
     }
   }, [examId]);
 
+  // This page stays mounted while hidden, so it reloads each time the teacher opens it.
   useEffect(() => {
-    load();
-  }, [load]);
+    if (active) load();
+  }, [load, active]);
 
   useEffect(() => {
     if (initialHallTicket) setTicket(initialHallTicket);
@@ -248,7 +249,7 @@ export default function Review({ examId = '', initialHallTicket = null, onBackTo
   const isFinal = paper.finality_status === 'FINAL';
 
   return (
-    <div className="space-y-4">
+    <div className="mx-auto max-w-7xl space-y-4 px-4 py-6 sm:px-6">
       <div className="flex flex-wrap items-center gap-3 text-xs">
         <label className="text-[#8c9099]">
           Sheet
@@ -288,7 +289,7 @@ export default function Review({ examId = '', initialHallTicket = null, onBackTo
         </ul>
       )}
 
-      <div className="grid gap-4 lg:grid-cols-[14rem_1fr_1fr]">
+      <div className="grid gap-4 lg:grid-cols-[12rem_minmax(0,1fr)_minmax(0,1fr)]">
         <div className="space-y-2">
           {blanks > 0 && (
             <button
@@ -344,7 +345,10 @@ export default function Review({ examId = '', initialHallTicket = null, onBackTo
               examId={examId}
               paper={paper}
               question={question}
-              onSaved={load}
+              onSaved={async () => {
+                await load();
+                setSelected(''); // On to the next flagged answer, which sorts first.
+              }}
             />
           )}
 

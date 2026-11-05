@@ -56,6 +56,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # The export's file name says NOT_FINAL, so the page has to be able to read it.
+    expose_headers=["Content-Disposition"],
 )
 
 

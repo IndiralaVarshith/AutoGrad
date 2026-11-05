@@ -29,7 +29,7 @@ const evaluationStageIndex = (stage) => {
   return 0;
 };
 
-export default function Upload({ examId = 'varshith', onExamIdChange, onGoToDashboard }) {
+export default function Upload({ examId = 'varshith', onExamIdChange, onGoToDashboard, active = true }) {
   const [selectedExamId, setSelectedExamId] = useState(examId);
   const [availableExams, setAvailableExams] = useState([]);
   const [files, setFiles] = useState([]);
@@ -136,7 +136,7 @@ export default function Upload({ examId = 'varshith', onExamIdChange, onGoToDash
     return () => {
       isMounted = false;
     };
-  }, [selectedExamId]);
+  }, [selectedExamId, active]);
 
   useEffect(() => {
     if (!evaluationJobId) return undefined;
@@ -204,13 +204,12 @@ export default function Upload({ examId = 'varshith', onExamIdChange, onGoToDash
     setEvaluationJob(null);
     setUploadTransferPercent(null);
 
-    const generatedMeta = fileList.map((f, idx) => {
-      const base = f.name.replace(/\.[^/.]+$/, '');
-      const parts = base.split(/[-_]/);
-      const hallTicket = parts[0]?.trim() || `HT_${String(idx + 1).padStart(3, '0')}`;
-      const name = parts[1]?.trim() || `Student ${idx + 1}`;
-      return { hall_ticket: hallTicket, name: name, filename: f.name };
-    });
+    // The whole file name: splitting it would give Student_4 and Student_5 the same ticket.
+    const generatedMeta = fileList.map((f) => ({
+      hall_ticket: f.name.replace(/\.[^/.]+$/, '').trim(),
+      name: '',
+      filename: f.name,
+    }));
 
     setStudentMeta(generatedMeta);
   };
@@ -341,7 +340,7 @@ export default function Upload({ examId = 'varshith', onExamIdChange, onGoToDash
 
       const res = await api.uploadAnswerSheets(formData);
 
-      setStatusMsg(`Dispatched ${res.queued ?? files.length} answer sheets to background queue.`);
+      setStatusMsg(res.message || `Queued ${res.queued ?? files.length} answer sheets.`);
       
     } catch (err) {
       console.error('Upload error:', err);

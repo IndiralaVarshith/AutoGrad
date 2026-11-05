@@ -86,7 +86,8 @@ See [docs/eval](docs/eval) for measured accuracy.
 
 ## Tests
 
-Tests need the emulator running. They use fake Gemini replies, and real calls are blocked.
+Tests need the emulator running. They use fake Gemini replies, and real calls are blocked. They also
+clear the emulator's data, so use a fresh one if you want to keep an exam.
 
 ```bash
 cd backend && FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 ../.venv/bin/python -m pytest tests -q

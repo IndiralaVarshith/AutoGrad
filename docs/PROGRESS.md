@@ -28,12 +28,23 @@ Started 2026-11-06. This section overrides the Milestone A rules below where the
 - [x] Step 9 Measure. Tuning on the 10 sheets, model `gemini-3.1-flash-lite`:
   - `gemini-tune1` (5fd1330): MCQ 98.5%. Unflagged short 51.7% exact, MAE 0.511, vs always 2: 59.6%, 0.461. 43 silent wrong. Confidence did not predict accuracy; partial marks and zeros were mostly wrong; Gemini stricter than the teacher.
   - `gemini-tune2` (added benefit-of-the-doubt prompt; partial and zero on written answers always flagged, wider than the owner's "high-value" rule, settings `GEMINI_HIGH_VALUE_MARKS`, `GEMINI_FLAG_ZERO_ON_WRITTEN`): MCQ 97.5%. Unflagged short 85.4% exact, MAE 0.146, equal to always 2 on those answers. Short flagged 58.6%, all answers 31.7%, 18.3% without blanks. 6 short and 4 MCQ silent wrong. All proposed marks 58.2% exact, MAE 0.469 (tune1 52.6%, 0.49). Tuning stopped here to avoid overfitting.
-  - `gemini-final` on the 40 report sheets, one run at 3d692e3, no failed sheets, report `docs/eval/gemini-final.md`: MCQ 94.0% of all, 97.4% of unflagged, 20 silent wrong (local 80.0%, 98.0%, 13). All proposed short marks 56.1% exact, MAE 0.449 (always 2: 55.1%, 0.563; local 44.6%, 0.542). Short flagged 62.4%, all answers 31.9%, 22.7% without blanks (local 86.7%, 48.9%, 34.2%). Short silent wrong 28 (local 9). 1 call, 9.2 s, 9,483 tokens per sheet; Rs 0 actual, notional Rs 0.618. **STOP: waiting for owner before step 10.**
+  - `gemini-final` on the 40 report sheets, one run at 3d692e3, no failed sheets, report `docs/eval/gemini-final.md`: MCQ 94.0% of all, 97.4% of unflagged, 20 silent wrong (local 80.0%, 98.0%, 13). All proposed short marks 56.1% exact, MAE 0.449 (always 2: 55.1%, 0.563; local 44.6%, 0.542). Short flagged 62.4%, all answers 31.9%, 22.7% without blanks (local 86.7%, 48.9%, 34.2%). Short silent wrong 28 (local 9). 1 call, 9.2 s, 9,483 tokens per sheet; Rs 0 actual, notional Rs 0.618. Owner OK for step 10 given.
+- [x] Step 10 Demo: `docs/DEMO.md`, `scripts/demo_backup.py` (save and restore, emulator only), backup at git-ignored `backend/evaluation/runs/demo-backup/demo-5.json`. Full flow driven in real Chrome on the emulator with Student_4, 6, 7, 11, 19 (`gemini-3.1-flash-lite`): sign-in, paper and key, rubric approval, bulk upload, backend killed with `kill -9` mid-sheet and resumed by itself, review, override logged, blanks, approvals, refused export, NOT FINAL copy, final copy. 6 real requests. Restore and second review run: 0 Gemini calls. Fixed through this run: file names split into one shared hall ticket; Upload and Review stale when opened (kept mounted while hidden); read text hidden in the review box; review layout clipped; export file name lost NOT_FINAL (CORS); "Declared marks" shown when none printed; Results labels.
+
+## DONE check (2026-11-06)
+Full flow works on the emulator with 5 sheets, tests pass, numbers reported. Remaining gaps are listed below.
 
 ## Step 5 deletions (owner OK 2026-11-06, in git history)
 Deleted groups A, B, C and the root `app.js`, `index.html`, `style.css`. `GRADING_ENGINE` removed: Gemini is the only path. `test_question_paper_emulator.py` was deleted in the trim because all of it drove the local route; its general checks (paper conflict, approval cancelling, key safety) moved to `test_gemini_paper.py`. `scripts/evaluate_grading.py` rewritten for Gemini, with its own lock `evaluation/final_run_gemini.json`. Kept: `docs/eval/`, `backend/evaluation/`. Owner to remove old entries from the real `backend/.env`: `AI_PROVIDER`, `LOCAL_FIRST`, `OLLAMA_*`, `OPENROUTER_API_KEY`, old Gemini lists and flags.
 
 ## Known gaps so far
+- Only tested on this one exam. Long answers, OR choices, any K of N and sheets over 12 pages have synthetic tests only.
+- Written marks are close to "always 2" on exact match (56.1% vs 55.1%), and 28 short answers were wrong with no flag.
+- `gemini-3.1-flash-lite` free limits are unconfirmed; 3.5 Flash-Lite was overloaded when last tried.
+- Second opinions from the stronger model are built and tested with fakes, never run against Gemini, and off by default.
+- Headless Chrome only, one size of screen. Not run on the real Firestore app, which the owner runs.
+- A cancel request takes effect only before a sheet starts.
+- Tests clear the emulator.
 - `frontend/src/firebase.js` and the `firebase` npm package are now unused. `/review/ocr-region`, `/review/ocr-page` and the OCR fields in results are unused too. Left in place: not on the approved deletion list.
 - `/exam/{id}/rubric/draft-criteria` still reads only a CSV key with fixed headers (no AI). Uploading the key with the paper is the general way.
 - Papers that restart numbering per section (Part B Q1) are flagged as duplicate numbers, not handled.

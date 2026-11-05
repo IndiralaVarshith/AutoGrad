@@ -153,7 +153,7 @@ export default function Setup({ onExamApproved, onExamIdChange, initialExamId = 
       setDocFingerprint(res.doc_fingerprint || '');
       setExtractedSummary({
         total_marks: totalMarks,
-        declared_maximum_marks: res.rubric?.declared_maximum_marks ?? totalMarks,
+        declared_maximum_marks: res.rubric?.declared_maximum_marks ?? null,
         calculated_maximum_marks: res.rubric?.calculated_maximum_marks ?? totalMarks,
         validation_status: res.rubric?.validation_status || 'VALID',
         reconciliation_notes: res.rubric?.reconciliation_notes || [],
@@ -537,7 +537,7 @@ export default function Setup({ onExamApproved, onExamIdChange, initialExamId = 
                 <div className="bg-[#121316] border border-[#22242a] rounded p-2.5">
                   <div className="text-[10px] text-[#717680] uppercase mb-0.5">Declared Paper Marks</div>
                   <div className="text-[#38bdf8] font-bold text-base">
-                    {extractedSummary.declared_maximum_marks !== undefined ? `${extractedSummary.declared_maximum_marks}M` : '—'}
+                                        {extractedSummary.declared_maximum_marks != null ? `${extractedSummary.declared_maximum_marks}M` : 'Not printed'}
                   </div>
                 </div>
 
