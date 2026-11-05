@@ -129,6 +129,9 @@ class TestTeacherOCRValidation(unittest.TestCase):
         data["ocr_pages"][0]["regions"][0]["teacher_question_number"] = 1
         review_module._refresh_validation_status(data)
         self.assertEqual(data["status"], "COMPLETE")
+        self.assertEqual(data["finality_status"], "PENDING_VALIDATION")
+        data["teacher_approved"] = True
+        review_module._refresh_validation_status(data)
         self.assertEqual(data["finality_status"], "FINAL")
 
 

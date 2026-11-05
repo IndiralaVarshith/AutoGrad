@@ -152,6 +152,39 @@ export const api = {
     return res.data;
   },
 
+  saveAnswerEdit: async (payload) => {
+    const res = await client.post('/review/edit', payload);
+    return res.data;
+  },
+
+  confirmBlanks: async (examId, hallTicket) => {
+    const res = await client.post('/review/confirm-blanks', { exam_id: examId, hall_ticket: hallTicket });
+    return res.data;
+  },
+
+  approveSheet: async (examId, hallTicket, unmatchedChecked = false) => {
+    const res = await client.post('/review/approve', {
+      exam_id: examId,
+      hall_ticket: hallTicket,
+      unmatched_checked: unmatchedChecked,
+    });
+    return res.data;
+  },
+
+  approveUnflagged: async (examId) => {
+    const res = await client.post(`/review/approve-unflagged/${encodeURIComponent(examId)}`);
+    return res.data;
+  },
+
+  // Refuses with 409 while sheets are not final, unless the marked copy is asked for.
+  downloadExport: async (examId, includeNotFinal = false) => {
+    const res = await client.get(`/export/${encodeURIComponent(examId)}`, {
+      params: includeNotFinal ? { include_not_final: true } : {},
+      responseType: 'blob',
+    });
+    return res;
+  },
+
   reviewOCRRegion: async (payload) => {
     const res = await client.post('/review/ocr-region', payload);
     return res.data;

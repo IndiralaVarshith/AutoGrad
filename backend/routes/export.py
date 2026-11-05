@@ -25,7 +25,7 @@ router = APIRouter(tags=["Export"])
 # =========================================================
 
 @router.get("/export/{exam_id}")
-async def export_exam_results(exam_id: str):
+async def export_exam_results(exam_id: str, include_not_final: bool = False):
     """
     Generate and stream an Excel (.xlsx) file containing all student results.
     Dynamically identifies all questions and builds tabular columns.
@@ -48,18 +48,35 @@ async def export_exam_results(exam_id: str):
     if not papers:
         raise HTTPException(status_code=404, detail=f"No results found for exam {exam_id}.")
 
-    # Collect all unique question numbers across all papers
-    question_nums = set()
+    not_final = [
+        str(paper.get("hall_ticket", "")) for paper in papers if paper.get("finality_status") != "FINAL"
+    ]
+    if not_final and not include_not_final:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": (
+                    f"{len(not_final)} of {len(papers)} sheets are not final. A teacher must "
+                    "approve them first. You can download a copy clearly marked NOT FINAL."
+                ),
+                "not_final": not_final,
+            },
+        )
+
+    # One column per question and sub-part. Sub-parts must not overwrite each other.
+    question_keys = set()
     for paper in papers:
         for q in paper.get("questions", []):
             if "question_number" in q:
-                question_nums.add(safe_int_qnum(q["question_number"], 0))
-    sorted_q_nums = sorted(list(question_nums))
+                question_keys.add(
+                    (safe_int_qnum(q["question_number"], 0), str(q.get("sub_part") or "").upper())
+                )
+    sorted_q_keys = sorted(question_keys)
 
     # Initialize workbook
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = f"Exam_{exam_id}"
+    ws.title = "NOT FINAL" if not_final else "Final marks"
 
     # Header styling
     header_fill = PatternFill(start_color="1E3A8A", end_color="1E3A8A", fill_type="solid")
@@ -73,9 +90,9 @@ async def export_exam_results(exam_id: str):
 
     # Build Header Row
     headers = ["Hall Ticket", "Name"]
-    for q_num in sorted_q_nums:
-        headers.append(f"Q{q_num}")
-    headers.extend(["Total", "Max Total", "Flagged Qs", "Avg Confidence", "Status"])
+    for q_num, sub_part in sorted_q_keys:
+        headers.append(f"Q{q_num}{sub_part}")
+    headers.extend(["Total", "Max Total", "Flagged Qs", "Avg Confidence", "Status", "Final?"])
 
     ws.append(headers)
 
@@ -107,20 +124,25 @@ async def export_exam_results(exam_id: str):
         # Map scores per question
         q_map = {}
         for q in paper.get("questions", []):
-            q_map[safe_int_qnum(q.get("question_number", 0), 0)] = (
-                "Needs review" if q.get("routing") in ("FLAGGED", "MANUAL")
+            routing = q.get("routing")
+            key = (safe_int_qnum(q.get("question_number", 0), 0), str(q.get("sub_part") or "").upper())
+            q_map[key] = (
+                "Needs review" if routing in ("FLAGGED", "MANUAL")
+                else "Not attempted" if routing == "NOT_ATTEMPTED"
                 else q.get("final_score", 0.0)
             )
+        is_final = paper.get("finality_status") == "FINAL"
 
         row_data = [hall_ticket, name]
-        for q_num in sorted_q_nums:
-            row_data.append(q_map.get(q_num, "-"))
+        for key in sorted_q_keys:
+            row_data.append(q_map.get(key, "-"))
         row_data.extend([
             total_score,
             max_total,
             flagged_count,
             f"{avg_confidence:.2%}" if isinstance(avg_confidence, (int, float)) else str(avg_confidence),
             status,
+            "FINAL" if is_final else "NOT FINAL",
         ])
 
         ws.append(row_data)
@@ -134,9 +156,11 @@ async def export_exam_results(exam_id: str):
                 vertical="center"
             )
             # Highlight status column
-            if col_idx == len(row_data):
+            if col_idx == len(row_data) - 1:
                 if status in status_fills:
                     cell.fill = status_fills[status]
+            if col_idx == len(row_data) and not is_final:
+                cell.fill = status_fills["NEEDS_REVIEW"]
 
     # Auto-adjust column widths
     for col in ws.columns:
@@ -153,7 +177,8 @@ async def export_exam_results(exam_id: str):
     wb.save(output)
     output.seek(0)
 
-    filename = f"AutoGrade_Results_{exam_id}.xlsx"
+    suffix = "_NOT_FINAL" if not_final else ""
+    filename = f"AutoGrade_Results_{exam_id}{suffix}.xlsx"
     headers = {
         "Content-Disposition": f'attachment; filename="{filename}"'
     }

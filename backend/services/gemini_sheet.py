@@ -581,6 +581,7 @@ def grade_sheet(
         ],
         sheet_problems=problems,
         source_sha256=source_sha256,
+        page_count=page_count_of(file_bytes, extension),
         gemini_usage=usage.as_dict(config.GEMINI_USD_INR) if usage else {},
     )
     if config.GEMINI_REVIEW_ENABLED and flagged:

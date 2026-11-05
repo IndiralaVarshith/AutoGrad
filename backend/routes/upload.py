@@ -28,6 +28,7 @@ from services.gemini_paper import rubric_total_problems
 from services.gemini_sheet import grade_sheet
 from models.schemas import PaperResult, QuestionRubric
 from services.queue_manager import queue_manager, QueueJob
+from services import sheet_store
 from services.db import db_service
 from services.timing import log_timing, timed_stage
 
@@ -202,12 +203,17 @@ def _execute_grading_job(job: QueueJob):
         on_stage=update_stage,
         detail="Saving the uploaded source sheet",
     ):
-        _store_to_firebase(
-            job.exam_id,
-            job.hall_ticket,
-            job.original_filename or Path(file_path).name,
-            file_bytes,
-        )
+        # The local copy is what the review screen shows. Cloud storage is an extra.
+        sheet_store.save(job.exam_id, job.hall_ticket, job.file_ext.lower(), file_bytes)
+        try:
+            _store_to_firebase(
+                job.exam_id,
+                job.hall_ticket,
+                job.original_filename or Path(file_path).name,
+                file_bytes,
+            )
+        except RuntimeError as error:
+            _logger.warning("Cloud copy of the sheet was not saved: %s", error)
 
     with timed_stage(
         "submission_record",

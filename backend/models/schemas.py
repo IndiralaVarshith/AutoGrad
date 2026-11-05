@@ -149,6 +149,8 @@ class PaperResult(BaseModel):
     page_readers: list[dict] = Field(default_factory=list)  # which model read each page
     sheet_problems: list[str] = Field(default_factory=list)
     source_sha256: str = ""  # which file these marks came from
+    page_count: int = 0
+    teacher_approved: bool = False  # only a teacher's approval makes a sheet final
     gemini_usage: dict = Field(default_factory=dict)  # calls, tokens, notional cost
 
 
@@ -194,6 +196,14 @@ class ReviewEditRequest(BaseModel):
     sub_part: str = ""
     new_score: float
     edit_reason: str = ""
+    corrected_text: str | None = None  # the teacher's reading; Gemini's stays on record
+
+
+class ReviewApproveRequest(BaseModel):
+    """Request body for POST /review/approve."""
+    exam_id: str
+    hall_ticket: str
+    unmatched_checked: bool = False  # the teacher looked at writing that fit no question
 
 
 class OCRRegionReviewRequest(BaseModel):

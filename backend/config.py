@@ -265,6 +265,10 @@ def get_storage_bucket():
     """Return the Firebase Storage bucket, initialising Firebase if needed."""
     global _storage_bucket
 
+    # The emulator has no Storage here, and real Storage must never be used with it.
+    if os.getenv("FIRESTORE_EMULATOR_HOST", "").strip():
+        return None
+
     if _storage_bucket is not None:
         return _storage_bucket
 
