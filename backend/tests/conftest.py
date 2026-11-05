@@ -13,3 +13,4 @@ os.environ["FIRESTORE_EMULATOR_HOST"] = (
 os.environ["GEMINI_ENABLED"] = "false"
 os.environ["GEMINI_FALLBACK_ENABLED"] = "false"
 os.environ["GEMINI_VERIFICATION_ENABLED"] = "false"
+os.environ["AUTOGRAD_BLOCK_REAL_GEMINI"] = "1"

@@ -83,6 +83,36 @@ GEMINI_MAX_FALLBACK_MODELS: int = max(
     0, min(4, int(os.getenv("GEMINI_MAX_FALLBACK_MODELS", "2")))
 )
 
+# --- Gemini-only path: request budget (services/gemini_client.py) ---
+# Which .env entry holds the one key this app uses. Only the name is stored here.
+GEMINI_KEY_ENV_NAME: str = os.getenv("GEMINI_KEY_ENV_NAME", "GEMINI_API_KEY").strip()
+# Stronger model, for flagged answers only. Empty switches it off.
+GEMINI_REVIEW_MODEL: str = os.getenv("GEMINI_REVIEW_MODEL", "gemini-3.8-flash").strip()
+# Paced below the 15 RPM / 250K TPM that AI Studio shows for 3.5 Flash-Lite (2026-11-06).
+GEMINI_RPM_LIMIT: int = max(1, int(os.getenv("GEMINI_RPM_LIMIT", "12")))
+GEMINI_TPM_LIMIT: int = max(1, int(os.getenv("GEMINI_TPM_LIMIT", "200000")))
+# Unconfirmed: 500 and 20 come from users quoting Google's errors on its forum.
+GEMINI_RPD_LIMIT: int = max(1, int(os.getenv("GEMINI_RPD_LIMIT", "500")))
+GEMINI_REVIEW_RPD_LIMIT: int = max(1, int(os.getenv("GEMINI_REVIEW_RPD_LIMIT", "20")))
+GEMINI_RUN_CALL_CAP: int = max(1, int(os.getenv("GEMINI_RUN_CALL_CAP", "100")))
+GEMINI_REVIEW_CALL_CAP: int = min(15, max(0, int(os.getenv("GEMINI_REVIEW_CALL_CAP", "15"))))
+GEMINI_PAGES_PER_REQUEST: int = max(1, int(os.getenv("GEMINI_PAGES_PER_REQUEST", "12")))
+GEMINI_MAX_OUTPUT_TOKENS: int = max(256, int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "16384")))
+GEMINI_RETRY_ATTEMPTS: int = max(1, int(os.getenv("GEMINI_RETRY_ATTEMPTS", "4")))
+GEMINI_RETRY_BASE_SECONDS: float = float(os.getenv("GEMINI_RETRY_BASE_SECONDS", "5"))
+GEMINI_RETRY_MAX_WAIT_SECONDS: float = float(os.getenv("GEMINI_RETRY_MAX_WAIT_SECONDS", "90"))
+GEMINI_USAGE_DIR: str = os.getenv("GEMINI_USAGE_DIR", str(_BACKEND_DIR / "gemini_usage"))
+# Paid-tier prices, for the notional cost only. A model missing here reports cost unknown.
+GEMINI_PRICES_USD_PER_MILLION: dict[str, dict[str, float]] = {
+    "gemini-3.5-flash-lite": {"input": 0.30, "output": 2.50},
+    "gemini-3.8-flash": {"input": 0.75, "output": 3.75},
+}
+GEMINI_PRICES_AS_OF: str = "Gemini API pricing page, read 2026-11-06"
+GEMINI_USD_INR: float = float(os.getenv("GEMINI_USD_INR", "94.48"))
+GEMINI_USD_INR_SOURCE: str = os.getenv(
+    "GEMINI_USD_INR_SOURCE", "frankfurter.dev, rate dated 2026-11-05"
+)
+
 FIREBASE_PROJECT_ID: str = os.getenv("FIREBASE_PROJECT_ID", "").strip()
 FIREBASE_STORAGE_BUCKET: str = os.getenv("FIREBASE_STORAGE_BUCKET", "").strip()
 FIREBASE_SERVICE_ACCOUNT: str = os.getenv("FIREBASE_SERVICE_ACCOUNT", "").strip()

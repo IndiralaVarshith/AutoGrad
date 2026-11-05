@@ -4,7 +4,7 @@ Started 2026-11-06. This section overrides the Milestone A rules below where the
 
 ## Rules
 - Gemini does all AI work on the new path. No dataset-specific logic. Free only.
-- Use only `GEMINI_API_KEY_2` (owner's choice). Never print, log or commit it. Other key slots stay unused.
+- Use only `GEMINI_API_KEY_2` (owner's choice), named by `GEMINI_KEY_ENV_NAME`. Never print, log or commit it. Other key slots stay unused.
 - Firestore emulator only. No deleting files, no pushing. Commit on `wip` when a step's tests pass.
 - Never guess marks. Unreadable, unmatched or uncertain = "needs teacher review".
 - Stops: after steps 1, 5 and 9. Step 5 lists Ollama files and waits for OK before any deletion.
@@ -15,7 +15,8 @@ Started 2026-11-06. This section overrides the Milestone A rules below where the
 - Evaluation rubrics are auto-approved from `answerkey.txt` (Q1 = B) and labelled as such.
 
 ## Checklist
-- [x] Step 1 Model setup: `GEMINI_MODEL=gemini-3.5-flash-lite` (`config.py` default, `.env`, `.env.example`). Test call OK (9 tokens). Stored quota block cleared. Tests: 281 passed, 2 skipped. **Waiting for owner OK before step 2.**
+- [x] Step 1 Model setup: `GEMINI_MODEL=gemini-3.5-flash-lite` (`config.py` default, `.env`, `.env.example`). Test call OK (9 tokens). Stored quota block cleared. Tests: 281 passed, 2 skipped. Owner OK given 2026-11-06, billing confirmed off.
+- [x] Step 2 Request budget: `services/gemini_client.py`. Limits from owner's AI Studio: 15 RPM, 250K TPM; paced at 12 and 200K. 500/day unconfirmed. Run cap 100, review cap 15 on `gemini-3.8-flash` (20/day unconfirmed). Daily count survives restarts, resets midnight Pacific. Log in git-ignored `backend/gemini_usage/calls.jsonl`. Notional cost at $0.30/$2.50 per 1M and Rs 94.48 per USD (frankfurter.dev, 2026-11-05); actual Rs 0. A bad JSON reply is not re-sent: the sheet goes to the teacher.
 
 ## Step 1 notes
 - Price (paid tier, pricing page): $0.30 input, $2.50 output per 1M tokens. Free tier listed as free of charge. Actual cost is Rs 0 only if the key's project has no billing; owner to confirm.

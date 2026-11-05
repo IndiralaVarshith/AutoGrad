@@ -17,3 +17,6 @@ ui-debug.log
 
 # Evaluation runs hold student transcripts
 evaluation/runs/
+
+# Gemini call log and daily counts
+gemini_usage/
