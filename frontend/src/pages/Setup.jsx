@@ -6,6 +6,7 @@ export default function Setup({ onExamApproved, onExamIdChange, initialExamId = 
   const [step, setStep] = useState(1);
   const [questionFile, setQuestionFile] = useState(null);
   const [textbookFile, setTextbookFile] = useState(null);
+  const [paperKeyFile, setPaperKeyFile] = useState(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -131,6 +132,9 @@ export default function Setup({ onExamApproved, onExamIdChange, initialExamId = 
         formData.append('textbook', textbookFile);
       }
       formData.append('force_regenerate', forceRegenerate ? 'true' : 'false');
+      if (paperKeyFile) {
+        formData.append('answer_key', paperKeyFile);
+      }
 
       const res = await api.setupExam(formData);
 
@@ -157,6 +161,8 @@ export default function Setup({ onExamApproved, onExamIdChange, initialExamId = 
         warnings: [...(res.problems || []), ...(res.rubric?.extraction_warnings || [])],
         review_items: res.rubric?.review_items || [],
         from_cache: res.from_cache || false,
+        source_kind: res.rubric?.source_kind || '',
+        printed_total: res.rubric?.source_kind === 'gemini' ? (res.rubric?.declared_maximum_marks ?? null) : null,
         questions_count: questions.length,
         schema_version: res.rubric?.schema_version || '',
         is_approved: false,
@@ -248,16 +254,41 @@ export default function Setup({ onExamApproved, onExamIdChange, initialExamId = 
       setSaving(true);
       setError('');
 
-      const targetTotal = extractedSummary?.total_marks || rubricQuestions.reduce((s, q) => s + (Number(q.max_marks) || 0), 0);
+      const calculatedTotal = rubricQuestions.reduce((s, q) => s + (Number(q.max_marks) || 0), 0);
+      const targetTotal = extractedSummary?.total_marks || calculatedTotal;
+      // The Gemini path checks against the printed total, and works out the total itself.
+      const printedTotal = extractedSummary?.source_kind === 'gemini'
+        ? extractedSummary.printed_total
+        : targetTotal;
 
-      const res = await api.approveRubric(
-        examId.trim(),
-        rubricQuestions,
-        docFingerprint,
-        genFingerprint,
-        targetTotal,
-        questionsChecked
-      );
+      let res;
+      try {
+        res = await api.approveRubric(
+          examId.trim(),
+          rubricQuestions,
+          docFingerprint,
+          genFingerprint,
+          printedTotal,
+          questionsChecked
+        );
+      } catch (err) {
+        const detail = err.response?.data?.detail || '';
+        const totalOnly = extractedSummary?.source_kind === 'gemini'
+          && detail.includes('The paper prints a total of')
+          && !detail.includes('criteria add up')
+          && !detail.includes('has no marks');
+        if (!totalOnly || !window.confirm(`${detail}\n\nApprove with the calculated total anyway?`)) {
+          throw err;
+        }
+        res = await api.approveRubric(
+          examId.trim(),
+          rubricQuestions,
+          docFingerprint,
+          genFingerprint,
+          null,
+          questionsChecked
+        );
+      }
 
       if (res.warnings && res.warnings.length > 0) {
         console.warn('[Setup] Rubric approved with warnings:', res.warnings);
@@ -439,6 +470,16 @@ export default function Setup({ onExamApproved, onExamIdChange, initialExamId = 
                 )}
               </div>
             </div>
+
+            <label className="block text-[11px] text-[#717680] font-mono">
+              Answer key (optional): used to draft the marking points. You still check and approve them.
+              <input
+                type="file"
+                accept=".pdf,.txt,.png,.jpg,.jpeg"
+                onChange={(e) => setPaperKeyFile(e.target.files?.[0] || null)}
+                className="block mt-1 text-xs"
+              />
+            </label>
 
             {/* Info banner */}
             <div className="bg-[#0d1117] border border-[#1e2226] rounded p-3 text-[11px] text-[#717680] font-mono leading-relaxed">
@@ -676,6 +717,9 @@ export default function Setup({ onExamApproved, onExamIdChange, initialExamId = 
                               <option key={option.label} value={option.label}>{option.label}</option>
                             ))}
                           </select>
+                          {q.suggested_option && !q.correct_option && (
+                            <span className="ml-1 text-[#f59e0b]">Gemini suggests {q.suggested_option}; please confirm</span>
+                          )}
                         </label>
                       )}
                       <span className="text-[#717680] text-[11px]">Marks:</span>

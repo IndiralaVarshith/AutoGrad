@@ -23,7 +23,10 @@ from pathlib import Path
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 
+import config
 from config import OLLAMA_PAPER_READER_MODEL, get_firestore
+from services.gemini_client import BadModelResponse, DailyLimitReached, GeminiError, RunCapReached
+from services.gemini_paper import PAPER_PROMPT_VERSION, read_question_paper, rubric_total_problems
 from services.router import NoSuitableModelError, model_router
 from services.criteria_draft import (
     AnswerKeyError,
@@ -163,6 +166,7 @@ async def exam_setup(
     question_paper: UploadFile = File(...),
     textbook: UploadFile | None = File(None),
     force_regenerate: str = Form("false"),
+    answer_key: UploadFile | None = File(None),
 ):
     """
     Upload a question paper and turn it into structured questions and marks.
@@ -203,6 +207,13 @@ async def exam_setup(
             if existing.get("doc_fingerprint") != doc_fingerprint:
                 raise HTTPException(409, _DIFFERENT_PAPER_MESSAGE.format(exam_id=exam_id))
             return _paper_response(exam_id, existing, saved=True, duplicate=True, notices=notices)
+
+        if config.GRADING_ENGINE == "gemini":
+            key_bytes = await answer_key.read() if answer_key and answer_key.filename else b""
+            key_ext = Path(answer_key.filename).suffix.lower() if key_bytes else ""
+            return _gemini_paper(
+                exam_id, q_bytes, ext, doc_fingerprint, key_bytes, key_ext, should_force, notices
+            )
 
         if ext == ".txt":
             return _finish_paper(
@@ -444,6 +455,52 @@ def _paper_from_model_reply(reply: dict, doc_fingerprint: str, gen_fingerprint: 
     )
 
 
+def _gemini_paper(
+    exam_id: str,
+    q_bytes: bytes,
+    ext: str,
+    doc_fingerprint: str,
+    key_bytes: bytes,
+    key_ext: str,
+    should_force: bool,
+    notices: list[str],
+) -> dict:
+    """One Gemini request for the paper, unless these exact files were already read."""
+    gen_fingerprint = compute_generation_fingerprint(
+        doc_fingerprint=doc_fingerprint,
+        model_name=config.GEMINI_MODEL,
+        schema_version=RUBRIC_SCHEMA_VERSION,
+        prompt_version=PAPER_PROMPT_VERSION,
+        ref_fingerprint=compute_doc_fingerprint(key_bytes) if key_bytes else "",
+    )
+    cached = None if should_force else get_cached_draft(gen_fingerprint)
+    if cached:
+        return _finish_paper(exam_id, cached, should_force, from_cache=True, notices=notices)
+    try:
+        paper = read_question_paper(
+            q_bytes, ext, answer_key=key_bytes or None, answer_key_extension=key_ext or ".txt"
+        )
+    except (DailyLimitReached, RunCapReached) as error:
+        raise HTTPException(429, f"{error} Nothing was saved.")
+    except BadModelResponse:
+        raise HTTPException(422, _UNUSABLE_REPLY_MESSAGE)
+    except GeminiError as error:
+        print(f"[ExamSetup] Gemini failed: {error}")
+        raise HTTPException(503, "Gemini could not read the paper, so nothing was saved. Try again.")
+    if paper.get("unreadable"):
+        reasons = "; ".join(paper.get("unclear_items") or []) or "No questions were found."
+        raise HTTPException(422, _UNREADABLE_MESSAGE.format(reasons=reasons))
+    if key_bytes:
+        # The key is the teacher's own upload, so it fills the picker. Approval still confirms it.
+        for question in paper["questions"]:
+            question["correct_option"] = question.get("suggested_option", "")
+    paper["doc_fingerprint"] = doc_fingerprint
+    paper["gen_fingerprint"] = gen_fingerprint
+    paper["schema_version"] = RUBRIC_SCHEMA_VERSION
+    store_draft_cache(gen_fingerprint, paper)
+    return _finish_paper(exam_id, paper, should_force, notices=notices)
+
+
 def _paper_record(
     *,
     questions: list[dict],
@@ -618,12 +675,23 @@ async def approve_rubric(request: RubricApproveRequest):
             q.model_dump() if hasattr(q, "model_dump") else q
             for q in request.rubric
         ]}
-        warnings = validate_rubric_structure(rubric_dict)
-        rubric_structure = validate_and_reconcile_exam_structure({
-            **rubric_dict,
-            "declared_maximum_marks": request.total_marks,
-        })
-        if rubric_structure.validation_status == "DISCREPANCY":
+        checked_total = None
+        if config.GRADING_ENGINE == "gemini":
+            checked_total, total_problems, warnings = rubric_total_problems(
+                rubric_dict["questions"], request.total_marks
+            )
+            if total_problems:
+                raise HTTPException(
+                    422, f"Fix these before approving: {' '.join(total_problems)} Nothing was saved."
+                )
+            rubric_structure = None
+        else:
+            warnings = validate_rubric_structure(rubric_dict)
+            rubric_structure = validate_and_reconcile_exam_structure({
+                **rubric_dict,
+                "declared_maximum_marks": request.total_marks,
+            })
+        if rubric_structure and rubric_structure.validation_status == "DISCREPANCY":
             raise HTTPException(
                 422,
                 detail=(
@@ -653,6 +721,7 @@ async def approve_rubric(request: RubricApproveRequest):
             gen_fingerprint=getattr(request, "gen_fingerprint", ""),
             total_marks=getattr(request, "total_marks", None),
             teacher_confirmed=True,
+            checked_total=checked_total,
         )
 
         # WRITE-VERIFY: read back the saved document

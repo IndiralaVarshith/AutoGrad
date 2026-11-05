@@ -255,9 +255,12 @@ class DatabaseService:
         gen_fingerprint: str = "",
         total_marks: float | None = None,
         teacher_confirmed: bool = False,
+        checked_total: float | None = None,
     ) -> dict[str, Any]:
         """
         Persist a teacher-approved grading rubric.
+
+        checked_total: the total, already validated by the caller (Gemini path).
         
         1. Stores versioned document under rubrics/{rubric_id}
         2. Preserves active pointer under exams/{exam_id}/rubric/approved
@@ -282,21 +285,24 @@ class DatabaseService:
 
         # Reconcile the approved maximum only from explicit question, choice, and
         # attempt metadata. Never normalize a discrepancy to the declared total.
-        from services.marks_validator import validate_and_reconcile_exam_structure
-        struct = validate_and_reconcile_exam_structure({
-            "questions": serialized_questions,
-            "declared_maximum_marks": total_marks,
-        })
-        if struct.validation_status == "DISCREPANCY":
-            raise ValueError(
-                f"Rubric maximum mismatch: declared {struct.declared_maximum_marks:g}, "
-                f"but question/attempt structure totals {struct.calculated_maximum_marks:g}."
+        if checked_total is not None:
+            total_exam_marks = float(checked_total)
+        else:
+            from services.marks_validator import validate_and_reconcile_exam_structure
+            struct = validate_and_reconcile_exam_structure({
+                "questions": serialized_questions,
+                "declared_maximum_marks": total_marks,
+            })
+            if struct.validation_status == "DISCREPANCY":
+                raise ValueError(
+                    f"Rubric maximum mismatch: declared {struct.declared_maximum_marks:g}, "
+                    f"but question/attempt structure totals {struct.calculated_maximum_marks:g}."
+                )
+            total_exam_marks = (
+                float(total_marks)
+                if total_marks is not None and float(total_marks) > 0
+                else struct.calculated_maximum_marks or naive_sum
             )
-        total_exam_marks = (
-            float(total_marks)
-            if total_marks is not None and float(total_marks) > 0
-            else struct.calculated_maximum_marks or naive_sum
-        )
 
         # Check existing version count to determine version number
         rubrics_coll = client.collection("rubrics")

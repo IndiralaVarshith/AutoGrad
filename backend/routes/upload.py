@@ -20,7 +20,9 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 from PIL import Image
 
+import config
 from config import get_firestore, get_storage_bucket
+from services.gemini_sheet import grade_sheet
 from models.schemas import QuestionRubric, RubricCriterion, StudentMeta
 from pipeline import process_paper
 from services.ocr import extract_student_meta
@@ -196,6 +198,29 @@ def _execute_grading_job(job: QueueJob):
                 ),
                 status="EVALUATING",
             )
+
+    if config.GRADING_ENGINE == "gemini":
+        try:
+            result = grade_sheet(
+                exam_id=job.exam_id,
+                hall_ticket=job.hall_ticket,
+                student_name=job.student_name,
+                file_bytes=file_bytes,
+                extension=job.file_ext.lower(),
+                rubric_list=rubric_list,
+                source_file_reference=(
+                    f"exams/{job.exam_id}/sheets/{job.hall_ticket}/"
+                    f"{job.original_filename or Path(file_path).name}"
+                ),
+                rubric_version=job.rubric_version,
+                total_marks=rubric_total_marks or None,
+                on_stage=update_stage,
+            )
+            db_service.save_grading_result(job.exam_id, job.hall_ticket, result)
+            return result
+        except Exception as error:
+            _update_submission_failure(job, error)
+            raise
 
     # Render the source once to stable page images. Both local and cloud
     # inference now pass through the shared Model Router; the uploaded PDF is

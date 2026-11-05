@@ -17,6 +17,14 @@ Started 2026-11-06. This section overrides the Milestone A rules below where the
 ## Checklist
 - [x] Step 1 Model setup: `GEMINI_MODEL=gemini-3.5-flash-lite` (`config.py` default, `.env`, `.env.example`). Test call OK (9 tokens). Stored quota block cleared. Tests: 281 passed, 2 skipped. Owner OK given 2026-11-06, billing confirmed off.
 - [x] Step 2 Request budget: `services/gemini_client.py`. Limits from owner's AI Studio: 15 RPM, 250K TPM; paced at 12 and 200K. 500/day unconfirmed. Run cap 100, review cap 15 on `gemini-3.8-flash` (20/day unconfirmed). Daily count survives restarts, resets midnight Pacific. Log in git-ignored `backend/gemini_usage/calls.jsonl`. Notional cost at $0.30/$2.50 per 1M and Rs 94.48 per USD (frankfurter.dev, 2026-11-05); actual Rs 0. A bad JSON reply is not re-sent: the sheet goes to the teacher.
+- [x] Step 3 Question paper: `services/gemini_paper.py`, `/exam/setup` takes an optional `answer_key` in the same one request. Own totals check handles sub-parts, OR (also across numbers, also with parts) and any K of N; mismatches are listed, never scaled. Marks need a printed quote; on papers with a text layer the quote is checked against it. MCQ suggestion only fills the picker if the teacher uploaded a key. `GRADING_ENGINE` setting: default `gemini`, conftest pins `local` until the old path goes.
+- [x] Step 4 Answer sheet: `services/gemini_sheet.py`, one request reads and grades (two only over 12 pages). MCQ marked in code, key never sent. Flags: UNREADABLE, UNMATCHED, MISSING, LOW_CONFIDENCE (<0.8), PARTIAL_HIGH_VALUE (>=5 marks), EVIDENCE_NOT_FOUND, INVALID_MARK, UNCLEAR_OPTION, NO_KEY, DUPLICATE_ANSWER, NUMBER_INFERRED, ATTEMPT_RULE, SHEET_NOT_READ. Flagged marks stay suggestions. Second opinions from the stronger model are off by default and change nothing.
+- **Steps 3-4 real-Gemini check pending:** 3.5 Flash-Lite returned 503 "high demand" on 9 full-paper attempts on 2026-11-05 evening UTC, while tiny calls worked. Tests use fake replies.
+
+## Known gaps so far
+- Papers that restart numbering per section (Part B Q1) are flagged as duplicate numbers, not handled.
+- A misprinted section total is a warning at approval, not a block.
+- `test_data/mendeley/clean_question_paper.pdf` is a different 20-mark paper. The Data Science exam is `Question.txt`.
 
 ## Step 1 notes
 - Price (paid tier, pricing page): $0.30 input, $2.50 output per 1M tokens. Free tier listed as free of charge. Actual cost is Rs 0 only if the key's project has no billing; owner to confirm.

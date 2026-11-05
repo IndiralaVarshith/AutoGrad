@@ -33,9 +33,12 @@ class QuestionRubric(BaseModel):
     section_attempt_count: int | None = None
     section_max_marks: float | None = None
     attempt_instruction: str = ""
-    question_format: str = ""  # MCQ | SHORT_ANSWER | "" when not known
+    question_format: str = ""  # MCQ | SHORT_ANSWER | LONG_ANSWER | "" when not known
     options: list[dict[str, str]] = Field(default_factory=list)  # [{"label", "text"}]
     correct_option: str = ""  # MCQ only: the approved option label
+    suggested_option: str = ""  # MCQ only: Gemini's suggestion, never used for marking
+    marks_evidence: str = ""  # The printed text the marks came from
+    choice_alternative: str = ""  # Side of an OR choice, when it has several parts
     has_figure: bool = False
     figure_page: int | None = None
 
@@ -72,6 +75,7 @@ class QuestionGrade(BaseModel):
     final_score: float = 0.0  # counts toward the total; stays 0 until accepted or confirmed
     suggested_score: float | None = None  # draft shown to the teacher when flagged
     selected_option: str = ""  # MCQ only: the letter read from the sheet
+    second_opinion: dict | None = None  # stronger model's view, for the teacher; changes nothing
     flag_reason: str = ""  # why this answer needs review
     local_routing: str = ""  # routing before any Gemini check
     criteria: list[CriterionResult] = Field(default_factory=list)
@@ -143,6 +147,8 @@ class PaperResult(BaseModel):
     ocr_pages: list[OCRPageResult] = Field(default_factory=list)
     unmapped_answers: list[dict] = Field(default_factory=list)
     page_readers: list[dict] = Field(default_factory=list)  # which model read each page
+    sheet_problems: list[str] = Field(default_factory=list)
+    gemini_usage: dict = Field(default_factory=dict)  # calls, tokens, notional cost
 
 
 # =========================================================

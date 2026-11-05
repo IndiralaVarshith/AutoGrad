@@ -83,6 +83,9 @@ GEMINI_MAX_FALLBACK_MODELS: int = max(
     0, min(4, int(os.getenv("GEMINI_MAX_FALLBACK_MODELS", "2")))
 )
 
+# "gemini" is the default path. "local" is the old Ollama path, kept until it is retired.
+GRADING_ENGINE: str = os.getenv("GRADING_ENGINE", "gemini").strip().lower()
+
 # --- Gemini-only path: request budget (services/gemini_client.py) ---
 # Which .env entry holds the one key this app uses. Only the name is stored here.
 GEMINI_KEY_ENV_NAME: str = os.getenv("GEMINI_KEY_ENV_NAME", "GEMINI_API_KEY").strip()
@@ -98,9 +101,15 @@ GEMINI_RUN_CALL_CAP: int = max(1, int(os.getenv("GEMINI_RUN_CALL_CAP", "100")))
 GEMINI_REVIEW_CALL_CAP: int = min(15, max(0, int(os.getenv("GEMINI_REVIEW_CALL_CAP", "15"))))
 GEMINI_PAGES_PER_REQUEST: int = max(1, int(os.getenv("GEMINI_PAGES_PER_REQUEST", "12")))
 GEMINI_MAX_OUTPUT_TOKENS: int = max(256, int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "16384")))
-GEMINI_RETRY_ATTEMPTS: int = max(1, int(os.getenv("GEMINI_RETRY_ATTEMPTS", "4")))
-GEMINI_RETRY_BASE_SECONDS: float = float(os.getenv("GEMINI_RETRY_BASE_SECONDS", "5"))
+GEMINI_RETRY_ATTEMPTS: int = max(1, int(os.getenv("GEMINI_RETRY_ATTEMPTS", "5")))
+GEMINI_RETRY_BASE_SECONDS: float = float(os.getenv("GEMINI_RETRY_BASE_SECONDS", "15"))
 GEMINI_RETRY_MAX_WAIT_SECONDS: float = float(os.getenv("GEMINI_RETRY_MAX_WAIT_SECONDS", "90"))
+# Below this, Gemini's own confidence sends an answer to the teacher.
+GEMINI_MIN_CONFIDENCE: float = float(os.getenv("GEMINI_MIN_CONFIDENCE", "0.8"))
+# Partial marks on a question worth this much or more go to the teacher.
+GEMINI_HIGH_VALUE_MARKS: float = float(os.getenv("GEMINI_HIGH_VALUE_MARKS", "5"))
+# Second opinions from the stronger model. Off by default; they use its small daily allowance.
+GEMINI_REVIEW_ENABLED: bool = os.getenv("GEMINI_REVIEW_ENABLED", "false").strip().lower() == "true"
 GEMINI_USAGE_DIR: str = os.getenv("GEMINI_USAGE_DIR", str(_BACKEND_DIR / "gemini_usage"))
 # Paid-tier prices, for the notional cost only. A model missing here reports cost unknown.
 GEMINI_PRICES_USD_PER_MILLION: dict[str, dict[str, float]] = {
