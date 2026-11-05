@@ -47,7 +47,7 @@ HANDWRITING_DATASET_ACCESS_POLICY_CONFIRMED: bool = (
 )
 HANDWRITING_DATASET_VERSION: str = os.getenv("HANDWRITING_DATASET_VERSION", "v1").strip() or "v1"
 
-GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
 GEMINI_REQUEST_TIMEOUT_MS: int = max(
     1_000, int(os.getenv("GEMINI_REQUEST_TIMEOUT_MS", "120000"))
 )
