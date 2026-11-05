@@ -203,7 +203,8 @@ class TestOcrReuseAndFailure(unittest.TestCase):
         with patch.object(ocr_module, "gemini_generate_with_retry", side_effect=responses):
             result, _ = extract_text([b"page-one", b"page-two"], source_hash="")
 
-        self.assertEqual(result[(1, "A")]["mapping_status"], "AMBIGUOUS_PAGE_ORDER")
+        # An out-of-turn number is fine by itself; scanned pages are not in answer order.
+        self.assertEqual(result[(1, "A")]["mapping_status"], "MAPPED")
         self.assertEqual(result[(5, "A")]["mapping_status"], "AMBIGUOUS_DUPLICATE")
         unresolved = [value for key, value in result.items() if key[0] == 0]
         self.assertEqual(len(unresolved), 1)

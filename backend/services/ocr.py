@@ -174,7 +174,6 @@ def extract_text(
         on_stage("identifying_answers", "Mapping OCR text to question numbers and sub-parts")
     results: dict[tuple[int, str], dict] = {}
     total_illegible = 0
-    highest_question_seen = 0
     previous_page_tail: tuple[int, str] | None = None
     started_at = time.perf_counter()
 
@@ -231,7 +230,6 @@ def extract_text(
                 f"status={reader['status']}"
             )
 
-        page_max_question = highest_question_seen
         page_tail = None
         page_reference = _page_source_reference(page_number, page_hash, page_regions)
         for item_index, item in enumerate(answers, start=1):
@@ -259,21 +257,12 @@ def extract_text(
                     f"Unnumbered content may continue Q{previous_page_tail[0]}{previous_page_tail[1]}; "
                     "question mapping requires teacher validation."
                 )
-            elif q_num > 0 and page_max_question > 0 and q_num < page_max_question:
-                mapping_status = "AMBIGUOUS_PAGE_ORDER"
-                candidate_question_number = page_tail[0] if page_tail else (
-                    previous_page_tail[0] if previous_page_tail else None
-                )
-                regions.append(
-                    f"Question number Q{q_num}{sub_part} regresses from an earlier answer on this or a prior page; "
-                    "the page mapping requires teacher validation."
-                )
+            # Scanned page order is not answer order and students answer out of turn, so a
+            # lower number proves nothing. A misread number shows up as a duplicate below.
 
             tail_before_this_item = page_tail
-            if q_num > 0:
-                page_max_question = max(page_max_question, q_num)
-                if mapping_status == "MAPPED":
-                    page_tail = (q_num, sub_part)
+            if q_num > 0 and mapping_status == "MAPPED":
+                page_tail = (q_num, sub_part)
 
             answer_data = {
                 "extracted_text": extracted_text,
@@ -320,7 +309,6 @@ def extract_text(
 
         if page_tail:
             previous_page_tail = page_tail
-        highest_question_seen = max(highest_question_seen, page_max_question)
 
     if page_readers is not None:
         page_readers.extend(readers)
@@ -348,9 +336,9 @@ def extract_text(
 
 
 _SUB_PART_RE = re.compile(r"^(?:[A-Z]|[IVX]{1,4}|\d)$")
-# Share of dark pixels inside the margins. Set from the tuning sheets: pages below it
-# hold only show-through from the other side, or nothing.
-_MIN_DARK_INK_SHARE = 0.0003
+# Share of dark pixels inside the margins, ignoring ruled lines. Set from the tuning
+# sheets: show-through pages reach 0.082%, the sparsest real page 0.163%.
+_MIN_DARK_INK_SHARE = 0.0012
 
 
 def _clean_sub_part(value) -> str:
@@ -368,10 +356,16 @@ def _is_blank_or_show_through(image_bytes: bytes) -> bool:
             gray = np.asarray(image.convert("L"))
     except (UnidentifiedImageError, OSError, ValueError):
         return False
+    dark = gray < 110
+    # Ruled lines can sit anywhere on these sheets, so remove them rather than cropping.
+    keep = dark.copy()
+    for row in np.flatnonzero(dark.mean(axis=1) > 0.3):
+        keep[max(0, row - 4):row + 5, :] = False
+    for column in np.flatnonzero(dark.mean(axis=0) > 0.3):
+        keep[:, max(0, column - 4):column + 5] = False
     height, width = gray.shape[:2]
-    # Skip the printed margin lines at the top and left of the sheet.
-    inner = gray[int(height * 0.05):int(height * 0.97), int(width * 0.06):int(width * 0.97)]
-    return inner.size > 0 and float((inner < 110).mean()) < _MIN_DARK_INK_SHARE
+    inner = keep[int(height * 0.05):int(height * 0.97), int(width * 0.06):int(width * 0.97)]
+    return inner.size > 0 and float(inner.mean()) < _MIN_DARK_INK_SHARE
 
 
 def _page_answers(response, page_number: int) -> list:

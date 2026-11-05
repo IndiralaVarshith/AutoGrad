@@ -126,7 +126,8 @@ def _gemini_verification_reason(
     return "routine_quality_sample" if bucket < sample_rate else ""
 
 
-HEADER_SHARE_OF_FIRST_PAGE = 0.12
+SMALLEST_HEADER_SHARE = 0.12
+LOWEST_HEADER_LINE_SHARE = 0.4
 _OPTION_RE = re.compile(r"^\(?([A-Za-z])\)?[.)]?$")
 
 
@@ -135,6 +136,17 @@ def _selected_option(text: str, labels: set[str]) -> str:
     match = _OPTION_RE.match(text.strip())
     letter = match.group(1).upper() if match else ""
     return letter if letter in labels else ""
+
+
+def _header_end(page_image) -> float:
+    """Where the header ends, as a share of page height: the top ruled line, if any."""
+    import numpy as np
+
+    gray = np.asarray(page_image.convert("L"))
+    limit = int(gray.shape[0] * LOWEST_HEADER_LINE_SHARE)
+    rows = np.flatnonzero((gray[:limit] < 110).mean(axis=1) > 0.5)
+    line = (int(rows[-1]) + 1) / gray.shape[0] if rows.size else 0.0
+    return max(SMALLEST_HEADER_SHARE, line)
 
 
 def _crop_evidence_regions(ocr_pages: list, page_image_parts: list, region_ids: list[str]) -> list[bytes]:
@@ -168,8 +180,8 @@ def _crop_evidence_regions(ocr_pages: list, page_image_parts: list, region_ids: 
                 bbox = list(getattr(region, "bbox", []) or [])
                 if len(bbox) != 4:
                     continue
-                if page_number == 1 and float(bbox[1]) < HEADER_SHARE_OF_FIRST_PAGE:
-                    continue  # the student's name and ID sit here
+                if float(bbox[1]) < _header_end(page_image):
+                    continue  # the student's name and ID can head any scanned page
                 x0, y0, x1, y1 = [max(0.0, min(1.0, float(v))) for v in bbox]
                 left, right = sorted((int(x0 * width), int(x1 * width)))
                 top, bottom = sorted((int(y0 * height), int(y1 * height)))

@@ -224,6 +224,22 @@ def test_gemini_crops_never_include_the_page_header():
     assert len(pipeline_module._crop_evidence_regions([page], [image], ["r1"])) == 1
 
 
+def test_crop_filter_finds_a_low_header_line_on_any_page():
+    from PIL import ImageDraw
+
+    image = Image.new("RGB", (500, 500), "white")
+    ImageDraw.Draw(image).line((0, 125, 500, 125), fill="black", width=3)  # header ends at 25%
+    out = io.BytesIO()
+    image.save(out, format="PNG")
+    page = OCRPageResult(page_number=3, width=500, height=500, status="PROCESSED", regions=[
+        OCRRegion(region_id="name", page_number=3, bbox=[0.1, 0.15, 0.9, 0.2], extracted_text="Name"),
+        OCRRegion(region_id="answer", page_number=3, bbox=[0.1, 0.5, 0.9, 0.6], extracted_text="answer"),
+    ])
+    pages = [b"", b"", out.getvalue()]
+    assert pipeline_module._crop_evidence_regions([page], pages, ["name"]) == []
+    assert len(pipeline_module._crop_evidence_regions([page], pages, ["answer"])) == 1
+
+
 def test_router_stops_at_the_cap():
     def fake_gemini(**_):
         return gemini_reply(1.0)

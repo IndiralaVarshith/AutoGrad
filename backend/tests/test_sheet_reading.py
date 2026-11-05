@@ -155,7 +155,8 @@ def page_image(ink=False):
     draw.line((30, 0, 30, 1400), fill=0, width=6)  # the printed margin
     draw.line((0, 30, 1000, 30), fill=0, width=6)
     if ink:
-        draw.rectangle((200, 200, 800, 300), fill=20)
+        for x in range(200, 800, 40):  # short strokes, like handwriting
+            draw.rectangle((x, 200, x + 20, 300), fill=20)
     out = io.BytesIO()
     image.save(out, "JPEG")
     return out.getvalue()
@@ -183,3 +184,9 @@ def test_consecutive_pieces_on_a_page_merge_but_pages_do_not():
     merged = [v for k, v in results.items() if k == (25, "")][0]
     assert "first\nsecond" in merged["extracted_text"]
     assert merged["mapping_status"] == "AMBIGUOUS_DUPLICATE"
+
+
+def test_out_of_turn_number_maps_but_a_repeat_does_not():
+    results, _, _ = read_pages([reply((27, "late")), reply((22, "early"), (27, "again"))])
+    assert results[(22, "")]["mapping_status"] == "MAPPED"
+    assert results[(27, "")]["mapping_status"] == "AMBIGUOUS_DUPLICATE"

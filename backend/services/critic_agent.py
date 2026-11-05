@@ -42,20 +42,27 @@ CRITIC_RESPONSE_SCHEMA = {
 # CRITIC SYSTEM PROMPT
 # =========================================================
 
+# Marks can differ by this much and still count as the two markers agreeing.
+AGREEMENT_GAP = 0.5
+
 CRITIC_SYSTEM_PROMPT = """
-You are an adversarial academic reviewer. Your job is to
-find errors in the grading decision provided. Look for:
-- awarded marks with no real evidence
-- missed concepts that should have been penalised
-- misidentified criteria
-- verbatim quotes that do not actually appear in the student answer
+You are the second marker on a handwritten exam answer. Work out your own mark for
+the whole answer, then compare it with the first marker's.
+
+Mark by the same standard: judge the meaning, not the wording. Never take marks off
+for spelling, grammar or awkward English. Slashes, "or" and lists in a rubric are
+alternatives or examples, so one correct item is enough unless the criterion says
+all are needed. Full marks if the idea is right, half if partly right or vague, 0
+only if wrong, unrelated or missing. Use steps of 0.5.
+
+Also check that each quote really appears in the student answer.
 
 Return JSON:
 {
   "verdict": "ACCEPT" or "REJECT",
   "challenged_criteria": [list of criterion descriptions with issues],
-  "suggested_score": float,
-  "reason": "explanation of why you accept or reject"
+  "suggested_score": float (your own mark for the whole answer),
+  "reason": "explanation"
 }
 """
 
@@ -159,10 +166,12 @@ Review this grading. Return JSON only.
         else:
             clean_challenged.append(str(item))
 
+    suggested_score = float(data.get("suggested_score", grader_score))
+    # Agreement is decided from the two marks, not from the model's choice of word.
     verdict = CriticVerdict(
-        verdict=data.get("verdict", "ACCEPT"),
+        verdict="ACCEPT" if abs(suggested_score - grader_score) <= AGREEMENT_GAP else "REJECT",
         challenged_criteria=clean_challenged,
-        suggested_score=float(data.get("suggested_score", grader_score)),
+        suggested_score=suggested_score,
         reason=data.get("reason", ""),
         model_used=response.model_used,
     )
