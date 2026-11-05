@@ -173,6 +173,35 @@ export default function Setup({ onExamApproved, onExamIdChange, initialExamId = 
     }
   };
 
+  const handleDraftFromKey = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      setLoading(true);
+      setError('');
+      const res = await api.draftCriteria(examId.trim(), file);
+      setRubricQuestions(res.questions);
+      setExtractedSummary((prev) => ({
+        ...prev,
+        warnings: [...(prev?.warnings || []), ...res.problems],
+      }));
+      setHasUnsavedEdits(true);
+      setQuestionsChecked(false);
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || 'Could not draft criteria from this answer key.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCorrectOptionChange = (qIdx, val) => {
+    const updated = [...rubricQuestions];
+    updated[qIdx] = { ...updated[qIdx], correct_option: val };
+    setRubricQuestions(updated);
+    setHasUnsavedEdits(true);
+  };
+
   // Step 2: Inline rubric editing
   const handleCriterionChange = (qIdx, cIdx, field, val) => {
     const updated = [...rubricQuestions];
@@ -596,6 +625,17 @@ export default function Setup({ onExamApproved, onExamIdChange, initialExamId = 
             </div>
           </div>
 
+          <label className="block mb-4 text-xs font-mono text-[#8c9099]">
+            Draft criteria from an answer key (CSV). You can edit everything before approving.
+            <input
+              type="file"
+              accept=".txt,.csv"
+              onChange={handleDraftFromKey}
+              disabled={loading}
+              className="block mt-1 text-xs"
+            />
+          </label>
+
           {/* Question List */}
           <div className="space-y-4">
             {rubricQuestions.map((q, qIdx) => {
@@ -623,6 +663,21 @@ export default function Setup({ onExamApproved, onExamIdChange, initialExamId = 
                       />
                     </div>
                     <div className="flex items-center gap-1.5 font-mono text-xs shrink-0">
+                      {q.question_format === 'MCQ' && (
+                        <label className="text-[#717680] text-[11px]">
+                          Correct:{' '}
+                          <select
+                            value={q.correct_option || ''}
+                            onChange={(e) => handleCorrectOptionChange(qIdx, e.target.value)}
+                            className="bg-[#0c0d0e] border border-[#25282f] rounded px-1 py-0.5 text-xs text-[#ededed] focus:outline-none"
+                          >
+                            <option value="">Not set</option>
+                            {(q.options || []).map((option) => (
+                              <option key={option.label} value={option.label}>{option.label}</option>
+                            ))}
+                          </select>
+                        </label>
+                      )}
                       <span className="text-[#717680] text-[11px]">Marks:</span>
                       <input
                         type="number"

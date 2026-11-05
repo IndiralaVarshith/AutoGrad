@@ -550,6 +550,9 @@ def _load_rubric_bundle(
                 sub_part=str(q.get("sub_part", "")),
                 choice_group=str(q.get("choice_group", "")),
                 is_or_choice=bool(q.get("is_or_choice", False)),
+                question_format=str(q.get("question_format", "")),
+                options=q.get("options") or [],
+                correct_option=str(q.get("correct_option", "")),
                 section=str(q.get("section", q.get("section_id", ""))),
                 section_attempt_count=q.get(
                     "section_attempt_count",

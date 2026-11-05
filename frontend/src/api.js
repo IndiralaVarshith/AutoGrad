@@ -28,6 +28,16 @@ export const api = {
     return res.data;
   },
 
+  // Draft criteria from an answer key. Nothing is approved until the teacher approves it.
+  draftCriteria: async (examId, answerKeyFile) => {
+    const formData = new FormData();
+    formData.append('answer_key', answerKeyFile);
+    const res = await client.post(`/exam/${encodeURIComponent(examId)}/rubric/draft-criteria`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return res.data;
+  },
+
   // List all configured exams
   getExams: async () => {
     const res = await client.get('/exam');

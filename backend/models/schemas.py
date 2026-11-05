@@ -35,6 +35,7 @@ class QuestionRubric(BaseModel):
     attempt_instruction: str = ""
     question_format: str = ""  # MCQ | SHORT_ANSWER | "" when not known
     options: list[dict[str, str]] = Field(default_factory=list)  # [{"label", "text"}]
+    correct_option: str = ""  # MCQ only: the approved option label
     has_figure: bool = False
     figure_page: int | None = None
 

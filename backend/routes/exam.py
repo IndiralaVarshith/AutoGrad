@@ -25,6 +25,12 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 
 from config import OLLAMA_PAPER_READER_MODEL, get_firestore
 from services.router import NoSuitableModelError, model_router
+from services.criteria_draft import (
+    AnswerKeyError,
+    approval_problems,
+    draft_criteria,
+    parse_answer_key,
+)
 from services.db import db_service
 from services.rubric_cache import (
     compute_doc_fingerprint,
@@ -548,6 +554,35 @@ def _paper_response(
 
 
 # =========================================================
+# POST /exam/{exam_id}/rubric/draft-criteria
+# =========================================================
+
+@router.post("/{exam_id}/rubric/draft-criteria")
+async def draft_rubric_criteria(exam_id: str, answer_key: UploadFile = File(...)):
+    """Draft criteria from an answer key. Nothing is saved or approved here."""
+    paper = _load_saved_paper(exam_id.strip())
+    if not paper:
+        raise HTTPException(404, "Upload the question paper for this exam first.")
+    try:
+        key, problems = parse_answer_key((await answer_key.read()).decode("utf-8-sig"))
+    except UnicodeDecodeError:
+        raise HTTPException(422, "The answer key is not a UTF-8 text file.")
+    except AnswerKeyError as error:
+        raise HTTPException(422, str(error))
+
+    questions, draft_problems = draft_criteria(paper.get("questions", []), key)
+    problems = problems + draft_problems
+    return {
+        "success": True,
+        "exam_id": exam_id.strip(),
+        "approved": False,
+        "questions": questions,
+        "problems": problems,
+        "needs_teacher_review": True,
+    }
+
+
+# =========================================================
 # POST /exam/rubric/approve
 # =========================================================
 # IMPORTANT: This route MUST be registered BEFORE GET /{exam_id}
@@ -600,14 +635,11 @@ async def approve_rubric(request: RubricApproveRequest):
                 ),
             )
 
-        without_criteria = [
-            f"Q{q.question_number}{q.sub_part}" for q in request.rubric if not q.criteria
-        ]
-        if without_criteria:
+        problems = approval_problems(request.rubric)
+        if problems:
             raise HTTPException(
                 422,
-                "These questions have no marking criteria yet: "
-                f"{', '.join(without_criteria)}. Add criteria before approving.",
+                f"Fix these before approving: {' '.join(problems)} Nothing was saved.",
             )
 
         if not db_service.is_connected():
