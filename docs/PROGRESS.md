@@ -42,7 +42,10 @@ Branch `wip`. Update after every step so a new session can resume.
   - `tune3-*` (d9ae1b1, gemma grader): qwen reader 203 right and unflagged, 34.6% flagged, silent wrong 25. gemma reader 193, 36.9%, silent wrong 24. Unflagged full marks 34 right, 4 wrong; partial marks 35 right, 39 wrong.
   - `tune4-final-settings` (0c4456c, adds `PARTIAL_MARK`): MCQ 86.9%, silent wrong 3. Short unflagged 13 of 14 agree, 85.9% flagged, silent wrong 1. All answers flagged 45.7%. 216 s/sheet.
   - Gemini: during `tune4` a quota-type response at 21:15:53 IST set a stored block in `/tmp/autograde_gemini_provider_state.json`; no call returned a result. At least one request reached Google; whether it carried an answer crop is not recorded. Exact cause not known (one possibility: the verification path prefers `gemini-3.1-pro-preview`, which may have no free quota). Clearing it (`scripts/clear_gemini_quota_block.py`) needs the account owner to confirm the quota is back. Not cleared. `--gemini` now refuses to start when blocked.
-- [ ] Final run on the 40 report sheets, report written: `--split report --name final --confirm-final`, local only, from a clean tree.
+- [x] Final run on the 40 report sheets, report in `docs/eval/final.md`. One run at b3025af, local only, no failed sheets, 246 s/sheet. MCQ exact 80.0% of all, 98.0% of unflagged, 13 silent wrong. Short within 0.5: 11.8% of all, 88.7% of unflagged, 86.7% flagged, 7 silent wrong. All answers flagged 48.9%. Always 1.5 scores 87.1%. All 40 sheets need review.
+
+## Open
+- Gemini-assisted numbers do not exist: the stored quota block is still in place and needs the account owner's decision. A new run on the report sheets would need `--rerun-reason`.
 
 ## Notes
 - `c_ocr` is fixed at 0, which caps confidence at 0.80 under the 0.85 auto-accept line, so every answer flags today. A3 must replace this.
