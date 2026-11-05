@@ -1,0 +1,5 @@
+# Only for GRADING_ENGINE=local, the old path. Not needed by default.
+-r requirements.txt
+pix2text>=1.0.0
+rapidocr==3.9.2
+chromadb>=0.4.24

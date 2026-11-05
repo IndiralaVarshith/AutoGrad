@@ -23,6 +23,7 @@ from models.schemas import (
     ReviewConfirmRequest,
     ReviewEditRequest,
 )
+import config
 from pipeline import regrade_question_text
 from services.db import db_service
 from services.handwriting_dataset import save_teacher_validated_candidate
@@ -426,6 +427,11 @@ async def review_ocr_page(req: OCRPageReviewRequest):
 @router.post("/ocr-regrade")
 async def regrade_validated_ocr(req: OCRQuestionRegradeRequest):
     """Re-run the existing grading chain on teacher-validated text, without OCR."""
+    if config.GRADING_ENGINE == "gemini":
+        raise HTTPException(
+            status_code=410,
+            detail="Automatic re-marking is not used here. Edit the text and marks directly.",
+        )
     db = get_firestore()
     if db is None:
         raise HTTPException(status_code=503, detail="Firestore is unavailable.")

@@ -35,6 +35,7 @@ from config import (
     OLLAMA_GRADER_MODEL,
     OLLAMA_PAPER_READER_MODEL,
 )
+import config
 from services.router import model_router
 
 
@@ -77,20 +78,26 @@ app.include_router(export.router)
 def root():
     """Service status, active AI provider, and endpoint overview."""
     db = get_firestore()
-    ollama_health = model_router.ollama.check_health()
+    local_status = {}
+    if config.GRADING_ENGINE != "gemini":
+        ollama_health = model_router.ollama.check_health()
+        local_status = {
+            "ai_provider": AI_PROVIDER,
+            "ollama": {
+                "online": ollama_health.get("online", False),
+                "simple_model": OLLAMA_SIMPLE_MODEL,
+                "complex_model": OLLAMA_COMPLEX_MODEL,
+                "sheet_reader_model": OLLAMA_SHEET_READER_MODEL,
+                "grader_model": OLLAMA_GRADER_MODEL,
+                "installed_models": ollama_health.get("models", []),
+            },
+        }
     return {
         "service": "AutoGrade AI Grading System",
         "status": "online",
         "version": "2.0.0",
-        "ai_provider": AI_PROVIDER,
-        "ollama": {
-            "online": ollama_health.get("online", False),
-            "simple_model": OLLAMA_SIMPLE_MODEL,
-            "complex_model": OLLAMA_COMPLEX_MODEL,
-            "sheet_reader_model": OLLAMA_SHEET_READER_MODEL,
-            "grader_model": OLLAMA_GRADER_MODEL,
-            "installed_models": ollama_health.get("models", []),
-        },
+        "grading_engine": config.GRADING_ENGINE,
+        **local_status,
         "gemini_model": GEMINI_MODEL,
         "firestore_connected": db is not None,
         "endpoints": {
@@ -131,6 +138,8 @@ async def generate_rubric(
     Generate rubric for root UI (app.js) using the local ModelRouter.
     Routes to Gemma 4 E4B for visual scanned question papers.
     """
+    if config.GRADING_ENGINE == "gemini":
+        raise HTTPException(410, "This old route is retired. Use POST /exam/setup.")
     if not question_paper.filename:
         raise HTTPException(400, "Question paper is required.")
 
