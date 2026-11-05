@@ -7,13 +7,14 @@ export default function ConfidenceBadge({ routing, score, size = 'md' }) {
   let style = 'bg-[#181a1d] text-[#8c9099] border-[#25282e]';
   let label = normRouting || 'PENDING';
 
-  if (normRouting === 'AUTO_ACCEPT' || (numScore !== null && numScore >= 0.85)) {
+  // The decision comes first. A high confidence never makes a flagged answer look accepted.
+  if (normRouting === 'AUTO_ACCEPT' || (!normRouting && numScore !== null && numScore >= 0.85)) {
     style = 'bg-[#112217] text-[#4ade80] border-[#1b3825]';
     label = 'Accepted';
-  } else if (normRouting === 'FLAGGED' || (numScore !== null && numScore >= 0.65)) {
+  } else if (normRouting === 'FLAGGED' || (!normRouting && numScore !== null && numScore >= 0.65)) {
     style = 'bg-[#241a10] text-[#f59e0b] border-[#3c2a17]';
     label = 'Flagged';
-  } else if (normRouting === 'MANUAL' || (numScore !== null && numScore < 0.65)) {
+  } else if (normRouting === 'MANUAL' || (!normRouting && numScore !== null && numScore < 0.65)) {
     style = 'bg-[#261212] text-[#ef4444] border-[#441d1d]';
     label = 'Review Required';
   }
