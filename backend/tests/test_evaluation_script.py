@@ -213,6 +213,17 @@ def test_second_final_run_needs_a_stated_reason(tmp_path, monkeypatch):
     assert script.guard_report_split(args)["reasons"] == ["crash"]
 
 
+def test_gemini_run_refuses_when_gemini_is_blocked(monkeypatch):
+    from services import provider_registry as registry
+
+    def blocked():
+        raise registry.GeminiRateLimitError("Gemini quota is blocked.")
+
+    monkeypatch.setattr(registry.gemini_credentials, "select_credential", blocked)
+    with pytest.raises(SystemExit, match="Refusing --gemini"):
+        script.require_gemini_ready()
+
+
 def test_real_firestore_host_is_refused(monkeypatch):
     monkeypatch.setenv("FIRESTORE_EMULATOR_HOST", "firestore.googleapis.com:443")
     args = script.parse_args(["--split", "tune", "--name", "x"])

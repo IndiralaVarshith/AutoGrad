@@ -34,12 +34,15 @@ Branch `wip`. Update after every step so a new session can resume.
 - [x] A2 Read an answer sheet: `OLLAMA_SHEET_READER_MODEL` (also shown at `GET /` and on the Upload result), `PaperResult.page_readers`, unmatched numbers saved as `NOT_ON_PAPER`, unreadable pages flag, faint pages skipped, `local_only` scope blocks automatic Gemini escalation.
 - [x] A3 Grade each answer: MCQ by code, `route_answer` replaces the stuck `c_ocr` gate, flagged drafts live in `suggested_score` and only count once confirmed, failed grades flag one answer, Gemini only on flagged answers with `GEMINI_MAX_CALLS_PER_RUN` (default 20) and header-free crops. Baseline e2e failures fixed.
 - [x] A4 Evaluation script: `backend/scripts/evaluate_grading.py`, metrics in `services/evaluation.py`, split in `backend/evaluation/split.json`. Reports in `docs/eval/`, transcripts in git-ignored `backend/evaluation/runs/`. Report split needs `--confirm-final` and committed code; a rerun needs `--rerun-reason`.
-- [ ] A5 Tune on 10 sheets, compare two models. In progress:
+- [x] A5 Tune on 10 sheets, compare two models. Kept: reader `qwen3.5:4b`, grader `gemma4:e4b`, only full marks auto-accept.
   - Reading only (`read-*`, before later reader rules): gemma MCQ 88.9%, short coverage 93.9%, 41 s/sheet. qwen MCQ 98.0%, coverage 89.9%, 76 s/sheet.
-  - `tune1-*` (commit 0bca73e): gemma MCQ 78.8%, short within 0.5 of all 27.3%, flagged 33.1%, silent wrong 48. qwen MCQ 86.9%, short 22.2%, flagged 29.7%, silent wrong 48. Cause: grader zeros on answers the teacher credited (52 of 56 written-answer zeros wrong; teacher gave 0 to 8 of 99).
-  - Commit 53ae81f: generous marking standard in both prompts; a written answer scored 0 flags as `ZERO_ON_WRITTEN_ANSWER`.
-  - `tune2-qwen35`, then `tune2-gemma4` running at 53ae81f. Next: compare, keep the better reader, set it as the default, commit.
-- [ ] Final run on the 40 report sheets, report written: `--split report --name final --confirm-final --gemini` from a clean tree. Run all tests on the emulator first.
+  - `tune1-*` (0bca73e): gemma MCQ 78.8%, short within 0.5 of all 27.3%, flagged 33.1%, silent wrong 48. qwen MCQ 86.9%, short 22.2%, flagged 29.7%, silent wrong 48. Cause: grader zeros on answers the teacher credited (52 of 56 written-answer zeros wrong; teacher gave 0 to 8 of 99).
+  - `tune2-*` (53ae81f, generous prompts, `ZERO_ON_WRITTEN_ANSWER`): silent wrong 11-12, but the qwen grader still zeroed answers, short 23.2-26.3%.
+  - Grader experiment, 87 answers, text fixed: qwen 33.3%, qwen + examples 39.1%, gemma 58.6%, gemma + examples 59.8%. Examples dropped. Always 1.5 scores 94.3%, so the 0.5 window rewards leniency; reports now show this baseline.
+  - `tune3-*` (d9ae1b1, gemma grader): qwen reader 203 right and unflagged, 34.6% flagged, silent wrong 25. gemma reader 193, 36.9%, silent wrong 24. Unflagged full marks 34 right, 4 wrong; partial marks 35 right, 39 wrong.
+  - `tune4-final-settings` (0c4456c, adds `PARTIAL_MARK`): MCQ 86.9%, silent wrong 3. Short unflagged 13 of 14 agree, 85.9% flagged, silent wrong 1. All answers flagged 45.7%. 216 s/sheet.
+  - Gemini: during `tune4` a quota-type response at 21:15:53 IST set a stored block in `/tmp/autograde_gemini_provider_state.json`; no call returned a result. At least one request reached Google; whether it carried an answer crop is not recorded. Exact cause not known (one possibility: the verification path prefers `gemini-3.1-pro-preview`, which may have no free quota). Clearing it (`scripts/clear_gemini_quota_block.py`) needs the account owner to confirm the quota is back. Not cleared. `--gemini` now refuses to start when blocked.
+- [ ] Final run on the 40 report sheets, report written: `--split report --name final --confirm-final`, local only, from a clean tree.
 
 ## Notes
 - `c_ocr` is fixed at 0, which caps confidence at 0.80 under the 0.85 auto-accept line, so every answer flags today. A3 must replace this.

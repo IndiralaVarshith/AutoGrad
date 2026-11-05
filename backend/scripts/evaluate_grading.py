@@ -100,6 +100,16 @@ def set_environment(args: argparse.Namespace) -> None:
         os.environ["OLLAMA_SHEET_READER_MODEL"] = args.reader
 
 
+def require_gemini_ready() -> None:
+    """A blocked Gemini would leave a 'with Gemini' column that only copies the local one."""
+    from services.provider_registry import GeminiCredentialError, GeminiRateLimitError, gemini_credentials
+
+    try:
+        gemini_credentials.select_credential()
+    except (GeminiCredentialError, GeminiRateLimitError) as error:
+        sys.exit(f"Refusing --gemini: {error} Run without it for local-only numbers.")
+
+
 def sheet_pages(student: str) -> list[bytes]:
     import pymupdf
 
@@ -175,6 +185,8 @@ def main(argv=None) -> None:
     )
     from services.router import model_router
 
+    if args.gemini:
+        require_gemini_ready()
     students = load_split(EVALUATION / "split.json")[args.split]
     if args.limit:
         students = students[: args.limit]
