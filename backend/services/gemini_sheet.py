@@ -30,7 +30,7 @@ from services.gemini_client import (
 )
 from services.gemini_paper import question_units
 
-SHEET_PROMPT_VERSION = "gemini-sheet-v1"
+SHEET_PROMPT_VERSION = "gemini-sheet-v2"
 
 # Flag reasons.
 UNREADABLE = "UNREADABLE"
@@ -45,6 +45,7 @@ NO_KEY = "NO_KEY"
 DUPLICATE_ANSWER = "DUPLICATE_ANSWER"
 NUMBER_INFERRED = "NUMBER_INFERRED"
 ATTEMPT_RULE = "ATTEMPT_RULE"
+ZERO_ON_WRITTEN = "ZERO_ON_WRITTEN"
 SHEET_NOT_READ = "SHEET_NOT_READ"
 
 _NO_SUGGESTION = {UNREADABLE, MISSING, SHEET_NOT_READ, INVALID_MARK, NO_KEY, UNCLEAR_OPTION}
@@ -111,6 +112,12 @@ Reading:
 Marking written answers, against the rubric only:
 - Mark the ideas, as a fair teacher would. Spelling and grammar lose no marks. Any wording that
   shows the idea earns credit.
+- The rubric's points show what a good answer covers. They are not a word list. An answer in the
+  student's own words, with a different valid example or a shorter explanation, earns the marks.
+- Give the benefit of the doubt. If the answer shows the student understands the main idea, award
+  full marks even when it is brief or imperfect.
+- Award partial marks only when an important part of the question is truly missing or wrong.
+- Award 0 only when the answer is wrong or does not address the question.
 - Award marks in steps of 0.5, from 0 up to the question's maximum.
 - evidence_quote is copied exactly from read_text. Leave it empty only when you award 0.
 - Do not mark multiple-choice questions. Leave marks_awarded null for them.
@@ -272,6 +279,8 @@ def _written_grade(rubric: QuestionRubric, answer: SheetAnswer) -> tuple[float |
         flags.append(EVIDENCE_NOT_FOUND)
     if 0 < marks < maximum and maximum >= config.GEMINI_HIGH_VALUE_MARKS:
         flags.append(PARTIAL_HIGH_VALUE)
+    if marks == 0 and config.GEMINI_FLAG_ZERO_ON_WRITTEN:
+        flags.append(ZERO_ON_WRITTEN)
     return marks, flags
 
 

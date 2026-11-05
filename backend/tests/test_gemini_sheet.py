@@ -126,7 +126,17 @@ def test_low_grading_or_reading_confidence_is_flagged():
         assert g.flag_reason == "LOW_CONFIDENCE" and g.final_score == 0 and g.suggested_score == 2
 
 
-def test_partial_on_high_value_is_flagged_but_not_on_low_value():
+def test_by_default_only_full_marks_stand_without_a_teacher():
+    grades, _ = grade_one([written(marks=2)], answer(marks=1.0))
+    assert grades["2"].flag_reason == "PARTIAL_HIGH_VALUE" and grades["2"].final_score == 0
+    grades, _ = grade_one([written(marks=2)], answer(marks=0.0, quote=""))
+    assert grades["2"].flag_reason == "ZERO_ON_WRITTEN" and grades["2"].suggested_score == 0
+    grades, _ = grade_one([written(marks=2)], answer(marks=2.0))
+    assert grades["2"].routing == "AUTO_ACCEPT" and grades["2"].final_score == 2
+
+
+def test_partial_on_high_value_is_flagged_but_not_on_low_value(monkeypatch):
+    monkeypatch.setattr(config, "GEMINI_HIGH_VALUE_MARKS", 5)
     grades, _ = grade_one([written(marks=5)], answer(marks=3.0))
     assert grades["2"].flag_reason == "PARTIAL_HIGH_VALUE" and grades["2"].suggested_score == 3
     grades, _ = grade_one([written(marks=2)], answer(marks=1.0))
@@ -142,7 +152,8 @@ def test_impossible_marks_are_flagged_never_clipped(marks):
     assert g.flag_reason == "INVALID_MARK" and g.final_score == 0 and g.suggested_score is None
 
 
-def test_evidence_must_be_in_the_answer():
+def test_evidence_must_be_in_the_answer(monkeypatch):
+    monkeypatch.setattr(config, "GEMINI_FLAG_ZERO_ON_WRITTEN", False)
     grades, _ = grade_one([written()], answer(quote="words the student never wrote at all"))
     assert grades["2"].flag_reason == "EVIDENCE_NOT_FOUND" and grades["2"].final_score == 0
     grades, _ = grade_one([written()], answer(quote=""))

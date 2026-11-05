@@ -73,8 +73,13 @@ GEMINI_RETRY_BASE_SECONDS: float = float(os.getenv("GEMINI_RETRY_BASE_SECONDS", 
 GEMINI_RETRY_MAX_WAIT_SECONDS: float = float(os.getenv("GEMINI_RETRY_MAX_WAIT_SECONDS", "90"))
 # Below this, Gemini's own confidence sends an answer to the teacher.
 GEMINI_MIN_CONFIDENCE: float = float(os.getenv("GEMINI_MIN_CONFIDENCE", "0.8"))
-# Partial marks on a question worth this much or more go to the teacher.
-GEMINI_HIGH_VALUE_MARKS: float = float(os.getenv("GEMINI_HIGH_VALUE_MARKS", "5"))
+# Partial marks on a question worth this much or more go to the teacher. 0 means every
+# question: on the tuning sheets, partial marks were right far less often than full marks.
+GEMINI_HIGH_VALUE_MARKS: float = float(os.getenv("GEMINI_HIGH_VALUE_MARKS", "0"))
+# A zero on an answer the student did write goes to the teacher, for the same reason.
+GEMINI_FLAG_ZERO_ON_WRITTEN: bool = (
+    os.getenv("GEMINI_FLAG_ZERO_ON_WRITTEN", "true").strip().lower() == "true"
+)
 # Second opinions from the stronger model. Off by default; they use its small daily allowance.
 GEMINI_REVIEW_ENABLED: bool = os.getenv("GEMINI_REVIEW_ENABLED", "false").strip().lower() == "true"
 # Largest single file. Gemini refuses inline requests over about 20 MB.

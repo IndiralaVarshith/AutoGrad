@@ -66,7 +66,8 @@ Open <http://localhost:5173>. Use `localhost`, not `127.0.0.1`, so the sign-in c
 ### Why an answer gets flagged
 
 Unreadable, no matching question, no answer found, Gemini unsure (under `GEMINI_MIN_CONFIDENCE`),
-partial marks on a question worth `GEMINI_HIGH_VALUE_MARKS` or more, quoted evidence not in the answer,
+partial marks on a question worth `GEMINI_HIGH_VALUE_MARKS` or more (0 means all questions), a zero on
+a written answer (`GEMINI_FLAG_ZERO_ON_WRITTEN`), quoted evidence not in the answer,
 an impossible mark, an unclear option, no number written, more answers than the paper allows, or the
 sheet could not be read. Flagged marks do not count toward the total until the teacher decides.
 
