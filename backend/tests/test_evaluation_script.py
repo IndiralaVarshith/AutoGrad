@@ -15,9 +15,8 @@ from services.evaluation import (
     load_split,
     load_teacher_marks,
     render_report,
-    score_reading,
+    most_common_mark_baseline,
     score_run,
-    view,
 )
 
 # Another installed package also owns the name "scripts", so load this file by path.
@@ -121,12 +120,6 @@ def test_app_marking_where_teacher_gave_nothing_is_visible():
     assert result["short"]["no_teacher_mark_but_app_marked"] == 1
 
 
-def test_local_view_ignores_gemini_clearing_a_flag():
-    cleared = {"routing": "AUTO_ACCEPT", "local_routing": "FLAGGED", "flag_reason": ""}
-    p = paper(q21={**cleared, "final_score": 2.0})
-    assert score(p, teacher_sheet(), local_only=True)["short"]["flagged"] == 1
-    assert score(p, teacher_sheet(), local_only=False)["short"]["flagged"] == 0
-    assert view(p["questions"][20], local_only=True) == (True, None)
 
 
 def test_mcq_totals_compare_under_both_keys():
@@ -147,12 +140,6 @@ def test_teacher_file_parsing(tmp_path):
     assert [sheet.short[q] for q in range(21, 28)] == [2.0, 1.5, 0.0, None, None, None, None]
 
 
-def test_reading_score():
-    read = {"answers": {"1": "A", "2": "(a)", "3": "zz", "21": "text"}, "unmapped": 1, "seconds": 10}
-    sheet = teacher_sheet(mcq={4: None}, short={22: None})
-    result = score_reading({"Student_1": read}, {"Student_1": sheet})
-    assert result["mcq_correct"] == 2 and result["mcq_total"] == 19
-    assert result["short_marked_with_text"] == 1 and result["unmapped"] == 1
 
 
 def test_constant_mark_baseline_shows_a_lenient_window():
@@ -163,8 +150,9 @@ def test_constant_mark_baseline_shows_a_lenient_window():
 
 def test_report_renders():
     result = score(paper(q3={"selected_option": "B"}), teacher_sheet())
-    text = render_report("Title", {"Split": "tune"}, result, None)
+    text = render_report("Title", {"Split": "tune"}, result, result)
     assert "Silent wrong marks" in text and "Student_1" in text and "Q3" in text
+    assert "mean absolute error" in text and "Earlier local models" in text
 
 
 # ---------- split and guards ----------
@@ -186,12 +174,6 @@ def test_report_split_needs_confirmation(tmp_path, monkeypatch):
     assert not (tmp_path / "lock.json").exists()
 
 
-def test_report_split_refuses_limit_and_read_only(tmp_path, monkeypatch):
-    monkeypatch.setattr(script, "FINAL_LOCK", tmp_path / "lock.json")
-    with pytest.raises(SystemExit, match="limit"):
-        script.main(["--split", "report", "--name", "x", "--confirm-final", "--limit", "2"])
-    with pytest.raises(SystemExit, match="tuning"):
-        script.main(["--split", "report", "--name", "x", "--confirm-final", "--read-only"])
 
 
 def test_report_split_refuses_uncommitted_code(tmp_path, monkeypatch):
@@ -213,22 +195,12 @@ def test_second_final_run_needs_a_stated_reason(tmp_path, monkeypatch):
     assert script.guard_report_split(args)["reasons"] == ["crash"]
 
 
-def test_gemini_run_refuses_when_gemini_is_blocked(monkeypatch):
-    from services import provider_registry as registry
-
-    def blocked():
-        raise registry.GeminiRateLimitError("Gemini quota is blocked.")
-
-    monkeypatch.setattr(registry.gemini_credentials, "select_credential", blocked)
-    with pytest.raises(SystemExit, match="Refusing --gemini"):
-        script.require_gemini_ready()
 
 
 def test_real_firestore_host_is_refused(monkeypatch):
     monkeypatch.setenv("FIRESTORE_EMULATOR_HOST", "firestore.googleapis.com:443")
-    args = script.parse_args(["--split", "tune", "--name", "x"])
     with pytest.raises(SystemExit, match="not a local"):
-        script.set_environment(args)
+        script.set_environment()
 
 
 def test_grading_code_never_opens_corrected_sheets_or_teacher_marks():
@@ -237,8 +209,39 @@ def test_grading_code_never_opens_corrected_sheets_or_teacher_marks():
     strings = {node.value for node in ast.walk(tree)
                if isinstance(node, ast.Constant) and isinstance(node.value, str) and len(node.value) < 60}
     assert "Student_Pdf" in strings and "Corrected_Pdf" not in strings
-    for path in ("pipeline.py", "services/ocr.py", "services/grading_agent.py", "services/critic_agent.py"):
+    for path in ("services/gemini_sheet.py", "services/gemini_paper.py", "services/gemini_client.py", "routes/upload.py"):
         text = (Path(script.BACKEND) / path).read_text()
         assert "Corrected_Pdf" not in text and "Teacher_manual_marks" not in text
     # Teacher marks are loaded only after the grading loop.
     assert source.index("for index, student in enumerate(students") < source.index('load_teacher_marks(DATA')
+
+
+# ---------- the numbers the Gemini report adds ----------
+
+def test_exact_mark_and_mean_absolute_error():
+    p = paper(q21={"final_score": 1.5}, q22={"final_score": 0.0}, q23={"routing": "FLAGGED", "suggested_score": 1.0, "flag_reason": "LOW_CONFIDENCE"})
+    short = score(p, teacher_sheet())["short"]
+    assert short["unflagged"] == 14 and short["exact"] == 12
+    assert short["exact_pct_of_all"] == 80.0
+    # Unflagged: 12 at 0 off, one 0.5 off, one 2 off.
+    assert short["mae_unflagged"] == round(2.5 / 14, 3)
+    assert short["silent_wrong"] == 1 and short["silent_wrong_any_difference"] == 2
+    assert short["mae_flagged_drafts"] == 1.0
+
+
+def test_most_common_mark_baseline_uses_all_and_same_answers():
+    base = most_common_mark_baseline([(2.0, 1.0), (2.0, 2.0)], [2.0, 2.0, 2.0, 1.0])
+    assert base["mark"] == 2.0
+    assert base["exact_pct_all"] == 75.0 and base["mae_all"] == 0.25
+    assert base["exact_pct_unflagged"] == 50.0 and base["mae_unflagged"] == 0.5
+
+
+def test_flagged_percent_counts_an_answer_once_and_can_leave_out_blanks():
+    p = paper(
+        q21={"routing": "MANUAL", "flag_reason": "MISSING"},
+        q22={"routing": "FLAGGED", "flag_reason": "LOW_CONFIDENCE,EVIDENCE_NOT_FOUND"},
+    )
+    result = score(p, teacher_sheet())
+    assert result["flagged_overall_pct"] == round(100 * 2 / 35, 1)
+    assert result["flagged_excluding_blanks_pct"] == round(100 / 35, 1)
+    assert result["flag_reasons"]["EVIDENCE_NOT_FOUND"] == 1

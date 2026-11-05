@@ -5,7 +5,7 @@ FROM python:3.11-slim
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
-# Install system dependencies for OpenCV, PyMuPDF, and Pix2Text
+# Install system dependencies for PyMuPDF and Pillow
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libgl1 \

@@ -2,33 +2,69 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
+import requests
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+import config
+from routes import exam as exam_route
+from services import rubric_cache
 from services.criteria_draft import AnswerKeyError, draft_criteria, parse_answer_key
-from tests.test_question_paper_emulator import (  # noqa: F401
-    EXAM,
-    clean_state,
-    client,
-    firestore_client,
-    upload,
-)
+from services.gemini_paper import PaperExtraction, paper_from_extraction
 
-DATA = Path(__file__).resolve().parents[2] / "test_data" / "mendeley"
+EXAM = "criteria_exam"
+PAPER = b"Science Exam. (1 Mark Each) (2 Marks Each)"
 
-PAPER = b"""Science Exam
-Part I: Multiple Choice Questions (1 Mark Each)
-1. First?
-A. one
-B. two
-2. Second?
-A. one
-B. two
-Part II: Short Answer Questions (2 Marks Each)
-3. Define it.
-4. Explain it.
-"""
+
+def _question(number, marks, evidence, fmt="SHORT_ANSWER", options=()):
+    return {
+        "question_number": number, "section_id": "A", "question_text": f"Question {number}?",
+        "question_format": fmt, "options": list(options), "printed_marks": marks,
+        "marks_evidence": evidence,
+    }
+
+
+OPTIONS = [{"label": "A", "text": "one"}, {"label": "B", "text": "two"}]
+REPLY = PaperExtraction.model_validate({
+    "readable": True, "exam_title": "Science", "printed_total_marks": None,
+    "sections": [{"section_id": "A"}],
+    "questions": [
+        _question(1, 1.0, "(1 Mark Each)", "MCQ", OPTIONS),
+        _question(2, 1.0, "(1 Mark Each)", "MCQ", OPTIONS),
+        _question(3, 2.0, "(2 Marks Each)"),
+        _question(4, 2.0, "(2 Marks Each)"),
+    ],
+})
+
+
+@pytest.fixture
+def client(monkeypatch):
+    try:
+        requests.delete(
+            f"http://{config.os.environ['FIRESTORE_EMULATOR_HOST']}/emulator/v1/projects/"
+            f"{config.EMULATOR_PROJECT_ID}/databases/(default)/documents",
+            timeout=3,
+        )
+    except requests.RequestException:
+        pytest.skip("The Firestore emulator is not running.")
+    rubric_cache._draft_cache.clear()
+    monkeypatch.setattr(
+        exam_route, "read_question_paper",
+        lambda data, ext, **kwargs: paper_from_extraction(REPLY, data.decode()),
+    )
+    app = FastAPI()
+    app.include_router(exam_route.router)
+    return TestClient(app)
+
+
+def upload(client, paper):
+    return client.post(
+        "/exam/setup", data={"exam_id": EXAM},
+        files={"question_paper": ("paper.txt", paper, "text/plain")},
+    )
+
 
 KEY = b"""Question_Number,Type,Correct_Answer
 1,MCQ,B
@@ -116,7 +152,7 @@ def test_draft_needs_a_saved_paper(client):
 
 
 @pytest.mark.parametrize("damage", ["empty", "blank", "no_option", "bad_option"])
-def test_incomplete_criteria_are_blocked(client, firestore_client, damage):
+def test_incomplete_criteria_are_blocked(client, damage):
     upload(client, PAPER)
     questions = draft(client).json()["questions"]
     if damage == "empty":
@@ -137,14 +173,3 @@ def test_unconfirmed_draft_is_blocked(client):
     assert approve(client, draft(client).json()["questions"], confirmed=False).status_code == 422
 
 
-@pytest.mark.skipif(not (DATA / "Question.txt").exists(), reason="Dataset not present.")
-def test_real_exam_key_drafts_every_question(client):
-    assert upload(client, (DATA / "Question.txt").read_bytes()).status_code == 200
-    body = draft(client, (DATA / "answerkey.txt").read_bytes()).json()
-    questions = body["questions"]
-    assert body["problems"] == []
-    assert len(questions) == 35
-    assert sum(q["max_marks"] for q in questions) == 50
-    assert all(q["criteria"] for q in questions)
-    assert questions[0]["correct_option"] == "B"
-    assert approve(client, questions).status_code == 200

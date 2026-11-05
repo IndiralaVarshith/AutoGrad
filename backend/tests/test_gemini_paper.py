@@ -248,14 +248,13 @@ def app_client(monkeypatch, tmp_path):
     try:
         requests.delete(
             f"http://{config.os.environ['FIRESTORE_EMULATOR_HOST']}/emulator/v1/projects/"
-            f"{config.FIREBASE_PROJECT_ID or 'demo-autograde'}/databases/(default)/documents",
+            f"{config.EMULATOR_PROJECT_ID}/databases/(default)/documents",
             timeout=3,
         )
     except requests.RequestException:
         pytest.skip("The Firestore emulator is not running.")
     if not db_service.is_connected():
         pytest.skip("The Firestore emulator is not connected.")
-    monkeypatch.setattr(config, "GRADING_ENGINE", "gemini")
     monkeypatch.setattr(config, "GEMINI_RPM_LIMIT", 6000)
     rubric_cache._draft_cache.clear()
     calls = []
@@ -367,3 +366,131 @@ def test_quota_stop_saves_nothing_and_says_why(app_client, monkeypatch):
     monkeypatch.setattr(exam_route, "read_question_paper", stopped)
     response = upload(client, "exam-g6")
     assert response.status_code == 429 and "Nothing was saved" in response.text
+
+
+# ------------------------------------------- paper replacement and approval, on the emulator
+
+def test_emulator_mode_never_loads_the_key():
+    """Runs in a fresh process so Firebase really starts up with the loaders blocked."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    script = """
+from firebase_admin import credentials
+def blocked(*args, **kwargs):
+    raise SystemExit("KEY_LOADER_CALLED")
+credentials.Certificate = blocked
+credentials.ApplicationDefault = blocked
+import config
+config._resolve_service_account = blocked
+client = config.get_firestore()
+print("PROJECT=" + client.project)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script], cwd=Path(config.__file__).parent,
+        capture_output=True, text=True, timeout=60,
+    )
+    assert "KEY_LOADER_CALLED" not in result.stderr + result.stdout
+    assert f"PROJECT={config.EMULATOR_PROJECT_ID}" in result.stdout, result.stderr
+
+
+def test_health_reports_emulator_mode():
+    from main import health_check
+
+    assert health_check()["firestore_emulator"] is True
+
+
+OTHER_PAPER = PAPER_TEXT + b" A different file."
+
+
+def approved(client, exam_id, text=PAPER_TEXT, force=False):
+    rubric = upload(client, exam_id, text=text, force=force).json()["rubric"]
+    rubric["questions"][0]["correct_option"] = "B"
+    response = approve(client, exam_id, rubric, 3)
+    assert response.status_code == 200, response.text
+    return response.json()["rubric_id"], rubric
+
+
+def test_different_paper_is_refused_unless_forced(app_client):
+    client, _, _ = app_client
+    upload(client, "exam-r1")
+    assert upload(client, "exam-r1", text=OTHER_PAPER).status_code == 409
+    assert upload(client, "exam-r1", text=OTHER_PAPER, force=True).status_code == 200
+
+
+def test_forced_new_paper_cancels_the_approved_rubric(app_client):
+    client, _, _ = app_client
+    rubric_id, _ = approved(client, "exam-r2")
+    body = upload(client, "exam-r2", text=OTHER_PAPER, force=True).json()
+    assert body["invalidated_rubric_ids"] == [rubric_id]
+    assert db_service.get_approved_rubric("exam-r2") is None
+    assert client.get("/exam/exam-r2/rubric").status_code == 404
+
+
+def test_forcing_the_same_file_cancels_nothing(app_client):
+    client, _, _ = app_client
+    rubric_id, _ = approved(client, "exam-r3")
+    body = upload(client, "exam-r3", force=True).json()
+    assert body["invalidated_rubric_ids"] == []
+    assert db_service.get_approved_rubric("exam-r3")["rubric_id"] == rubric_id
+
+
+def test_going_back_to_the_first_paper_needs_a_new_approval(app_client):
+    client, _, _ = app_client
+    approved(client, "exam-r4")
+    upload(client, "exam-r4", text=OTHER_PAPER, force=True)
+    upload(client, "exam-r4", force=True)
+    assert db_service.get_approved_rubric("exam-r4") is None
+    _, rubric = approved(client, "exam-r4", force=True)
+    assert db_service.get_approved_rubric("exam-r4")["version"] == 2
+
+
+def test_approving_twice_keeps_one_version(app_client):
+    client, _, _ = app_client
+    rubric_id, rubric = approved(client, "exam-r5")
+    again = approve(client, "exam-r5", rubric, 3).json()
+    assert again["rubric_id"] == rubric_id and again["version"] == 1
+
+
+def test_paper_starts_unverified_and_approval_confirms_it(app_client):
+    client, _, _ = app_client
+    upload(client, "exam-r6")
+    assert db_service.get_question_paper("exam-r6")["verification_status"] == "UNVERIFIED"
+    approved(client, "exam-r6")
+    assert db_service.get_question_paper("exam-r6")["verification_status"] == "TEACHER_CONFIRMED"
+
+
+def test_firestore_offline_is_an_error_not_a_success(app_client, monkeypatch):
+    client, _, _ = app_client
+    monkeypatch.setattr(type(db_service), "is_connected", lambda self: False)
+    assert upload(client, "exam-r7").status_code == 503
+    refused = client.post("/exam/rubric/approve", json={
+        "exam_id": "exam-r7", "teacher_confirmed": True,
+        "rubric": [{"question_number": 1, "question_text": "a", "max_marks": 1,
+                    "criteria": [{"description": "c", "max_marks": 1}]}],
+    })
+    assert refused.status_code == 503
+
+
+def test_textbook_pages_are_not_sent_and_the_teacher_is_told(app_client):
+    client, calls, _ = app_client
+    response = client.post(
+        "/exam/setup",
+        data={"exam_id": "exam-r8", "force_regenerate": "false"},
+        files={
+            "question_paper": ("paper.txt", PAPER_TEXT, "text/plain"),
+            "textbook": ("book.txt", b"TEXTBOOK WORDS", "text/plain"),
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["warnings"]
+    assert "TEXTBOOK WORDS" not in str(calls)
+
+
+def test_figure_question_is_listed_for_review_with_its_wording_unchanged():
+    figure = question(1, has_figure=True, figure_page=2)
+    figure["question_text"] = "Study the graph on page 2."
+    paper = paper_from_extraction(extraction([figure]))
+    assert paper["questions"][0]["question_text"] == "Study the graph on page 2."
+    assert any("page 2" in item["reason"] for item in paper["review_items"])

@@ -18,6 +18,7 @@ SHORT_QUESTIONS = range(21, 36)
 SHORT_MAX = 2.0
 AGREEMENT_WINDOW = 0.5
 NEEDS_REVIEW = {"FLAGGED", "MANUAL"}
+BLANK_REASONS = {"BLANK_ANSWER", "NO_ANSWER_FOUND", "MISSING"}
 ALL_STUDENTS = [f"Student_{n}" for n in range(1, 51)]
 # The teacher appears to have marked Q1 as D. Used only for one side-by-side figure.
 TEACHER_EFFECTIVE_KEY_CHANGES = {1: "D"}
@@ -58,15 +59,15 @@ def _short_mark(cell: str) -> float | None:
     return mark if 0.0 <= mark <= SHORT_MAX else None
 
 
-def view(question: dict[str, Any], *, local_only: bool) -> tuple[bool, float | None]:
-    """Return (needs_review, mark), as the app stood before or after any Gemini check."""
-    routing = question.get("routing", "MANUAL")
-    if local_only and question.get("local_routing"):
-        routing = question["local_routing"]
-    if routing in NEEDS_REVIEW:
+def _not_blank(question: dict[str, Any]) -> bool:
+    return question.get("flag_reason") not in BLANK_REASONS
+
+
+def view(question: dict[str, Any]) -> tuple[bool, float | None]:
+    """Return (needs_review, mark). A flagged answer has no mark until the teacher confirms it."""
+    if question.get("routing", "MANUAL") in NEEDS_REVIEW:
         return True, None
-    mark = question.get("final_score", 0.0)
-    return False, float(mark)
+    return False, float(question.get("final_score", 0.0))
 
 
 def _pct(part: int, whole: int) -> float | None:
@@ -85,12 +86,34 @@ def _constant_mark_baseline(results: dict, teacher: dict) -> dict[str, float | N
     }
 
 
+def _mean_abs(pairs: list[tuple[float, float]]) -> float | None:
+    return round(sum(abs(a - b) for a, b in pairs) / len(pairs), 3) if pairs else None
+
+
+def most_common_mark_baseline(pairs: list[tuple[float, float]], teacher_marks: list[float]) -> dict[str, Any]:
+    """Always give the teacher's most common mark. Uses hindsight, so it is a hard baseline.
+
+    Scored on every answer with a teacher mark, and on the app's unflagged answers
+    (`pairs` of app mark, teacher mark) so the app is compared on the same answers.
+    """
+    if not teacher_marks:
+        return {"mark": None}
+    mark = Counter(teacher_marks).most_common(1)[0][0]
+    unflagged = [teacher_mark for _, teacher_mark in pairs]
+    return {
+        "mark": mark,
+        "exact_pct_all": _pct(sum(m == mark for m in teacher_marks), len(teacher_marks)),
+        "mae_all": _mean_abs([(mark, m) for m in teacher_marks]),
+        "exact_pct_unflagged": _pct(sum(m == mark for m in unflagged), len(unflagged)),
+        "mae_unflagged": _mean_abs([(mark, m) for m in unflagged]),
+    }
+
+
 def score_run(
     results: dict[str, dict[str, Any]],
     teacher: dict[str, TeacherSheet],
     *,
     answer_key: dict[int, str],
-    local_only: bool = True,
 ) -> dict[str, Any]:
     mcq = Counter()
     short = Counter()
@@ -99,15 +122,23 @@ def score_run(
     drafts = Counter()
     effective_key = {**answer_key, **TEACHER_EFFECTIVE_KEY_CHANGES}
     mark_gap = {"as_written": Counter(), "teacher_effective": Counter()}
+    unflagged_pairs: list[tuple[float, float]] = []
+    draft_pairs: list[tuple[float, float]] = []
+    teacher_marks: list[float] = []
+    answers_flagged = 0
+    answers_flagged_not_blank = 0
 
     for student, paper in results.items():
         truth = teacher[student]
         questions = {int(q["question_number"]): q for q in paper["questions"]}
         for q in MCQ_QUESTIONS:
             question = questions.get(q, {"routing": "MANUAL", "flag_reason": "GRADING_FAILED"})
-            flagged, _ = view(question, local_only=local_only)
+            flagged, _ = view(question)
             if flagged:
-                flag_reasons[question.get("flag_reason") or "OTHER"] += 1
+                answers_flagged += 1
+                answers_flagged_not_blank += _not_blank(question)
+                for reason in (question.get("flag_reason") or "OTHER").split(","):
+                    flag_reasons[reason] += 1
             expected = truth.mcq[q]
             if expected is None:
                 mcq["unusable_teacher_cell"] += 1
@@ -127,7 +158,7 @@ def score_run(
             app_mark, pending = 0.0, 0
             for q in MCQ_QUESTIONS:
                 question = questions.get(q, {"routing": "MANUAL"})
-                if view(question, local_only=local_only)[0]:
+                if view(question)[0]:
                     pending += 1
                 elif question.get("selected_option") == key.get(q):
                     app_mark += 1.0
@@ -139,31 +170,41 @@ def score_run(
 
         for q in SHORT_QUESTIONS:
             question = questions.get(q, {"routing": "MANUAL", "flag_reason": "GRADING_FAILED"})
-            flagged, mark = view(question, local_only=local_only)
+            flagged, mark = view(question)
             if flagged:
-                flag_reasons[question.get("flag_reason") or "OTHER"] += 1
+                answers_flagged += 1
+                answers_flagged_not_blank += _not_blank(question)
+                for reason in (question.get("flag_reason") or "OTHER").split(","):
+                    flag_reasons[reason] += 1
             expected = truth.short[q]
             if expected is None:
                 short["no_usable_teacher_mark"] += 1
                 if not flagged:
                     short["no_teacher_mark_but_app_marked"] += 1
-                elif question.get("flag_reason") in {"BLANK_ANSWER", "NO_ANSWER_FOUND"}:
+                elif question.get("flag_reason") in BLANK_REASONS:
                     short["no_teacher_mark_and_app_found_no_answer"] += 1
                 else:
                     short["no_teacher_mark_and_app_flagged_written_answer"] += 1
                 continue
             short["total"] += 1
+            teacher_marks.append(expected)
             if flagged:
                 short["flagged"] += 1
                 suggested = question.get("suggested_score")
                 if suggested is not None:
                     drafts["with_draft"] += 1
                     drafts["draft_within_0_5"] += int(abs(float(suggested) - expected) <= AGREEMENT_WINDOW)
-            elif abs(mark - expected) <= AGREEMENT_WINDOW:
+                    draft_pairs.append((float(suggested), expected))
+                continue
+            unflagged_pairs.append((mark, expected))
+            short["exact"] += int(mark == expected)
+            if mark != expected:
+                short["silent_wrong_any_difference"] += 1
+            if abs(mark - expected) <= AGREEMENT_WINDOW:
                 short["agree"] += 1
-                short["exact"] += int(mark == expected)
             else:
                 short["silent_wrong"] += 1
+            if mark != expected:
                 silent.append({
                     "student": student, "question": q, "kind": "SHORT",
                     "app": mark, "teacher": expected,
@@ -172,7 +213,6 @@ def score_run(
     all_answers = len(results) * (len(MCQ_QUESTIONS) + len(SHORT_QUESTIONS))
     return {
         "sheets": len(results),
-        "view": "local_only" if local_only else "gemini_assisted",
         "mcq": {
             **{k: mcq[k] for k in ("total", "correct", "flagged", "silent_wrong", "unusable_teacher_cell")},
             "exact_match_pct_of_all": _pct(mcq["correct"], mcq["total"]),
@@ -182,11 +222,18 @@ def score_run(
         },
         "short": {
             **{k: short[k] for k in (
-                "total", "agree", "exact", "flagged", "silent_wrong", "no_usable_teacher_mark",
+                "total", "agree", "exact", "flagged", "silent_wrong", "silent_wrong_any_difference",
+                "no_usable_teacher_mark",
                 "no_teacher_mark_and_app_found_no_answer",
                 "no_teacher_mark_and_app_flagged_written_answer",
                 "no_teacher_mark_but_app_marked",
             )},
+            "exact_pct_of_all": _pct(short["exact"], short["total"]),
+            "exact_pct_of_unflagged": _pct(short["exact"], len(unflagged_pairs)),
+            "mae_unflagged": _mean_abs(unflagged_pairs),
+            "mae_flagged_drafts": _mean_abs(draft_pairs),
+            "unflagged": len(unflagged_pairs),
+            "most_common_mark_baseline": most_common_mark_baseline(unflagged_pairs, teacher_marks),
             "agreement_pct_of_unflagged": _pct(short["agree"], short["agree"] + short["silent_wrong"]),
             "agreement_pct_of_all": _pct(short["agree"], short["total"]),
             "flagged_pct": _pct(short["flagged"], short["total"]),
@@ -197,77 +244,52 @@ def score_run(
             },
         },
         "constant_mark_baseline": _constant_mark_baseline(results, teacher),
-        "flagged_overall_pct": _pct(sum(flag_reasons.values()), all_answers),
+        "flagged_overall_pct": _pct(answers_flagged, all_answers),
+        "flagged_excluding_blanks_pct": _pct(answers_flagged_not_blank, all_answers),
         "flag_reasons": dict(flag_reasons.most_common()),
         "silent_wrong": silent,
     }
 
 
-def score_reading(
-    reads: dict[str, dict[str, Any]], teacher: dict[str, TeacherSheet]
-) -> dict[str, Any]:
-    """Reader-only comparison. reads[student] = {"answers": {q: text}, "unmapped": n, "seconds": s}."""
-    counts = Counter()
-    for student, read in reads.items():
-        truth = teacher[student]
-        answers = {int(q): text for q, text in read["answers"].items()}
-        counts["unmapped"] += read.get("unmapped", 0)
-        counts["seconds"] += read.get("seconds", 0)
-        for q in MCQ_QUESTIONS:
-            if truth.mcq[q] is None:
-                continue
-            counts["mcq_total"] += 1
-            text = answers.get(q, "").strip().upper().strip("().")
-            if text == truth.mcq[q]:
-                counts["mcq_correct"] += 1
-            elif text not in {"A", "B", "C", "D"}:
-                counts["mcq_not_a_letter"] += 1
-        for q in SHORT_QUESTIONS:
-            found = bool(answers.get(q, "").strip())
-            if truth.short[q] is None:
-                counts["short_no_teacher_mark"] += 1
-                counts["short_no_teacher_mark_but_text_found"] += int(found)
-            else:
-                counts["short_marked"] += 1
-                counts["short_marked_with_text"] += int(found)
-    return {
-        **dict(counts),
-        "mcq_exact_pct": _pct(counts["mcq_correct"], counts["mcq_total"]),
-        "short_coverage_pct": _pct(counts["short_marked_with_text"], counts["short_marked"]),
-        "seconds_per_sheet": round(counts["seconds"] / max(1, len(reads)), 1),
-    }
-
-
-def render_report(
-    title: str, meta: dict[str, Any], local: dict[str, Any], assisted: dict[str, Any] | None
-) -> str:
+def _block(result: dict[str, Any]) -> str:
     def line(name: str, value: Any) -> str:
         return f"| {name} | {value} |\n"
 
-    def block(result: dict[str, Any]) -> str:
-        m, s = result["mcq"], result["short"]
-        return (
-            "| Measure | Result |\n|---|---|\n"
-            + line("MCQ exact match, of all usable answers", f"{m['exact_match_pct_of_all']}% ({m['correct']}/{m['total']})")
-            + line("MCQ exact match, of unflagged answers", f"{m['exact_match_pct_of_unflagged']}%")
-            + line("MCQ flagged", f"{m['flagged_pct']}% ({m['flagged']})")
-            + line("MCQ silent wrong", m["silent_wrong"])
-            + line("Short answers within 0.5, of unflagged answers", f"{s['agreement_pct_of_unflagged']}% ({s['agree']}/{s['agree'] + s['silent_wrong']})")
-            + line("Short answers within 0.5, of all with a teacher mark", f"{s['agreement_pct_of_all']}% ({s['agree']}/{s['total']})")
-            + line("Baseline: same mark for every answer, never reading it", f"always 1.5: {result['constant_mark_baseline']['1.5']}%; always 2: {result['constant_mark_baseline']['2.0']}%")
-            + line("Short answers flagged", f"{s['flagged_pct']}% ({s['flagged']}/{s['total']})")
-            + line("Flagged drafts within 0.5 (not counted as marks)", f"{s['flagged_drafts']['within_0_5_pct']}% ({s['flagged_drafts']['within_0_5']}/{s['flagged_drafts']['with_draft']})")
-            + line("Short-answer silent wrong", s["silent_wrong"])
-            + line("All answers flagged", f"{result['flagged_overall_pct']}%")
-        )
+    m, s = result["mcq"], result["short"]
+    base = s["most_common_mark_baseline"]
+    return (
+        "| Measure | Result |\n|---|---|\n"
+        + line("MCQ exact match, of all usable answers", f"{m['exact_match_pct_of_all']}% ({m['correct']}/{m['total']})")
+        + line("MCQ exact match, of unflagged answers", f"{m['exact_match_pct_of_unflagged']}%")
+        + line("MCQ flagged", f"{m['flagged_pct']}% ({m['flagged']})")
+        + line("MCQ silent wrong", m["silent_wrong"])
+        + line("Short answers: exact mark, of all with a teacher mark", f"{s['exact_pct_of_all']}% ({s['exact']}/{s['total']})")
+        + line("Short answers: exact mark, of unflagged", f"{s['exact_pct_of_unflagged']}% ({s['exact']}/{s['unflagged']})")
+        + line("Short answers: mean absolute error, unflagged", s["mae_unflagged"])
+        + line(f"Baseline, always {base.get('mark')}: exact on the same unflagged answers", f"{base.get('exact_pct_unflagged')}%")
+        + line(f"Baseline, always {base.get('mark')}: mean absolute error on the same unflagged answers", base.get("mae_unflagged"))
+        + line(f"Baseline, always {base.get('mark')}: exact, of all with a teacher mark", f"{base.get('exact_pct_all')}%")
+        + line(f"Baseline, always {base.get('mark')}: mean absolute error, all", base.get("mae_all"))
+        + line("Short answers: within 0.5, of unflagged", f"{s['agreement_pct_of_unflagged']}% ({s['agree']}/{s['agree'] + s['silent_wrong']})")
+        + line("Short answers flagged", f"{s['flagged_pct']}% ({s['flagged']}/{s['total']})")
+        + line("Flagged drafts: mean absolute error (not counted as marks)", s["mae_flagged_drafts"])
+        + line("Short-answer silent wrong: any difference", s["silent_wrong_any_difference"])
+        + line("Short-answer silent wrong: more than 0.5 off", s["silent_wrong"])
+        + line("All answers flagged", f"{result['flagged_overall_pct']}%")
+        + line("All answers flagged, leaving out blanks", f"{result['flagged_excluding_blanks_pct']}%")
+    )
 
+
+def render_report(
+    title: str, meta: dict[str, Any], result: dict[str, Any], earlier: dict[str, Any] | None = None
+) -> str:
     text = f"# {title}\n\n"
     for key, value in meta.items():
         text += f"- **{key}:** {value}\n"
-    text += "\n## Local models only (main result)\n\n" + block(local)
-    if assisted:
-        text += "\n## With Gemini on flagged answers\n\n" + block(assisted)
-    m, s = local["mcq"], local["short"]
+    text += "\n## Gemini\n\n" + _block(result)
+    if earlier:
+        text += "\n## Earlier local models, on the same sheets (from saved results)\n\n" + _block(earlier)
+    m, s = result["mcq"], result["short"]
     gaps = m["sheet_totals_vs_teacher"]
     text += (
         "\n## Teacher data caveats\n\n"
@@ -281,12 +303,12 @@ def render_report(
         f"key as written {gaps['as_written']}; with Q1 as D, a side note, {gaps['teacher_effective']}.\n"
     )
     text += "\n## Why answers were flagged\n\n| Reason | Count |\n|---|---|\n"
-    for reason, count in local["flag_reasons"].items():
-        text += line(reason, count)
+    for reason, count in result["flag_reasons"].items():
+        text += f"| {reason} | {count} |\n"
     text += "\n## Silent wrong marks\n\n"
-    if local["silent_wrong"]:
+    if result["silent_wrong"]:
         text += "| Student | Question | App | Teacher |\n|---|---|---|---|\n"
-        for item in local["silent_wrong"]:
+        for item in result["silent_wrong"]:
             text += f"| {item['student']} | Q{item['question']} | {item['app']} | {item['teacher']} |\n"
     else:
         text += "None.\n"

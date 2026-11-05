@@ -1,12 +1,13 @@
-"""Grade the Mendeley sheets on the emulator and compare with the teacher's marks.
+"""Grade the Mendeley sheets with Gemini on the emulator and compare with the teacher's marks.
 
-    python scripts/evaluate_grading.py --split tune --name first-try
-    python scripts/evaluate_grading.py --split tune --name read-gemma --read-only --reader gemma4:e4b
-    python scripts/evaluate_grading.py --split report --name final --confirm-final
+    python scripts/evaluate_grading.py --split tune --name tune1
+    python scripts/evaluate_grading.py --split report --name gemini-final --confirm-final \
+        --earlier-run final
 
-The report split is the untouched 40. It refuses to run without --confirm-final or
-on uncommitted code, and a second run on a different commit needs --rerun-reason,
-which goes into the report. Teacher marks are only read after grading ends.
+The report split is the 40 sheets kept out of tuning. It refuses to run without
+--confirm-final or on uncommitted code, and a second run on a different commit needs
+--rerun-reason, which goes into the report. Rerunning the same name resumes: finished
+sheets cost no new request. Teacher marks are only read after grading ends.
 """
 
 from __future__ import annotations
@@ -26,21 +27,18 @@ DATA = REPO / "test_data" / "mendeley"
 EVALUATION = BACKEND / "evaluation"
 RUNS = EVALUATION / "runs"  # transcripts live here and are git-ignored
 REPORTS = REPO / "docs" / "eval"
-FINAL_LOCK = EVALUATION / "final_run.json"
+FINAL_LOCK = EVALUATION / "final_run_gemini.json"
 EMULATOR = "127.0.0.1:8080"
-RENDER_DPI = 150
 
 
 def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--split", choices=["tune", "report"], required=True)
     parser.add_argument("--name", required=True, help="Run name; rerunning it resumes finished sheets.")
-    parser.add_argument("--reader", help="Override OLLAMA_SHEET_READER_MODEL.")
-    parser.add_argument("--read-only", action="store_true", help="Compare reading only; no grading.")
-    parser.add_argument("--gemini", action="store_true", help="Allow Gemini on flagged answers (max 20).")
     parser.add_argument("--limit", type=int, help="Only the first N sheets of a tune split.")
     parser.add_argument("--confirm-final", action="store_true")
     parser.add_argument("--rerun-reason", default="")
+    parser.add_argument("--earlier-run", help="Saved run to report beside this one, such as 'final'.")
     return parser.parse_args(argv)
 
 
@@ -49,14 +47,14 @@ def git(*args: str) -> str:
 
 
 def guard_report_split(args: argparse.Namespace) -> dict:
-    """Stop the untouched sheets being run casually. Returns the lock record."""
+    """Stop the report sheets being run casually. Returns the lock record."""
     if args.limit:
         sys.exit("Refusing: --limit is not allowed on the report split.")
     if not args.confirm_final:
-        sys.exit("Refusing: the report split is the untouched 40. Pass --confirm-final.")
+        sys.exit("Refusing: the report split is kept out of tuning. Pass --confirm-final.")
     dirty = [
         line for line in git("status", "--porcelain").splitlines()
-        if not line.startswith("??") and "evaluation/final_run.json" not in line
+        if not line.startswith("??") and "evaluation/final_run" not in line
     ]
     if dirty:
         sys.exit(f"Refusing: commit the code first, so the run is traceable: {dirty[:5]}")
@@ -77,8 +75,8 @@ def guard_report_split(args: argparse.Namespace) -> dict:
     return record
 
 
-def set_environment(args: argparse.Namespace) -> None:
-    """Must run before config is imported."""
+def set_environment() -> None:
+    """Must run before config is imported, so real Firestore can never be reached."""
     host = os.environ.get("FIRESTORE_EMULATOR_HOST", "").strip() or EMULATOR
     name, _, port = host.partition(":")
     if name not in {"127.0.0.1", "localhost"}:
@@ -88,116 +86,100 @@ def set_environment(args: argparse.Namespace) -> None:
     except OSError:
         sys.exit(f"Refusing: no Firestore emulator at {host}. Real Firestore is never used.")
     os.environ["FIRESTORE_EMULATOR_HOST"] = host
-    os.environ["GEMINI_FALLBACK_ENABLED"] = "false"
-    allow_gemini = "true" if args.gemini else "false"
-    os.environ["GEMINI_ENABLED"] = allow_gemini
-    os.environ["GEMINI_VERIFICATION_ENABLED"] = allow_gemini
-    os.environ["GEMINI_VERIFICATION_SAMPLE_RATE"] = "0"
-    os.environ["GEMINI_MAX_CALLS_PER_RUN"] = "20"
-    os.environ["GEMINI_MAX_RETRIES"] = "1"
-    os.environ["GEMINI_MAX_FALLBACK_MODELS"] = "0"
-    if args.reader:
-        os.environ["OLLAMA_SHEET_READER_MODEL"] = args.reader
 
 
-def require_gemini_ready() -> None:
-    """A blocked Gemini would leave a 'with Gemini' column that only copies the local one."""
-    from services.provider_registry import GeminiCredentialError, GeminiRateLimitError, gemini_credentials
+def approved_rubric(exam_id: str, client, run, model: str) -> tuple[list, float, dict[int, str]]:
+    """Read the paper and key once, then auto-approve. The report says this was not a teacher."""
+    from models.schemas import QuestionRubric
+    from services.criteria_draft import approval_problems, parse_answer_key
+    from services.db import db_service
+    from services.gemini_paper import read_question_paper, rubric_total_problems
 
-    try:
-        gemini_credentials.select_credential()
-    except (GeminiCredentialError, GeminiRateLimitError) as error:
-        sys.exit(f"Refusing --gemini: {error} Run without it for local-only numbers.")
+    key, key_problems = parse_answer_key((DATA / "answerkey.txt").read_text())
+    cache = RUNS / f"paper-{model}.json"
+    if cache.exists():
+        paper = json.loads(cache.read_text())
+    else:
+        paper = read_question_paper(
+            (DATA / "Question.txt").read_bytes(), ".txt",
+            answer_key=(DATA / "answerkey.txt").read_bytes(), client=client, run=run,
+        )
+        if paper.get("unreadable"):
+            sys.exit(f"Refusing: Gemini could not read the paper: {paper.get('unclear_items')}")
+        RUNS.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps(paper, indent=1))
+
+    # The script stands in for the teacher here: the key file decides, never Gemini.
+    problems = list(key_problems) + list(paper["problems"])
+    for question in paper["questions"]:
+        number = int(question["question_number"])
+        if question["question_format"] == "MCQ":
+            if question.get("suggested_option") != key.get(number, "").upper():
+                problems.append(f"Q{number}: Gemini read the key as {question.get('suggested_option')}.")
+            question["correct_option"] = key.get(number, "").upper()
+    rubric = [QuestionRubric(**question) for question in paper["questions"]]
+    total, total_problems, _ = rubric_total_problems(paper["questions"], paper["declared_maximum_marks"])
+    problems += total_problems + approval_problems(rubric)
+    if problems:
+        sys.exit(f"Refusing: the paper needs a teacher's eye first: {problems[:8]}")
+    db_service.save_approved_rubric(
+        exam_id=exam_id, questions=rubric, teacher_confirmed=True, checked_total=total
+    )
+    return rubric, total, key
 
 
-def sheet_pages(student: str) -> list[bytes]:
-    import pymupdf
+def grade_one(student: str, exam_id: str, rubric: list, total: float, client, run) -> dict:
+    from services.db import db_service
+    from services.gemini_sheet import grade_sheet
 
     # Only the raw sheets. Corrected_Pdf holds the teacher's marks.
-    path = DATA / "Student_Pdf" / f"{student}.pdf"
-    with pymupdf.open(path) as document:
-        return [page.get_pixmap(dpi=RENDER_DPI).tobytes("jpeg") for page in document]
-
-
-def approved_rubric(exam_id: str):
-    """Draft criteria from the key and auto-approve them, labelled as such in the report."""
-    from models.schemas import QuestionRubric
-    from services.criteria_draft import approval_problems, draft_criteria, parse_answer_key
-    from services.db import db_service
-    from services.paper_intake import parse_question_paper_text
-
-    paper = parse_question_paper_text((DATA / "Question.txt").read_text())
-    key, key_problems = parse_answer_key((DATA / "answerkey.txt").read_text())
-    drafted, problems = draft_criteria(paper.questions, key)
-    rubric = [QuestionRubric(**question) for question in drafted]
-    problems = key_problems + problems + approval_problems(rubric)
-    if problems:
-        sys.exit(f"Refusing: the drafted criteria are incomplete: {problems[:5]}")
-    db_service.save_approved_rubric(exam_id=exam_id, questions=rubric, teacher_confirmed=True)
-    saved = db_service.get_approved_rubric(exam_id)
-    return [QuestionRubric(**question) for question in saved["questions"]], key
-
-
-def read_sheet(student: str) -> dict:
-    from services.ocr import extract_text
-
-    pages = sheet_pages(student)
-    readers: list[dict] = []
+    file_bytes = (DATA / "Student_Pdf" / f"{student}.pdf").read_bytes()
     started = time.perf_counter()
-    answers, _ = extract_text(pages, source_hash="", page_readers=readers)
-    return {
-        "answers": {str(k[0]): v["extracted_text"] for k, v in answers.items() if k[0] > 0},
-        "unmapped": sum(
-            1 for k, v in answers.items() if k[0] == 0 or v.get("mapping_status") != "MAPPED"
-        ),
-        "seconds": round(time.perf_counter() - started, 1),
-        "page_readers": readers,
-    }
-
-
-def grade_sheet(student: str, exam_id: str, rubric: list) -> dict:
-    from pipeline import process_paper
-
-    pages = sheet_pages(student)
-    started = time.perf_counter()
-    result = process_paper(
-        exam_id=exam_id, hall_ticket=student, student_name="",
-        image_parts=pages, rubric_list=rubric, image_bytes_list=pages,
+    result = grade_sheet(
+        exam_id=exam_id, hall_ticket=student, student_name="", file_bytes=file_bytes,
+        extension=".pdf", rubric_list=rubric, total_marks=total, client=client, run=run,
     )
+    db_service.save_grading_result(exam_id, student, result)
     return {**result.model_dump(exclude={"ocr_pages"}), "seconds": round(time.perf_counter() - started, 1)}
+
+
+def cost_summary(results: dict[str, dict]) -> dict:
+    usages = [paper.get("gemini_usage") or {} for paper in results.values()]
+    costs = [usage.get("notional_cost_inr") for usage in usages]
+    known = [cost for cost in costs if cost is not None]
+    count = max(1, len(results))
+    return {
+        "calls_per_sheet": round(sum(usage.get("calls", 0) for usage in usages) / count, 2),
+        "input_tokens_per_sheet": round(sum(usage.get("input_tokens", 0) for usage in usages) / count),
+        "output_tokens_per_sheet": round(sum(usage.get("output_tokens", 0) for usage in usages) / count),
+        "notional_inr_per_sheet": round(sum(known) / len(known), 3) if known else None,
+        "seconds_per_sheet": round(sum(paper.get("seconds", 0) for paper in results.values()) / count, 1),
+    }
 
 
 def main(argv=None) -> None:
     args = parse_args(argv)
-    if args.split == "report" and args.read_only:
-        sys.exit("Refusing: reading comparisons belong on the tuning sheets.")
     lock = guard_report_split(args) if args.split == "report" else None
-    set_environment(args)
+    set_environment()
     sys.path.insert(0, str(BACKEND))
 
-    from config import OLLAMA_GRADER_MODEL, OLLAMA_SHEET_READER_MODEL
-    from services.evaluation import (
-        load_split,
-        load_teacher_marks,
-        render_report,
-        score_reading,
-        score_run,
-    )
-    from services.router import model_router
+    import config
+    from services.evaluation import load_split, load_teacher_marks, render_report, score_run
+    from services.gemini_client import DailyLimitReached, GeminiCallFailed, GeminiError, RunCapReached, get_client
 
-    if args.gemini:
-        require_gemini_ready()
     students = load_split(EVALUATION / "split.json")[args.split]
     if args.limit:
         students = students[: args.limit]
     run_dir = RUNS / args.name
     run_dir.mkdir(parents=True, exist_ok=True)
     exam_id = f"eval-{args.name}"
-    model_router.start_gemini_run()
+    client = get_client()
+    run = client.new_run(args.name)
+    rubric, total, key = approved_rubric(exam_id, client, run, config.GEMINI_MODEL)
 
-    rubric, key = (None, None) if args.read_only else approved_rubric(exam_id)
     failures: dict[str, str] = {}
     results: dict[str, dict] = {}
+    stopped = ""
     started = time.perf_counter()
     for index, student in enumerate(students, start=1):
         path = run_dir / f"{student}.json"
@@ -205,10 +187,14 @@ def main(argv=None) -> None:
             results[student] = json.loads(path.read_text())
             continue
         try:
-            data = read_sheet(student) if args.read_only else grade_sheet(student, exam_id, rubric)
-        except Exception as error:  # noqa: BLE001 - reported per sheet, never hidden
-            failures[student] = f"{type(error).__name__}: {error}"
-            print(f"[Eval] {student} FAILED: {failures[student]}", flush=True)
+            data = grade_one(student, exam_id, rubric, total, client, run)
+        except (DailyLimitReached, RunCapReached) as error:
+            stopped = str(error)
+            print(f"[Eval] Stopped at {student}: {stopped} Rerun this name to resume.", flush=True)
+            break
+        except (GeminiCallFailed, GeminiError) as error:
+            failures[student] = str(error)
+            print(f"[Eval] {student} FAILED: {error}", flush=True)
             continue
         path.write_text(json.dumps(data, default=str))
         results[student] = data
@@ -216,32 +202,41 @@ def main(argv=None) -> None:
 
     # Teacher marks are read from here on, after every sheet is done.
     teacher = load_teacher_marks(DATA / "Teacher_manual_marks_Anonymized.csv")
+    costs = cost_summary(results)
     meta = {
         "Split": f"{args.split} ({len(results)} of {len(students)} sheets graded)",
-        "Sheet reader": OLLAMA_SHEET_READER_MODEL,
-        "Grader": f"{OLLAMA_GRADER_MODEL}, second marker is the other local model",
+        "Model": config.GEMINI_MODEL,
         "Commit": git("rev-parse", "--short", "HEAD"),
-        "Criteria": "drafted from answerkey.txt and auto-approved by the script, with no teacher review",
+        "Criteria": "drafted by Gemini from answerkey.txt and auto-approved by the script, with no teacher review",
         "Answer key": "answerkey.txt as written (Q1 = B)",
         "Failed sheets": failures or "none",
+        "Stopped early": stopped or "no",
         "Run time": f"{round((time.perf_counter() - started) / 60, 1)} minutes in this session",
+        "Calls per sheet": costs["calls_per_sheet"],
+        "Tokens per sheet": f"{costs['input_tokens_per_sheet']} in, {costs['output_tokens_per_sheet']} out",
+        "Seconds per sheet": costs["seconds_per_sheet"],
+        "Cost per sheet": (
+            f"Rs 0 actual on the free tier. Notional paid-tier cost Rs {costs['notional_inr_per_sheet']}, "
+            f"at {config.GEMINI_PRICES_USD_PER_MILLION.get(config.GEMINI_MODEL)} USD per 1M tokens "
+            f"({config.GEMINI_PRICES_AS_OF}) and Rs {config.GEMINI_USD_INR} per USD ({config.GEMINI_USD_INR_SOURCE})"
+        ),
     }
     if lock and lock["reasons"]:
         meta["Earlier final runs, reasons for rerun"] = lock["reasons"]
 
-    if args.read_only:
-        summary = score_reading(results, teacher)
-        (run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
-        print(json.dumps(summary, indent=2))
-        return
-
     mcq_key = {question: answer for question, answer in key.items() if question <= 20}
-    local = score_run(results, teacher, answer_key=mcq_key, local_only=True)
-    assisted = score_run(results, teacher, answer_key=mcq_key, local_only=False) if args.gemini else None
-    if args.gemini:
-        meta["Gemini calls used"] = 20 - model_router.gemini_calls_left()
-    report = render_report(f"Grading evaluation: {args.name}", meta, local, assisted)
-    (run_dir / "summary.json").write_text(json.dumps({"local": local, "assisted": assisted}, indent=2))
+    current = score_run(results, teacher, answer_key=mcq_key)
+    earlier = None
+    if args.earlier_run:
+        saved = {}
+        for student in results:
+            path = RUNS / args.earlier_run / f"{student}.json"
+            if path.exists():
+                saved[student] = json.loads(path.read_text())
+        earlier = score_run(saved, teacher, answer_key=mcq_key)
+        meta["Earlier run"] = f"{args.earlier_run}, {len(saved)} sheets, recalculated from saved results with no model calls"
+    report = render_report(f"Grading evaluation: {args.name}", meta, current, earlier)
+    (run_dir / "summary.json").write_text(json.dumps({"gemini": current, "earlier": earlier, "cost": costs}, indent=2))
     REPORTS.mkdir(parents=True, exist_ok=True)
     (REPORTS / f"{args.name}.md").write_text(report)
     print(report)

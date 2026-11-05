@@ -10,8 +10,4 @@ import os
 os.environ["FIRESTORE_EMULATOR_HOST"] = (
     os.environ.get("FIRESTORE_EMULATOR_HOST", "").strip() or "127.0.0.1:8080"
 )
-os.environ["GEMINI_ENABLED"] = "false"
-os.environ["GEMINI_FALLBACK_ENABLED"] = "false"
-os.environ["GEMINI_VERIFICATION_ENABLED"] = "false"
 os.environ["AUTOGRAD_BLOCK_REAL_GEMINI"] = "1"
-os.environ["GRADING_ENGINE"] = "local"  # Gemini-path tests switch this on themselves.

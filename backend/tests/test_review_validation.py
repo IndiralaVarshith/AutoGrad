@@ -8,7 +8,7 @@ from unittest.mock import patch
 from fastapi import HTTPException
 
 import routes.review as review_module
-from models.schemas import CriterionResult, OCRQuestionRegradeRequest, OCRRegionReviewRequest
+from models.schemas import OCRRegionReviewRequest
 
 
 class _FakeDocRef:
@@ -131,82 +131,6 @@ class TestTeacherOCRValidation(unittest.TestCase):
         self.assertEqual(data["status"], "COMPLETE")
         self.assertEqual(data["finality_status"], "FINAL")
 
-    def test_regrade_sends_teacher_text_to_grader_and_preserves_ocr(self):
-        initial = _result_data()
-        initial["rubric_version"] = "1"
-        question = initial["questions"][0]
-        question.update({
-            "question_type": "THEORY",
-            "teacher_corrected_text": "teacher corrected answer",
-            "ocr_region_ids": ["region-1"],
-            "regrade_required": True,
-        })
-        region = initial["ocr_pages"][0]["regions"][0]
-        region.update({
-            "validation_status": "CORRECTED",
-            "teacher_corrected_text": "teacher corrected answer",
-            "teacher_question_number": 1,
-            "question_mapping_status": "TEACHER_CONFIRMED",
-        })
-        doc_ref = _FakeDocRef(initial)
-        db = _FakeDB(doc_ref)
-        approved = {
-            "approval_status": "APPROVED",
-            "version": 1,
-            "questions": [{
-                "question_number": 1,
-                "sub_part": "",
-                "question_text": "State the concept.",
-                "max_marks": 5.0,
-                "question_type": "THEORY",
-                "criteria": [{"description": "Correct concept", "max_marks": 5.0}],
-            }],
-        }
-        criteria = [CriterionResult(
-            criterion="Correct concept",
-            verbatim_quote="teacher corrected answer",
-            marks_awarded=3.5,
-            rationale="Evidence matches the approved criterion.",
-            quote_verified=True,
-        )]
-        request = OCRQuestionRegradeRequest(
-            exam_id="exam-1",
-            hall_ticket="student-1",
-            question_number=1,
-        )
-        with (
-            patch.object(review_module, "get_firestore", return_value=db),
-            patch.object(review_module, "_result_ref", return_value=doc_ref),
-            patch.object(review_module.db_service, "get_approved_rubric", return_value=approved),
-            patch.object(
-                review_module,
-                "regrade_question_text",
-                return_value={
-                    "criteria": criteria,
-                    "grader_score": 3.5,
-                    "critic_score": 3.5,
-                    "final_score": 3.5,
-                    "c_ocr": 0.0,
-                    "c_agree": 1.0,
-                    "c_evid": 1.0,
-                    "c_math": 1.0,
-                    "c_final": 0.7,
-                    "routing": "MANUAL",
-                    "routing_reason": "Teacher score confirmation required.",
-                    "model_used": "fake-model",
-                },
-            ) as regrade,
-        ):
-            response = asyncio.run(review_module.regrade_validated_ocr(request))
-
-        self.assertEqual(regrade.call_args.args[1], "teacher corrected answer")
-        updated = doc_ref.data["questions"][0]
-        self.assertEqual(updated["extracted_text"], "original transcript")
-        self.assertEqual(updated["grading_input_text"], "teacher corrected answer")
-        self.assertFalse(updated["regrade_required"])
-        self.assertFalse(updated["teacher_confirmed"])
-        self.assertEqual(updated["suggested_score"], 3.5)
-        self.assertEqual(response["finality_status"], "PENDING_VALIDATION")
 
     def test_exam_total_limit_applies_to_teacher_score_changes(self):
         data = {"max_total": 4.0}

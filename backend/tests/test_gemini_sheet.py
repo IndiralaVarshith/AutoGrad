@@ -376,7 +376,6 @@ def test_queue_job_grades_and_saves_on_the_emulator(client_for, monkeypatch, tmp
     client, fake = client_for(good_reply(mcq_answer(), answer()))
     monkeypatch.setattr(gemini_sheet, "get_client", lambda: client)
     monkeypatch.setattr(upload_route.queue_manager, "update_job_stage", lambda *a, **k: None)
-    monkeypatch.setattr(config, "GRADING_ENGINE", "gemini")
     exam_id = f"sheet-{uuid.uuid4().hex[:8]}"
     path = tmp_path / "s.pdf"
     path.write_bytes(pdf(2))

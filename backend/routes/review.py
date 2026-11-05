@@ -17,17 +17,11 @@ from fastapi import APIRouter, HTTPException, Response
 from config import get_firestore, get_storage_bucket
 from models.schemas import (
     OCRPageReviewRequest,
-    OCRQuestionRegradeRequest,
     OCRRegionReviewRequest,
-    QuestionRubric,
     ReviewConfirmRequest,
     ReviewEditRequest,
 )
-import config
-from pipeline import regrade_question_text
-from services.db import db_service
 from services.handwriting_dataset import save_teacher_validated_candidate
-from services.router import model_router
 
 
 router = APIRouter(prefix="/review", tags=["Review"])
@@ -127,77 +121,8 @@ def _validated_total_score(data: dict, questions: list[dict]) -> float:
     return total_score
 
 
-def _load_region_crops(source_reference: str, ocr_pages: list[dict], region_ids: list[str]) -> list[str]:
-    """Load only mapped source regions for visual/math regrading."""
-    if not source_reference or not region_ids:
-        return []
-    bucket = get_storage_bucket()
-    if bucket is None:
-        raise HTTPException(status_code=503, detail="Firebase Storage is unavailable.")
-    try:
-        blob = bucket.blob(source_reference)
-        if not blob.exists():
-            raise HTTPException(status_code=404, detail="Original answer sheet was not found.")
-        source_bytes = blob.download_as_bytes()
-        from PIL import Image
-
-        regions = {
-            region.get("region_id"): (page, region)
-            for page in ocr_pages
-            for region in page.get("regions", [])
-        }
-        if any(region_id not in regions for region_id in region_ids):
-            raise HTTPException(status_code=409, detail="A mapped OCR evidence region is missing.")
-
-        crops: list[str] = []
-        if Path(source_reference).suffix.lower() == ".pdf":
-            import fitz
-
-            with fitz.open(stream=source_bytes, filetype="pdf") as document:
-                page_images: dict[int, Image.Image] = {}
-                for region_id in dict.fromkeys(region_ids):
-                    page_record, region = regions[region_id]
-                    page_number = int(page_record.get("page_number", 0))
-                    if page_number not in page_images:
-                        if not 1 <= page_number <= document.page_count:
-                            raise HTTPException(status_code=409, detail="Mapped region page is outside the source PDF.")
-                        png_bytes = document[page_number - 1].get_pixmap(dpi=180, alpha=False).tobytes("png")
-                        page_images[page_number] = Image.open(io.BytesIO(png_bytes)).convert("RGB")
-                    crops.append(_crop_region_payload(page_images[page_number], region))
-        else:
-            with Image.open(io.BytesIO(source_bytes)) as image:
-                page_image = image.convert("RGB")
-                for region_id in dict.fromkeys(region_ids):
-                    page_record, region = regions[region_id]
-                    if int(page_record.get("page_number", 0)) != 1:
-                        raise HTTPException(status_code=409, detail="Image source has no matching OCR page.")
-                    crops.append(_crop_region_payload(page_image, region))
-        return crops
-    except HTTPException:
-        raise
-    except Exception as error:
-        raise HTTPException(status_code=502, detail="Could not load mapped handwriting evidence.") from error
 
 
-def _crop_region_payload(page_image, region: dict) -> str:
-    bbox = region.get("bbox") or []
-    if len(bbox) != 4:
-        raise HTTPException(status_code=409, detail="Mapped OCR region has no usable page coordinates.")
-    x0, y0, x1, y1 = [max(0.0, min(1.0, float(value))) for value in bbox]
-    width, height = page_image.size
-    left, right = sorted((int(x0 * width), int(x1 * width)))
-    top, bottom = sorted((int(y0 * height), int(y1 * height)))
-    box_width, box_height = max(1, right - left), max(1, bottom - top)
-    pad_x, pad_y = max(12, int(box_width * 0.05)), max(16, int(box_height * 1.25))
-    crop = page_image.crop((
-        max(0, left - pad_x),
-        max(0, top - pad_y),
-        min(width, right + pad_x),
-        min(height, bottom + pad_y),
-    ))
-    output = io.BytesIO()
-    crop.save(output, format="JPEG", quality=90)
-    return model_router.ollama.prepare_image_payload(output.getvalue())
 
 
 @router.get("/source-page/{exam_id}/{hall_ticket}/{page_number}")
@@ -424,166 +349,6 @@ async def review_ocr_page(req: OCRPageReviewRequest):
     return {"success": True, "status": data["status"], "finality_status": data["finality_status"]}
 
 
-@router.post("/ocr-regrade")
-async def regrade_validated_ocr(req: OCRQuestionRegradeRequest):
-    """Re-run the existing grading chain on teacher-validated text, without OCR."""
-    if config.GRADING_ENGINE == "gemini":
-        raise HTTPException(
-            status_code=410,
-            detail="Automatic re-marking is not used here. Edit the text and marks directly.",
-        )
-    db = get_firestore()
-    if db is None:
-        raise HTTPException(status_code=503, detail="Firestore is unavailable.")
-    doc_ref = _result_ref(db, req.exam_id, req.hall_ticket)
-    doc = doc_ref.get()
-    if not doc.exists:
-        raise HTTPException(status_code=404, detail="Paper result was not found.")
-    data = doc.to_dict() or {}
-    question = _find_question(data.get("questions", []), req.question_number, req.sub_part)
-    if question is None:
-        raise HTTPException(status_code=404, detail="Question was not found in this paper.")
-    if not question.get("regrade_required"):
-        raise HTTPException(status_code=409, detail="This question has no pending OCR correction to regrade.")
-    answer_text = str(question.get("teacher_corrected_text") or "").strip()
-    if not answer_text:
-        raise HTTPException(status_code=409, detail="Validate readable text for this question before regrading.")
-
-    region_ids = list(question.get("ocr_region_ids") or [])
-    all_regions = {
-        region.get("region_id"): region
-        for page in data.get("ocr_pages", [])
-        for region in page.get("regions", [])
-    }
-    for region_id in region_ids:
-        region = all_regions.get(region_id)
-        if (
-            region is None
-            or region.get("validation_status") not in {"ACCEPTED", "CORRECTED"}
-            or region.get("question_mapping_status") != "TEACHER_CONFIRMED"
-            or region.get("teacher_question_number") != req.question_number
-            or str(region.get("teacher_sub_part", "")).strip().upper() != req.sub_part.strip().upper()
-        ):
-            raise HTTPException(
-                status_code=409,
-                detail="Every supporting region must be validated and mapped to this question before regrading.",
-            )
-    mapped_region_data = [all_regions[region_id] for region_id in region_ids]
-    if not region_ids:
-        raise HTTPException(status_code=409, detail="Map at least one validated answer region before regrading.")
-
-    stored_version = str(data.get("rubric_version", ""))
-    if not stored_version:
-        raise HTTPException(
-            status_code=409,
-            detail="This result has no approved rubric version recorded; regrading requires a new evaluation.",
-        )
-    approved = db_service.get_approved_rubric(req.exam_id)
-    if approved and str(approved.get("version", "")) == stored_version:
-        rubric_source = approved
-    else:
-        # Results retain the version that was approved when they were graded.
-        # Use that immutable archived rubric if a later version is now active.
-        archived_ref = db.collection("rubrics").document(f"{req.exam_id}_v{stored_version}")
-        archived_doc = archived_ref.get()
-        rubric_source = archived_doc.to_dict() if archived_doc.exists else None
-    if (
-        not rubric_source
-        or str(rubric_source.get("exam_id", req.exam_id)) != req.exam_id
-        or str(rubric_source.get("version", "")) != stored_version
-        or str(rubric_source.get("approval_status", "APPROVED")).upper() != "APPROVED"
-    ):
-        raise HTTPException(status_code=409, detail="The approved rubric version for this result is unavailable.")
-
-    rubric_data = next(
-        (
-            item for item in rubric_source.get("questions", [])
-            if item.get("question_number") == req.question_number
-            and str(item.get("sub_part", "")).strip().upper() == req.sub_part.strip().upper()
-        ),
-        None,
-    )
-    if rubric_data is None:
-        raise HTTPException(status_code=409, detail="The question is missing from the approved rubric.")
-    rubric = QuestionRubric.model_validate(rubric_data)
-    if abs(float(question.get("max_marks", 0.0)) - rubric.max_marks) > 1e-6:
-        raise HTTPException(status_code=409, detail="Question maximum differs from the approved rubric.")
-
-    question_type = str(question.get("question_type", rubric.question_type or "THEORY")).upper()
-    image_parts = []
-    if question_type in {"DIAGRAM", "MIXED", "NUMERICAL"}:
-        image_parts = _load_region_crops(
-            str(data.get("source_file_reference", "")),
-            data.get("ocr_pages", []),
-            region_ids,
-        )
-    if question_type in {"DIAGRAM", "MIXED"} and not image_parts:
-        raise HTTPException(
-            status_code=409,
-            detail="Diagram grading requires original image evidence from the mapped answer regions.",
-        )
-
-    try:
-        grade = regrade_question_text(
-            rubric,
-            answer_text,
-            question_type=question_type,
-            image_parts=image_parts,
-            ocr_regions=mapped_region_data,
-            illegible_count=len(question.get("illegible_regions", [])),
-        )
-    except ValueError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    question.update({
-        "grading_input_text": answer_text,
-        "grader_score": grade["grader_score"],
-        "critic_score": grade["critic_score"],
-        "final_score": 0.0,
-        "suggested_score": grade["final_score"],
-        "criteria": [item.model_dump() for item in grade["criteria"]],
-        "c_ocr": grade["c_ocr"],
-        "c_agree": grade["c_agree"],
-        "c_evid": grade["c_evid"],
-        "c_math": grade["c_math"],
-        "c_final": grade["c_final"],
-        "routing": grade["routing"],
-        "routing_reason": grade["routing_reason"],
-        "model_used": grade["model_used"],
-        "ocr_confidence_class": "UNCALIBRATED",
-        "regrade_required": False,
-        "teacher_confirmed": False,
-    })
-    questions = data.get("questions", [])
-    total_score = _validated_total_score(data, questions)
-    data["questions"] = questions
-    data["total_score"] = round(total_score, 2)
-    data["avg_confidence"] = round(
-        sum(float(item.get("c_final", 0.0)) for item in questions) / max(1, len(questions)),
-        4,
-    )
-    data["updated_at"] = now
-    _refresh_validation_status(data)
-    _write_review_result(db, doc_ref, req.exam_id, req.hall_ticket, data)
-    db.collection("exams").document(req.exam_id).collection("review_logs").add({
-        "exam_id": req.exam_id,
-        "hall_ticket": req.hall_ticket,
-        "question_number": req.question_number,
-        "sub_part": req.sub_part.strip().upper(),
-        "action": "OCR_REGRADE",
-        "rubric_version": stored_version,
-        "timestamp": now,
-    })
-    return {
-        "success": True,
-        "question_number": req.question_number,
-        "sub_part": req.sub_part.strip().upper(),
-        "final_score": question["suggested_score"],
-        "max_marks": question["max_marks"],
-        "status": data["status"],
-        "finality_status": data["finality_status"],
-    }
 
 
 # =========================================================

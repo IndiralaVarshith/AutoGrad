@@ -20,13 +20,10 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 from PIL import Image
 
-import config
 from config import get_firestore, get_storage_bucket
+from services.gemini_paper import rubric_total_problems
 from services.gemini_sheet import grade_sheet
-from models.schemas import QuestionRubric, RubricCriterion, StudentMeta
-from pipeline import process_paper
-from services.ocr import extract_student_meta
-from services.router import model_router
+from models.schemas import QuestionRubric
 from services.queue_manager import queue_manager, QueueJob
 from services.db import db_service
 from services.timing import log_timing, timed_stage
@@ -199,97 +196,24 @@ def _execute_grading_job(job: QueueJob):
                 status="EVALUATING",
             )
 
-    if config.GRADING_ENGINE == "gemini":
-        try:
-            result = grade_sheet(
-                exam_id=job.exam_id,
-                hall_ticket=job.hall_ticket,
-                student_name=job.student_name,
-                file_bytes=file_bytes,
-                extension=job.file_ext.lower(),
-                rubric_list=rubric_list,
-                source_file_reference=(
-                    f"exams/{job.exam_id}/sheets/{job.hall_ticket}/"
-                    f"{job.original_filename or Path(file_path).name}"
-                ),
-                rubric_version=job.rubric_version,
-                total_marks=rubric_total_marks or None,
-                on_stage=update_stage,
-            )
-            db_service.save_grading_result(job.exam_id, job.hall_ticket, result)
-            return result
-        except Exception as error:
-            _update_submission_failure(job, error)
-            raise
-
-    # Render the source once to stable page images. Both local and cloud
-    # inference now pass through the shared Model Router; the uploaded PDF is
-    # not separately re-uploaded to Gemini.
     try:
-        if job.file_ext.lower() == ".pdf":
-            image_parts = model_router.ollama.render_pdf_to_images(
-                file_path,
-                max_pages=None,
-                dpi=150,
-                source_hash=job.file_sha256,
-                job_id=job.job_id,
-                on_stage=update_stage,
-            )
-        else:
-            with timed_stage(
-                "image_preprocessing",
-                job_id=job.job_id,
-                on_stage=update_stage,
-                detail="Normalizing the uploaded image for handwriting recognition",
-            ):
-                image_parts = [model_router.ollama.prepare_image_payload(file_path)]
-    except Exception as error:
-        _update_submission_failure(job, error)
-        raise RuntimeError(
-            "Could not render every source page for OCR evidence; evaluation was stopped."
-        ) from None
-
-    hall_ticket = job.hall_ticket
-    student_name = job.student_name
-    _is_placeholder = (
-        not hall_ticket
-        or hall_ticket.startswith("STUDENT_")
-        or hall_ticket.startswith("HT_")
-        or not student_name
-        or student_name.startswith("Student ")
-    )
-    if _is_placeholder and image_parts:
-        try:
-            meta = extract_student_meta(image_parts[:1])
-            if meta.get("hall_ticket"):
-                hall_ticket = meta["hall_ticket"]
-            if meta.get("student_name"):
-                student_name = meta["student_name"]
-        except Exception as error:
-            _logger.warning(
-                "Student metadata extraction failed for job %s (%s)",
-                job.job_id,
-                type(error).__name__,
-            )
-
-    try:
-        return process_paper(
+        result = grade_sheet(
             exam_id=job.exam_id,
-            hall_ticket=hall_ticket,
-            student_name=student_name,
-            image_parts=image_parts,
+            hall_ticket=job.hall_ticket,
+            student_name=job.student_name,
+            file_bytes=file_bytes,
+            extension=job.file_ext.lower(),
             rubric_list=rubric_list,
-            image_bytes_list=[file_bytes],
-            ocr_image_parts=image_parts,
             source_file_reference=(
                 f"exams/{job.exam_id}/sheets/{job.hall_ticket}/"
                 f"{job.original_filename or Path(file_path).name}"
             ),
-            approved_rubric_version=job.rubric_version,
-            approved_total_marks=rubric_total_marks or None,
-            job_id=job.job_id,
+            rubric_version=job.rubric_version,
+            total_marks=rubric_total_marks or None,
             on_stage=update_stage,
         )
+        db_service.save_grading_result(job.exam_id, job.hall_ticket, result)
+        return result
     except Exception as error:
         _update_submission_failure(job, error)
         raise
@@ -559,56 +483,24 @@ def _load_rubric_bundle(
             return [], 0.0, "", ""
 
         questions = rubric_doc.get("questions", [])
-        rubric_list = [
-            QuestionRubric(
-                question_number=q["question_number"],
-                question_text=q["question_text"],
-                max_marks=float(q["max_marks"]),
-                question_type=q.get("question_type"),
-                criteria=[
-                    RubricCriterion(
-                        description=c.get("description", ""),
-                        max_marks=float(c.get("max_marks", 1.0)),
-                    )
-                    for c in q.get("criteria", [])
-                ],
-                sub_part=str(q.get("sub_part", "")),
-                choice_group=str(q.get("choice_group", "")),
-                is_or_choice=bool(q.get("is_or_choice", False)),
-                question_format=str(q.get("question_format", "")),
-                options=q.get("options") or [],
-                correct_option=str(q.get("correct_option", "")),
-                section=str(q.get("section", q.get("section_id", ""))),
-                section_attempt_count=q.get(
-                    "section_attempt_count",
-                    q.get("attempt_count"),
-                ),
-                section_max_marks=q.get(
-                    "section_max_marks",
-                    q.get("section_maximum_marks"),
-                ),
-                attempt_instruction=str(q.get("attempt_instruction", "")),
-            )
-            for q in questions
-        ]
+        rubric_list = [QuestionRubric(**q) for q in questions]
         total_marks_value = rubric_doc.get("total_marks")
-        from services.marks_validator import validate_and_reconcile_exam_structure
-        structure = validate_and_reconcile_exam_structure({
-            "questions": questions,
-            "declared_maximum_marks": total_marks_value,
-        })
-        if structure.validation_status == "DISCREPANCY":
+        calculated, problems, _ = rubric_total_problems(questions, None)
+        if problems:
             raise HTTPException(
                 409,
-                detail=(
-                    f"Approved rubric for exam '{exam_id}' is inconsistent: its declared "
-                    f"maximum is {structure.declared_maximum_marks:g}, but its preserved "
-                    f"question/attempt structure totals {structure.calculated_maximum_marks:g}. "
-                    "Reconcile and re-approve the rubric before grading."
-                ),
+                f"Approved rubric for exam '{exam_id}' cannot be used: {' '.join(problems)} "
+                "Fix and re-approve it before grading.",
             )
         if total_marks_value is None or float(total_marks_value) <= 0:
-            total_marks_value = structure.calculated_maximum_marks
+            total_marks_value = calculated
+        elif abs(float(total_marks_value) - calculated) > 0.01:
+            raise HTTPException(
+                409,
+                f"Approved rubric for exam '{exam_id}' is inconsistent: its total is "
+                f"{float(total_marks_value):g}, but its questions add up to {calculated:g}. "
+                "Fix and re-approve it before grading.",
+            )
         total_marks = float(total_marks_value)
         if total_marks <= 0:
             raise ValueError(f"Approved rubric for exam '{exam_id}' has no positive total marks.")
