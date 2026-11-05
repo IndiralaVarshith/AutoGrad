@@ -534,7 +534,8 @@ async def regrade_validated_ocr(req: OCRQuestionRegradeRequest):
         "grading_input_text": answer_text,
         "grader_score": grade["grader_score"],
         "critic_score": grade["critic_score"],
-        "final_score": grade["final_score"],
+        "final_score": 0.0,
+        "suggested_score": grade["final_score"],
         "criteria": [item.model_dump() for item in grade["criteria"]],
         "c_ocr": grade["c_ocr"],
         "c_agree": grade["c_agree"],
@@ -572,7 +573,7 @@ async def regrade_validated_ocr(req: OCRQuestionRegradeRequest):
         "success": True,
         "question_number": req.question_number,
         "sub_part": req.sub_part.strip().upper(),
-        "final_score": question["final_score"],
+        "final_score": question["suggested_score"],
         "max_marks": question["max_marks"],
         "status": data["status"],
         "finality_status": data["finality_status"],
@@ -623,8 +624,12 @@ async def confirm_question(req: ReviewConfirmRequest):
         )
     question["teacher_confirmed"] = True
     question["routing"] = "AUTO_ACCEPT"
+    if question.get("suggested_score") is not None:
+        # Confirming a flagged answer is what turns its draft into a mark.
+        question["final_score"] = float(question["suggested_score"])
 
     data["questions"] = questions
+    data["total_score"] = round(_validated_total_score(data, questions), 2)
     _refresh_validation_status(data)
     flagged_count = data["flagged_count"]
     _write_review_result(db, doc_ref, req.exam_id, req.hall_ticket, data)

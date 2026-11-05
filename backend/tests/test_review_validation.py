@@ -205,7 +205,7 @@ class TestTeacherOCRValidation(unittest.TestCase):
         self.assertEqual(updated["grading_input_text"], "teacher corrected answer")
         self.assertFalse(updated["regrade_required"])
         self.assertFalse(updated["teacher_confirmed"])
-        self.assertEqual(updated["final_score"], 3.5)
+        self.assertEqual(updated["suggested_score"], 3.5)
         self.assertEqual(response["finality_status"], "PENDING_VALIDATION")
 
     def test_exam_total_limit_applies_to_teacher_score_changes(self):

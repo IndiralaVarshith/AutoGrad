@@ -195,7 +195,7 @@ export default function Review({ examId = 'EXAM_2026_01', initialHallTicket = nu
     setEditStates((prev) => ({
       ...prev,
       [key]: {
-        score: prev[key]?.score ?? String(question.final_score),
+        score: prev[key]?.score ?? String(question.suggested_score ?? question.final_score),
         reason: prev[key]?.reason ?? '',
         open: !prev[key]?.open,
       },
@@ -504,7 +504,7 @@ export default function Review({ examId = 'EXAM_2026_01', initialHallTicket = nu
           const qNum = q.question_number;
           const qKey = questionKey(q);
           const qLabel = `${qNum}${q.sub_part || ''}`;
-          const editState = editStates[qKey] || { score: String(q.final_score), reason: '', open: false };
+          const editState = editStates[qKey] || { score: String(q.suggested_score ?? q.final_score), reason: '', open: false };
           const isActing = actionLoading === qKey;
 
           return (
@@ -524,8 +524,8 @@ export default function Review({ examId = 'EXAM_2026_01', initialHallTicket = nu
 
                 <div className="flex items-center gap-3 font-mono text-xs">
                   <div>
-                    <span className="text-[#717680]">Score: </span>
-                    <span className="text-[#ededed] font-medium">{q.final_score}</span>
+                    <span className="text-[#717680]">{q.suggested_score != null && !q.teacher_confirmed ? 'Draft: ' : 'Score: '}</span>
+                    <span className="text-[#ededed] font-medium">{q.suggested_score != null && !q.teacher_confirmed ? q.suggested_score : q.final_score}</span>
                     <span className="text-[#555963]"> / {q.max_marks}</span>
                   </div>
                   <div className="text-[#555963] text-[11px]">
@@ -687,7 +687,7 @@ export default function Review({ examId = 'EXAM_2026_01', initialHallTicket = nu
                     onClick={() => handleConfirm(q)}
                     className="px-3.5 py-1 rounded text-xs bg-[#15803d] hover:bg-[#166534] text-white transition-colors cursor-pointer disabled:opacity-50"
                   >
-                    {isActing ? 'Saving...' : `Confirm Score (${q.final_score})`}
+                    {isActing ? 'Saving...' : `Confirm Score (${q.suggested_score ?? q.final_score})`}
                   </button>
                 </div>
               </div>

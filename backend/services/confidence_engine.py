@@ -31,6 +31,38 @@ AUTO_ACCEPT_THRESHOLD: float = 0.85
 FLAGGED_THRESHOLD: float = 0.65
 
 
+# Largest grader/critic gap on one answer that can still be auto-accepted.
+AUTO_ACCEPT_MAX_SCORE_GAP: float = 0.5
+
+
+def route_answer(
+    *,
+    grader_score: float,
+    critic_score: float,
+    critic_verdict: str,
+    c_evid: float,
+    force_flag: bool = False,
+    illegible_count: int = 0,
+    math_unverified: bool = False,
+) -> tuple[str, str]:
+    """Decide whether a graded answer stands or goes to the teacher.
+
+    Returns (routing, flag_reason). OCR confidence is not used because the
+    reader gives no calibrated value; the signals below are all observed.
+    """
+    if illegible_count > 0:
+        return "MANUAL", "UNCLEAR_READING"
+    if math_unverified:
+        return "MANUAL", "MATH_NOT_VERIFIED"
+    if force_flag or critic_verdict != "ACCEPT":
+        return "FLAGGED", "CRITIC_DISAGREED"
+    if abs(grader_score - critic_score) > AUTO_ACCEPT_MAX_SCORE_GAP:
+        return "FLAGGED", "SCORE_GAP"
+    if c_evid < 1.0:
+        return "FLAGGED", "EVIDENCE_NOT_VERIFIED"
+    return "AUTO_ACCEPT", ""
+
+
 def _nonnegative_int(value: object, default: int) -> int:
     if isinstance(value, bool):
         return default

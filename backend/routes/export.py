@@ -107,7 +107,10 @@ async def export_exam_results(exam_id: str):
         # Map scores per question
         q_map = {}
         for q in paper.get("questions", []):
-            q_map[safe_int_qnum(q.get("question_number", 0), 0)] = q.get("final_score", 0.0)
+            q_map[safe_int_qnum(q.get("question_number", 0), 0)] = (
+                "Needs review" if q.get("routing") in ("FLAGGED", "MANUAL")
+                else q.get("final_score", 0.0)
+            )
 
         row_data = [hall_ticket, name]
         for q_num in sorted_q_nums:

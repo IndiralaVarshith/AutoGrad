@@ -15,6 +15,7 @@ from statistics import median
 
 from models.schemas import CriterionResult, QuestionRubric
 from services.grading_agent import grade_answer
+from services.router import NoSuitableModelError
 
 
 def compare_independent_verification(
@@ -103,33 +104,38 @@ def resolve(
     print("[Resolver] Running 2 additional grading passes...")
 
     # Run 2 more grading passes at T=0.1
-    criteria_2, score_2, _, _ = grade_answer(
-        question_text=question_text,
-        extracted_text=extracted_text,
-        image_parts=image_parts,
-        rubric=rubric,
-        max_marks=max_marks,
-        temperature=0.1,
-        question_type=question_type,
-        illegible_count=illegible_count,
-        avoid_model=avoid_model,
-        avoid_models=avoid_models,
-        task_category="critical_validation",
-    )
+    try:
+        criteria_2, score_2, _, _ = grade_answer(
+            question_text=question_text,
+            extracted_text=extracted_text,
+            image_parts=image_parts,
+            rubric=rubric,
+            max_marks=max_marks,
+            temperature=0.1,
+            question_type=question_type,
+            illegible_count=illegible_count,
+            avoid_model=avoid_model,
+            avoid_models=avoid_models,
+            task_category="critical_validation",
+        )
 
-    criteria_3, score_3, _, _ = grade_answer(
-        question_text=question_text,
-        extracted_text=extracted_text,
-        image_parts=image_parts,
-        rubric=rubric,
-        max_marks=max_marks,
-        temperature=0.1,
-        question_type=question_type,
-        illegible_count=illegible_count,
-        avoid_model=avoid_model,
-        avoid_models=avoid_models,
-        task_category="critical_validation",
-    )
+        criteria_3, score_3, _, _ = grade_answer(
+            question_text=question_text,
+            extracted_text=extracted_text,
+            image_parts=image_parts,
+            rubric=rubric,
+            max_marks=max_marks,
+            temperature=0.1,
+            question_type=question_type,
+            illegible_count=illegible_count,
+            avoid_model=avoid_model,
+            avoid_models=avoid_models,
+            task_category="critical_validation",
+        )
+    except NoSuitableModelError:
+        # Both installed models already took part, so nothing independent is left.
+        print("[Resolver] No independent model is left. Forcing FLAGGED.")
+        return original_criteria, original_score, True
 
     scores = [original_score, score_2, score_3]
     all_criteria = [original_criteria, criteria_2, criteria_3]

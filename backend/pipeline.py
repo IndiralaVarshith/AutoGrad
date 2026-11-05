@@ -25,6 +25,7 @@ import json
 import logging
 import math
 import os
+import re
 import time
 from collections import defaultdict
 from typing import Callable
@@ -42,7 +43,7 @@ from services.grading_agent import grade_answer
 from services.critic_agent import critique_grade
 from services.resolver import resolve, compare_independent_verification as _compare_independent_verification
 from services.evidence_verifier import verify_evidence
-from services.confidence_engine import compute_c_agree, compute_confidence
+from services.confidence_engine import route_answer, compute_c_agree, compute_confidence
 from services.math_agent import expected_expression_from_rubric, verify_math
 from services.db import db_service
 from config import get_firestore
@@ -125,6 +126,17 @@ def _gemini_verification_reason(
     return "routine_quality_sample" if bucket < sample_rate else ""
 
 
+HEADER_SHARE_OF_FIRST_PAGE = 0.12
+_OPTION_RE = re.compile(r"^\(?([A-Za-z])\)?[.)]?$")
+
+
+def _selected_option(text: str, labels: set[str]) -> str:
+    """The single printed option a student chose, or "" if it is not clear."""
+    match = _OPTION_RE.match(text.strip())
+    letter = match.group(1).upper() if match else ""
+    return letter if letter in labels else ""
+
+
 def _crop_evidence_regions(ocr_pages: list, page_image_parts: list, region_ids: list[str]) -> list[bytes]:
     """Render only cited OCR evidence boxes for a selective Gemini check."""
     if not region_ids:
@@ -156,6 +168,8 @@ def _crop_evidence_regions(ocr_pages: list, page_image_parts: list, region_ids: 
                 bbox = list(getattr(region, "bbox", []) or [])
                 if len(bbox) != 4:
                     continue
+                if page_number == 1 and float(bbox[1]) < HEADER_SHARE_OF_FIRST_PAGE:
+                    continue  # the student's name and ID sit here
                 x0, y0, x1, y1 = [max(0.0, min(1.0, float(v))) for v in bbox]
                 left, right = sorted((int(x0 * width), int(x1 * width)))
                 top, bottom = sorted((int(y0 * height), int(y1 * height)))
@@ -646,8 +660,44 @@ def process_paper(
                     c_math=0.0 if q_type == "NUMERICAL" else 1.0,
                     c_final=0.0,
                     routing="MANUAL",
+                    local_routing="MANUAL",
+                    flag_reason=(
+                        "UNMATCHED" if answer_is_ambiguous
+                        else "BLANK_ANSWER" if answer_key is not None
+                        else "NO_ANSWER_FOUND"
+                    ),
                     illegible_regions=illegible_regions,
                     routing_reason="No confidently mapped answer was available; no marks were inferred.",
+                )
+            )
+            continue
+
+        if rubric.question_format == "MCQ":
+            labels = {str(item.get("label", "")).upper() for item in rubric.options}
+            key = rubric.correct_option.strip().upper()
+            selected = _selected_option(extracted_text, labels)
+            clear = bool(selected) and key in labels and not illegible_regions
+            question_grades.append(
+                QuestionGrade(
+                    question_number=q_num,
+                    sub_part=sub_part,
+                    question_type=q_type,
+                    max_marks=max_marks,
+                    extracted_text=extracted_text,
+                    grading_input_text=extracted_text,
+                    source_page_references=source_page_references,
+                    selected_option=selected,
+                    final_score=max_marks if clear and selected == key else 0.0,
+                    c_ocr=c_ocr,
+                    c_final=1.0 if clear else 0.0,
+                    routing="AUTO_ACCEPT" if clear else "MANUAL",
+                    local_routing="AUTO_ACCEPT" if clear else "MANUAL",
+                    flag_reason="" if clear else "UNCLEAR_OPTION",
+                    illegible_regions=illegible_regions,
+                    routing_reason=(
+                        f"Option {selected} compared with the approved key."
+                        if clear else "The chosen option or the key is not clear; no marks were inferred."
+                    ),
                 )
             )
             continue
@@ -687,78 +737,90 @@ def process_paper(
         # -------------------------------------------------
         # Step 4b: Grading Agent
         # -------------------------------------------------
-        with timed_stage(
-            "rubric_matching_and_grading",
-            job_id=job_id,
-            on_stage=on_stage,
-            detail=f"Evaluating Q{q_num}{sub_part} against its approved rubric",
-            question_number=q_num,
-        ):
-            grader_criteria, grader_score, model_used, routing_reason = grade_answer(
-                question_text=rubric.question_text,
-                extracted_text=extracted_text,
-                image_parts=image_parts if q_type in {"DIAGRAM", "MIXED"} else [],
-                rubric=rubric,
-                max_marks=max_marks,
-                question_type=q_type,
-                illegible_count=len(illegible_regions),
-            )
-
-        # -------------------------------------------------
-        # Step 4c: Critic Agent
-        # -------------------------------------------------
-        with timed_stage(
-            "critic_agent",
-            job_id=job_id,
-            on_stage=on_stage,
-            detail=f"Independently reviewing Q{q_num}{sub_part}",
-            question_number=q_num,
-        ):
-            critic_verdict = critique_grade(
-                question_text=rubric.question_text,
-                extracted_text=extracted_text,
-                image_parts=image_parts if q_type in {"DIAGRAM", "MIXED", "NUMERICAL"} else [],
-                rubric=rubric,
-                grader_criteria=grader_criteria,
-                grader_score=grader_score,
-                max_marks=max_marks,
-                avoid_model=model_used,
-            )
-        critic_score = float(critic_verdict.suggested_score)
-        if not math.isfinite(critic_score) or not 0 <= critic_score <= max_marks:
-            raise ValueError(
-                f"Critic score for Q{q_num}{sub_part} is outside its approved "
-                f"range [0, {max_marks}]."
-            )
-
-        # -------------------------------------------------
-        # Step 4d: Resolver (if REJECT)
-        # -------------------------------------------------
-        final_criteria = grader_criteria
-        final_score = grader_score
-        force_flag = False
-
-        if critic_verdict.verdict == "REJECT":
+        try:
             with timed_stage(
-                "critic_resolver",
+                "rubric_matching_and_grading",
                 job_id=job_id,
                 on_stage=on_stage,
-                detail=f"Resolving disagreement for Q{q_num}{sub_part} (two bounded re-grades)",
+                detail=f"Evaluating Q{q_num}{sub_part} against its approved rubric",
                 question_number=q_num,
             ):
-                final_criteria, final_score, force_flag = resolve(
+                grader_criteria, grader_score, model_used, routing_reason = grade_answer(
+                    question_text=rubric.question_text,
+                    extracted_text=extracted_text,
+                    image_parts=image_parts if q_type in {"DIAGRAM", "MIXED"} else [],
+                    rubric=rubric,
+                    max_marks=max_marks,
+                    question_type=q_type,
+                    illegible_count=len(illegible_regions),
+                )
+
+            # -------------------------------------------------
+            # Step 4c: Critic Agent
+            # -------------------------------------------------
+            with timed_stage(
+                "critic_agent",
+                job_id=job_id,
+                on_stage=on_stage,
+                detail=f"Independently reviewing Q{q_num}{sub_part}",
+                question_number=q_num,
+            ):
+                critic_verdict = critique_grade(
                     question_text=rubric.question_text,
                     extracted_text=extracted_text,
                     image_parts=image_parts if q_type in {"DIAGRAM", "MIXED", "NUMERICAL"} else [],
                     rubric=rubric,
+                    grader_criteria=grader_criteria,
+                    grader_score=grader_score,
                     max_marks=max_marks,
-                    original_criteria=grader_criteria,
-                    original_score=grader_score,
-                    avoid_model=critic_verdict.model_used,
-                    avoid_models=[model_used, critic_verdict.model_used],
-                    question_type=q_type,
-                    illegible_count=len(illegible_regions),
+                    avoid_model=model_used,
                 )
+            critic_score = float(critic_verdict.suggested_score)
+            if not math.isfinite(critic_score) or not 0 <= critic_score <= max_marks:
+                raise ValueError(
+                    f"Critic score for Q{q_num}{sub_part} is outside its approved "
+                    f"range [0, {max_marks}]."
+                )
+
+            # -------------------------------------------------
+            # Step 4d: Resolver (if REJECT)
+            # -------------------------------------------------
+            final_criteria = grader_criteria
+            final_score = grader_score
+            force_flag = False
+
+            if critic_verdict.verdict == "REJECT":
+                with timed_stage(
+                    "critic_resolver",
+                    job_id=job_id,
+                    on_stage=on_stage,
+                    detail=f"Resolving disagreement for Q{q_num}{sub_part} (two bounded re-grades)",
+                    question_number=q_num,
+                ):
+                    final_criteria, final_score, force_flag = resolve(
+                        question_text=rubric.question_text,
+                        extracted_text=extracted_text,
+                        image_parts=image_parts if q_type in {"DIAGRAM", "MIXED", "NUMERICAL"} else [],
+                        rubric=rubric,
+                        max_marks=max_marks,
+                        original_criteria=grader_criteria,
+                        original_score=grader_score,
+                        avoid_model=critic_verdict.model_used,
+                        avoid_models=[model_used, critic_verdict.model_used],
+                        question_type=q_type,
+                        illegible_count=len(illegible_regions),
+                    )
+        except Exception as error:  # noqa: BLE001 - one bad answer must not lose the sheet
+            _logger.warning(
+                "answer_grading_failed question=%s%s error=%s", q_num, sub_part, type(error).__name__
+            )
+            question_grades.append(
+                _grading_failed_grade(
+                    rubric, q_type, rubric_group, extracted_text, source_page_references,
+                    c_ocr, illegible_regions, type(error).__name__,
+                )
+            )
+            continue
 
         # -------------------------------------------------
         # Step 4e: c_agree
@@ -788,10 +850,13 @@ def process_paper(
         # Recalculate final_score after evidence stripping
         final_score = sum(c.marks_awarded for c in final_criteria)
         if final_score > max_marks + 1e-6:
-            raise ValueError(
-                f"Criteria awards for Q{q_num}{sub_part} total {final_score:.2f}, "
-                f"exceeding its approved maximum of {max_marks:.2f}."
+            question_grades.append(
+                _grading_failed_grade(
+                    rubric, q_type, rubric_group, extracted_text, source_page_references,
+                    c_ocr, illegible_regions, "AWARD_OVER_MAXIMUM",
+                )
             )
+            continue
 
         # -------------------------------------------------
         # Step 4g: Confidence Engine
@@ -813,21 +878,20 @@ def process_paper(
                 total_questions=len(ocr_results),
             )
 
-        # Override routing if resolver forced flag
-        if force_flag:
-            routing = "FLAGGED"
-
-        # Build QuestionGrade
-        if illegible_regions or math_requires_manual_review:
-            routing = "MANUAL"
+        routing, flag_reason = route_answer(
+            grader_score=grader_score,
+            critic_score=critic_score,
+            critic_verdict=critic_verdict.verdict,
+            c_evid=c_evid,
+            force_flag=force_flag,
+            illegible_count=len(illegible_regions),
+            math_unverified=math_requires_manual_review,
+        )
+        local_routing = routing
         if math_requires_manual_review:
             routing_reason = (
                 f"{routing_reason} Numerical verification requires teacher review "
                 "because no explicit answer expression was available or SymPy could not confirm it."
-            ).strip()
-        if c_ocr <= 0.0:
-            routing_reason = (
-                f"{routing_reason} OCR confidence is uncalibrated; teacher validation is required."
             ).strip()
 
         verification_status = "NOT_REQUESTED"
@@ -843,10 +907,19 @@ def process_paper(
             question_number=q_num,
             sub_part=sub_part,
         )
+        # Gemini is a fallback for answers already going to the teacher, and nothing else.
+        trigger_reason = "" if routing == "AUTO_ACCEPT" else (trigger_reason or "low_confidence")
         verification_enabled = (
             os.getenv("GEMINI_VERIFICATION_ENABLED", "false").strip().lower() == "true"
         )
-        if trigger_reason and verification_enabled:
+        if trigger_reason and verification_enabled and model_router.gemini_calls_left() <= 0:
+            verification_status = "SKIPPED_RUN_LIMIT_REACHED"
+            independent_verification = {
+                "status": verification_status,
+                "trigger_reason": trigger_reason,
+                "visual_evidence_included": False,
+            }
+        elif trigger_reason and verification_enabled:
             evidence_region_ids = list(dict.fromkeys(
                 region_id
                 for criterion in final_criteria
@@ -932,6 +1005,11 @@ def process_paper(
                         "visual_evidence_included": True,
                         "local_score_preserved": final_score,
                     }
+                    if status == "AGREEMENT" and routing == "FLAGGED":
+                        routing, flag_reason = "AUTO_ACCEPT", ""
+                        routing_reason = (
+                            f"{routing_reason} Gemini's independent reading agreed with the local mark."
+                        ).strip()
                     if status != "AGREEMENT":
                         routing = "MANUAL"
                         routing_reason = (
@@ -977,7 +1055,10 @@ def process_paper(
                 source_page_references=source_page_references,
                 grader_score=grader_score,
                 critic_score=critic_score,
-                final_score=final_score,
+                final_score=final_score if routing == "AUTO_ACCEPT" else 0.0,
+                suggested_score=None if routing == "AUTO_ACCEPT" else final_score,
+                flag_reason=flag_reason,
+                local_routing=local_routing,
                 criteria=final_criteria,
                 c_ocr=c_ocr,
                 c_agree=c_agree,
@@ -1102,6 +1183,34 @@ def process_paper(
 # =========================================================
 # FIRESTORE PERSISTENCE
 # =========================================================
+
+def _grading_failed_grade(
+    rubric: QuestionRubric,
+    q_type: str,
+    rubric_group: str,
+    extracted_text: str,
+    source_page_references: list,
+    c_ocr: float,
+    illegible_regions: list[str],
+    failure: str,
+) -> QuestionGrade:
+    return QuestionGrade(
+        question_number=rubric.question_number,
+        sub_part=rubric.sub_part.strip().upper(),
+        choice_group=rubric_group,
+        question_type=q_type,
+        max_marks=rubric.max_marks,
+        extracted_text=extracted_text,
+        grading_input_text=extracted_text,
+        source_page_references=source_page_references,
+        c_ocr=c_ocr,
+        routing="MANUAL",
+        local_routing="MANUAL",
+        flag_reason="GRADING_FAILED",
+        illegible_regions=illegible_regions,
+        routing_reason=f"Grading did not finish ({failure}); no marks were inferred.",
+    )
+
 
 def _save_to_firestore(
     exam_id: str,

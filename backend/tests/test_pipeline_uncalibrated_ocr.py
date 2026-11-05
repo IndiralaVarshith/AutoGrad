@@ -140,7 +140,7 @@ class TestPipelineUncalibratedOCR(unittest.TestCase):
         self.assertEqual(result.questions[0].final_score, 0.0)
         self.assertEqual(result.questions[0].source_page_references[0]["page_number"], 2)
 
-    def test_uncalibrated_transcription_stays_provisional(self):
+    def test_agreed_verified_answer_is_accepted_but_paper_stays_provisional(self):
         rubric = QuestionRubric(
             question_number=1,
             question_text="State the concept.",
@@ -201,8 +201,8 @@ class TestPipelineUncalibratedOCR(unittest.TestCase):
 
         self.assertEqual(result.ocr_pages[0].regions[0].region_id, "region-1")
         self.assertEqual(result.questions[0].ocr_confidence_class, "UNCALIBRATED")
-        self.assertEqual(result.questions[0].routing, "FLAGGED")
-        self.assertEqual(result.status, "NEEDS_REVIEW")
+        self.assertEqual(result.questions[0].routing, "AUTO_ACCEPT")
+        self.assertEqual(result.total_score, 1.0)
         self.assertEqual(result.finality_status, "PENDING_VALIDATION")
 
     def test_gemini_disagreement_is_preserved_separately_and_cannot_change_score(self):
@@ -290,7 +290,8 @@ class TestPipelineUncalibratedOCR(unittest.TestCase):
         question = result.questions[0]
         verify.assert_called_once()
         self.assertTrue(verify.call_args.kwargs["images"])
-        self.assertEqual(question.final_score, 1.0)
+        self.assertEqual(question.final_score, 0.0)
+        self.assertEqual(question.suggested_score, 1.0)
         self.assertEqual(question.verification_status, "DISAGREEMENT")
         self.assertEqual(question.independent_verification["suggested_score"], 0.0)
         self.assertEqual(question.independent_verification["local_score_preserved"], 1.0)

@@ -153,6 +153,8 @@ ai_config = AIConfiguration()
 # DATA CLASSES
 # =========================================================
 
+GEMINI_RUN_IDLE_SECONDS = 3600.0
+
 _LOCAL_ONLY: ContextVar[bool] = ContextVar("autograd_local_only", default=False)
 
 
@@ -1260,6 +1262,9 @@ class ModelRouter:
     """
 
     def __init__(self):
+        self._gemini_run_lock = threading.Lock()
+        self._gemini_run_calls = 0
+        self._gemini_run_last_call = 0.0
         self.config = ai_config
         self.ollama = OllamaClient(self.config)
         self.policy = RoutingPolicy(self.config)
@@ -1313,6 +1318,11 @@ class ModelRouter:
             raise NoSuitableModelError("Independent Gemini verification is disabled.")
         if not self._gemini_allowed_for_fallback():
             raise NoSuitableModelError("Gemini is not enabled for fallback or verification.")
+        with self._gemini_run_lock:
+            if self._gemini_calls_left_locked() <= 0:
+                raise NoSuitableModelError("The Gemini call limit for this run is used up.")
+            self._gemini_run_calls += 1
+            self._gemini_run_last_call = time.monotonic()
         profile = TaskProfile(
             category=TaskCategory.CRITICAL,
             requires_vision=bool(images),
@@ -1827,6 +1837,23 @@ class ModelRouter:
             raise NoSuitableModelError(
                 f"Ollama inference failed for task {task_id} ({type(failure).__name__}); teacher validation is required."
             ) from None
+
+    def start_gemini_run(self) -> None:
+        """Begin a new run with a full Gemini allowance."""
+        with self._gemini_run_lock:
+            self._gemini_run_calls = 0
+
+    def gemini_calls_left(self) -> int:
+        with self._gemini_run_lock:
+            return self._gemini_calls_left_locked()
+
+    def _gemini_calls_left_locked(self) -> int:
+        limit = max(0, int(os.getenv("GEMINI_MAX_CALLS_PER_RUN", "20")))
+        idle = time.monotonic() - self._gemini_run_last_call
+        if self._gemini_run_calls and idle > GEMINI_RUN_IDLE_SECONDS:
+            # The app has no batch object, so a long quiet spell ends the run.
+            self._gemini_run_calls = 0
+        return limit - self._gemini_run_calls
 
     def _gemini_allowed_for_fallback(self) -> bool:
         return self.config.gemini_enabled or self.config.gemini_fallback_enabled

@@ -69,7 +69,11 @@ class QuestionGrade(BaseModel):
     regrade_required: bool = False
     grader_score: float = 0.0
     critic_score: float = 0.0
-    final_score: float = 0.0
+    final_score: float = 0.0  # counts toward the total; stays 0 until accepted or confirmed
+    suggested_score: float | None = None  # draft shown to the teacher when flagged
+    selected_option: str = ""  # MCQ only: the letter read from the sheet
+    flag_reason: str = ""  # why this answer needs review
+    local_routing: str = ""  # routing before any Gemini check
     criteria: list[CriterionResult] = Field(default_factory=list)
     c_ocr: float = 0.0
     c_agree: float = 0.0
