@@ -34,8 +34,12 @@ Branch `wip`. Update after every step so a new session can resume.
 - [x] A2 Read an answer sheet: `OLLAMA_SHEET_READER_MODEL` (also shown at `GET /` and on the Upload result), `PaperResult.page_readers`, unmatched numbers saved as `NOT_ON_PAPER`, unreadable pages flag, faint pages skipped, `local_only` scope blocks automatic Gemini escalation.
 - [x] A3 Grade each answer: MCQ by code, `route_answer` replaces the stuck `c_ocr` gate, flagged drafts live in `suggested_score` and only count once confirmed, failed grades flag one answer, Gemini only on flagged answers with `GEMINI_MAX_CALLS_PER_RUN` (default 20) and header-free crops. Baseline e2e failures fixed.
 - [x] A4 Evaluation script: `backend/scripts/evaluate_grading.py`, metrics in `services/evaluation.py`, split in `backend/evaluation/split.json`. Reports in `docs/eval/`, transcripts in git-ignored `backend/evaluation/runs/`. Report split needs `--confirm-final` and committed code; a rerun needs `--rerun-reason`.
-- [ ] A5 Tune on 10 sheets, compare two models
-- [ ] Final run on the 40 report sheets, report written
+- [ ] A5 Tune on 10 sheets, compare two models. In progress:
+  - Reading only (`read-*`, before later reader rules): gemma MCQ 88.9%, short coverage 93.9%, 41 s/sheet. qwen MCQ 98.0%, coverage 89.9%, 76 s/sheet.
+  - `tune1-*` (commit 0bca73e): gemma MCQ 78.8%, short within 0.5 of all 27.3%, flagged 33.1%, silent wrong 48. qwen MCQ 86.9%, short 22.2%, flagged 29.7%, silent wrong 48. Cause: grader zeros on answers the teacher credited (52 of 56 written-answer zeros wrong; teacher gave 0 to 8 of 99).
+  - Commit 53ae81f: generous marking standard in both prompts; a written answer scored 0 flags as `ZERO_ON_WRITTEN_ANSWER`.
+  - `tune2-qwen35`, then `tune2-gemma4` running at 53ae81f. Next: compare, keep the better reader, set it as the default, commit.
+- [ ] Final run on the 40 report sheets, report written: `--split report --name final --confirm-final --gemini` from a clean tree. Run all tests on the emulator first.
 
 ## Notes
 - `c_ocr` is fixed at 0, which caps confidence at 0.80 under the 0.85 auto-accept line, so every answer flags today. A3 must replace this.

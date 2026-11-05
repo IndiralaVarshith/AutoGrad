@@ -263,3 +263,31 @@ def test_tests_run_with_gemini_off():
     assert os.environ["GEMINI_ENABLED"] == "false"
     assert os.environ["GEMINI_FALLBACK_ENABLED"] == "false"
     assert os.environ["GEMINI_VERIFICATION_ENABLED"] == "false"
+
+
+@pytest.mark.parametrize("avoid,expected", [(None, "grader-model"), ("grader-model", None)])
+def test_grader_uses_the_configured_model_unless_excluded(monkeypatch, avoid, expected):
+    import services.grading_agent as agent
+    from models.schemas import QuestionRubric
+
+    seen = {}
+
+    class Reply:
+        text = ""
+        parsed_json = {"criterion_results": [], "total_score": 0}
+        model_used = "m"
+        routing_reason = "r"
+
+    def generate(**kwargs):
+        seen.update(kwargs)
+        return Reply()
+
+    monkeypatch.setattr(agent, "OLLAMA_GRADER_MODEL", "grader-model")
+    monkeypatch.setattr(agent, "AI_PROVIDER", "ollama")
+    monkeypatch.setattr(agent.model_router, "generate", generate)
+    rubric = QuestionRubric(
+        question_number=21, question_text="Q", max_marks=2.0,
+        criteria=[{"description": "idea", "max_marks": 2.0}],
+    )
+    agent.grade_answer("Q", "text", [], rubric, 2.0, avoid_model=avoid)
+    assert seen["force_model"] == expected

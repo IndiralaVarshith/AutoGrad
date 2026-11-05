@@ -155,6 +155,12 @@ def test_reading_score():
     assert result["short_marked_with_text"] == 1 and result["unmapped"] == 1
 
 
+def test_constant_mark_baseline_shows_a_lenient_window():
+    sheet = teacher_sheet(short={21: 0.0, 22: 1.0})  # the other 13 are 2.0
+    baseline = score(paper(), sheet)["constant_mark_baseline"]
+    assert baseline == {"1.5": round(100 * 14 / 15, 1), "2.0": round(100 * 13 / 15, 1)}
+
+
 def test_report_renders():
     result = score(paper(q3={"selected_option": "B"}), teacher_sheet())
     text = render_report("Title", {"Split": "tune"}, result, None)

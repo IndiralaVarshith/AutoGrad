@@ -49,6 +49,11 @@ OLLAMA_PAPER_READER_MODEL: str = (
 OLLAMA_SHEET_READER_MODEL: str = (
     os.getenv("OLLAMA_SHEET_READER_MODEL", "").strip() or OLLAMA_COMPLEX_MODEL
 )
+# The one setting for which local model gives the first mark on a written answer.
+# The second marker is always a different model.
+OLLAMA_GRADER_MODEL: str = (
+    os.getenv("OLLAMA_GRADER_MODEL", "").strip() or OLLAMA_COMPLEX_MODEL
+)
 OLLAMA_MAX_CONCURRENT_REQUESTS: int = int(os.getenv("OLLAMA_MAX_CONCURRENT_REQUESTS", "1"))
 GEMINI_ENABLED: bool = os.getenv("GEMINI_ENABLED", "false").strip().lower() == "true"
 GEMINI_FALLBACK_ENABLED: bool = os.getenv("GEMINI_FALLBACK_ENABLED", "false").strip().lower() == "true"

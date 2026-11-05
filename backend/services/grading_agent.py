@@ -13,7 +13,7 @@ import math
 import re
 
 from models.schemas import CriterionResult, QuestionRubric
-from config import gemini_generate_with_retry
+from config import AI_PROVIDER, OLLAMA_GRADER_MODEL, gemini_generate_with_retry
 from services.router import model_router
 
 
@@ -179,6 +179,9 @@ the student answer as verbatim_quote. Return JSON only.
     ):
         task_category = "high_complexity"
 
+    excluded = {avoid_model, *(avoid_models or [])}
+    use_configured_grader = AI_PROVIDER != "gemini" and OLLAMA_GRADER_MODEL not in excluded
+
     res = model_router.generate(
         task_type="grading",
         prompt=user_prompt,
@@ -190,6 +193,7 @@ the student answer as verbatim_quote. Return JSON only.
         illegible_count=illegible_count,
         avoid_model=avoid_model,
         avoid_models=avoid_models,
+        force_model=OLLAMA_GRADER_MODEL if use_configured_grader else None,
         task_category=task_category,
         requires_reasoning=(task_category == "high_complexity") if task_category else None,
     )

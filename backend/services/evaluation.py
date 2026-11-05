@@ -73,6 +73,18 @@ def _pct(part: int, whole: int) -> float | None:
     return round(100.0 * part / whole, 1) if whole else None
 
 
+def _constant_mark_baseline(results: dict, teacher: dict) -> dict[str, float | None]:
+    """How a marker that never reads the answer would score on the 0.5 window."""
+    marks = [
+        mark for student in results
+        for mark in teacher[student].short.values() if mark is not None
+    ]
+    return {
+        str(constant): _pct(sum(abs(constant - mark) <= 0.5 for mark in marks), len(marks))
+        for constant in (1.5, 2.0)
+    }
+
+
 def score_run(
     results: dict[str, dict[str, Any]],
     teacher: dict[str, TeacherSheet],
@@ -184,6 +196,7 @@ def score_run(
                 "within_0_5_pct": _pct(drafts["draft_within_0_5"], drafts["with_draft"]),
             },
         },
+        "constant_mark_baseline": _constant_mark_baseline(results, teacher),
         "flagged_overall_pct": _pct(sum(flag_reasons.values()), all_answers),
         "flag_reasons": dict(flag_reasons.most_common()),
         "silent_wrong": silent,
@@ -241,6 +254,7 @@ def render_report(
             + line("MCQ silent wrong", m["silent_wrong"])
             + line("Short answers within 0.5, of unflagged answers", f"{s['agreement_pct_of_unflagged']}% ({s['agree']}/{s['agree'] + s['silent_wrong']})")
             + line("Short answers within 0.5, of all with a teacher mark", f"{s['agreement_pct_of_all']}% ({s['agree']}/{s['total']})")
+            + line("Baseline: same mark for every answer, never reading it", f"always 1.5: {result['constant_mark_baseline']['1.5']}%; always 2: {result['constant_mark_baseline']['2.0']}%")
             + line("Short answers flagged", f"{s['flagged_pct']}% ({s['flagged']}/{s['total']})")
             + line("Flagged drafts within 0.5 (not counted as marks)", f"{s['flagged_drafts']['within_0_5_pct']}% ({s['flagged_drafts']['within_0_5']}/{s['flagged_drafts']['with_draft']})")
             + line("Short-answer silent wrong", s["silent_wrong"])

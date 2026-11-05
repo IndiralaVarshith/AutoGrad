@@ -165,7 +165,7 @@ def main(argv=None) -> None:
     set_environment(args)
     sys.path.insert(0, str(BACKEND))
 
-    from config import OLLAMA_SHEET_READER_MODEL
+    from config import OLLAMA_GRADER_MODEL, OLLAMA_SHEET_READER_MODEL
     from services.evaluation import (
         load_split,
         load_teacher_marks,
@@ -207,6 +207,7 @@ def main(argv=None) -> None:
     meta = {
         "Split": f"{args.split} ({len(results)} of {len(students)} sheets graded)",
         "Sheet reader": OLLAMA_SHEET_READER_MODEL,
+        "Grader": f"{OLLAMA_GRADER_MODEL}, second marker is the other local model",
         "Commit": git("rev-parse", "--short", "HEAD"),
         "Criteria": "drafted from answerkey.txt and auto-approved by the script, with no teacher review",
         "Answer key": "answerkey.txt as written (Q1 = B)",
