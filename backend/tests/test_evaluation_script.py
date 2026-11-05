@@ -245,3 +245,11 @@ def test_flagged_percent_counts_an_answer_once_and_can_leave_out_blanks():
     assert result["flagged_overall_pct"] == round(100 * 2 / 35, 1)
     assert result["flagged_excluding_blanks_pct"] == round(100 / 35, 1)
     assert result["flag_reasons"]["EVIDENCE_NOT_FOUND"] == 1
+
+
+def test_every_proposed_mark_counts_flagged_drafts_too():
+    p = paper(q21={"routing": "FLAGGED", "suggested_score": 1.0, "flag_reason": "PARTIAL_HIGH_VALUE"})
+    short = score(p, teacher_sheet())["short"]
+    assert short["proposed"] == 15
+    assert short["exact_pct_of_proposed"] == round(100 * 14 / 15, 1)
+    assert short["mae_proposed"] == round(1 / 15, 3)

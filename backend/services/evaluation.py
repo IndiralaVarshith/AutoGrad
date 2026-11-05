@@ -233,6 +233,14 @@ def score_run(
             "mae_unflagged": _mean_abs(unflagged_pairs),
             "mae_flagged_drafts": _mean_abs(draft_pairs),
             "unflagged": len(unflagged_pairs),
+            # Every mark the app proposed, flagged or not. The fair comparison with a baseline
+            # when only full marks stand alone, since unflagged answers then all get full marks.
+            "proposed": len(unflagged_pairs) + len(draft_pairs),
+            "exact_pct_of_proposed": _pct(
+                sum(a == b for a, b in unflagged_pairs + draft_pairs),
+                len(unflagged_pairs) + len(draft_pairs),
+            ),
+            "mae_proposed": _mean_abs(unflagged_pairs + draft_pairs),
             "most_common_mark_baseline": most_common_mark_baseline(unflagged_pairs, teacher_marks),
             "agreement_pct_of_unflagged": _pct(short["agree"], short["agree"] + short["silent_wrong"]),
             "agreement_pct_of_all": _pct(short["agree"], short["total"]),
@@ -270,6 +278,8 @@ def _block(result: dict[str, Any]) -> str:
         + line(f"Baseline, always {base.get('mark')}: mean absolute error on the same unflagged answers", base.get("mae_unflagged"))
         + line(f"Baseline, always {base.get('mark')}: exact, of all with a teacher mark", f"{base.get('exact_pct_all')}%")
         + line(f"Baseline, always {base.get('mark')}: mean absolute error, all", base.get("mae_all"))
+        + line("Short answers: every proposed mark, flagged or not: exact", f"{s['exact_pct_of_proposed']}% of {s['proposed']}")
+        + line("Short answers: every proposed mark, flagged or not: mean absolute error", s["mae_proposed"])
         + line("Short answers: within 0.5, of unflagged", f"{s['agreement_pct_of_unflagged']}% ({s['agree']}/{s['agree'] + s['silent_wrong']})")
         + line("Short answers flagged", f"{s['flagged_pct']}% ({s['flagged']}/{s['total']})")
         + line("Flagged drafts: mean absolute error (not counted as marks)", s["mae_flagged_drafts"])
