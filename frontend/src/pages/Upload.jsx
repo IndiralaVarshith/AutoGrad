@@ -38,7 +38,7 @@ export default function Upload({ examId = 'varshith', onExamIdChange, onGoToDash
   const [evaluatingSingle, setEvaluatingSingle] = useState(false);
   const [statusMsg, setStatusMsg] = useState('');
   const [error, setError] = useState('');
-  const [queueStats, setQueueStats] = useState({ total: 0, processing: 0, completed: 0, needsReview: 0 });
+  const [queue, setQueue] = useState(null);
 
   // Approved rubric state from Firestore
   const [rubricInfo, setRubricInfo] = useState(null);
@@ -56,6 +56,30 @@ export default function Upload({ examId = 'varshith', onExamIdChange, onGoToDash
       setSelectedExamId(examId);
     }
   }, [examId, selectedExamId]);
+
+  // Live queue progress. It survives a page reload or a backend restart.
+  useEffect(() => {
+    const id = selectedExamId.trim();
+    if (!id) {
+      setQueue(null);
+      return undefined;
+    }
+    let stopped = false;
+    const refresh = async () => {
+      try {
+        const data = await api.getQueueStatus(id);
+        if (!stopped) setQueue(data);
+      } catch {
+        // The next poll tries again.
+      }
+    };
+    refresh();
+    const timer = setInterval(refresh, 3000);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [selectedExamId]);
 
   // Fetch list of exams from Firestore on mount
   useEffect(() => {
@@ -319,13 +343,6 @@ export default function Upload({ examId = 'varshith', onExamIdChange, onGoToDash
 
       setStatusMsg(`Dispatched ${res.queued ?? files.length} answer sheets to background queue.`);
       
-      setQueueStats({
-        total: files.length,
-        processing: files.length,
-        completed: 0,
-        needsReview: 0,
-      });
-
     } catch (err) {
       console.error('Upload error:', err);
       setError(err.response?.data?.detail || err.message || 'Bulk upload failed.');
@@ -370,8 +387,11 @@ export default function Upload({ examId = 'varshith', onExamIdChange, onGoToDash
       )}
 
       {/* Queue Status Widget */}
-      {queueStats.total > 0 && (
-        <QueueStatus stats={queueStats} />
+      {queue?.total_jobs > 0 && (
+        <QueueStatus
+          queue={queue}
+          onResume={async () => setQueue(await api.resumeQueue(selectedExamId.trim()))}
+        />
       )}
 
       {(evaluatingSingle || evaluationJob) && (

@@ -34,6 +34,13 @@ app = FastAPI(
 )
 
 
+@app.on_event("startup")
+def resume_queue_after_restart() -> None:
+    """Sheets waiting or cut off by a restart carry on without a new upload."""
+    if upload.queue_manager.has_pending_jobs():
+        upload.queue_manager.start_worker(upload._execute_grading_job)
+
+
 # =========================================================
 # CORS MIDDLEWARE
 # =========================================================

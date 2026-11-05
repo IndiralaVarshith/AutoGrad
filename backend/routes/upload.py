@@ -10,7 +10,9 @@ import json
 import hashlib
 import logging
 import os
+import re
 import time
+import uuid
 from pathlib import Path
 from io import BytesIO
 
@@ -21,9 +23,10 @@ from fastapi.responses import JSONResponse
 from PIL import Image
 
 from config import get_firestore, get_storage_bucket
+from services.gemini_client import DailyLimitReached, GeminiCallFailed, RunBudget, RunCapReached, get_client
 from services.gemini_paper import rubric_total_problems
 from services.gemini_sheet import grade_sheet
-from models.schemas import QuestionRubric
+from models.schemas import PaperResult, QuestionRubric
 from services.queue_manager import queue_manager, QueueJob
 from services.db import db_service
 from services.timing import log_timing, timed_stage
@@ -74,8 +77,10 @@ async def upload_answer_sheets(
         )
 
     queued = 0
+    conflicts: list[str] = []
 
     for idx, file in enumerate(files):
+        upload_started_at = time.perf_counter()
         if not file.filename:
             raise HTTPException(400, f"Uploaded file at position {idx + 1} has no filename.")
 
@@ -84,12 +89,14 @@ async def upload_answer_sheets(
         if not mime:
             raise HTTPException(400, f"Unsupported answer-sheet file type: {ext or 'unknown'}.")
 
-        # Determine student info
+        # Determine student info. The file name is the fallback: a position-based
+        # name would let a second batch overwrite the first batch's results.
+        fallback = _ticket_from_filename(file.filename)
         if idx < len(meta_list) and isinstance(meta_list[idx], dict):
-            hall_ticket = meta_list[idx].get("hall_ticket", f"UNKNOWN_{idx}")
+            hall_ticket = str(meta_list[idx].get("hall_ticket") or fallback).strip()
             name = meta_list[idx].get("name", "")
         else:
-            hall_ticket = f"STUDENT_{idx + 1}"
+            hall_ticket = fallback
             name = ""
 
         with timed_stage(
@@ -101,6 +108,10 @@ async def upload_answer_sheets(
                 raise HTTPException(400, f"Answer-sheet file '{file.filename}' is empty.")
             _validate_answer_sheet_bytes(file_bytes, ext)
         file_sha256 = hashlib.sha256(file_bytes).hexdigest()
+
+        if _ticket_taken_by_another_file(exam_id, hall_ticket, file_sha256):
+            conflicts.append(file.filename)
+            continue
 
         queue_manager.enqueue(
             exam_id=exam_id,
@@ -132,7 +143,14 @@ async def upload_answer_sheets(
         "queued": queued,
         "exam_id": exam_id,
         "status": "QUEUED",
-        "message": f"Successfully queued {queued} answer sheets for sequential local evaluation."
+        "conflicts": conflicts,
+        "message": (
+            f"Queued {queued} answer sheets. They are graded one at a time."
+            + (
+                f" Not queued, because that student already has a different sheet: {', '.join(conflicts)}."
+                if conflicts else ""
+            )
+        ),
     }
 
 
@@ -156,6 +174,18 @@ def _execute_grading_job(job: QueueJob):
 
     file_bytes = Path(file_path).read_bytes()
     check_hash(file_bytes)
+
+    # A restart or retry after the save must not pay again or undo a teacher's edits.
+    saved = db_service.get_grading_result(job.exam_id, job.hall_ticket) if db_service.is_connected() else None
+    if (
+        saved
+        and job.file_sha256
+        and saved.get("source_sha256") == job.file_sha256
+        and str(saved.get("rubric_version", "")) == str(job.rubric_version)
+    ):
+        return PaperResult.model_validate(
+            {key: value for key, value in saved.items() if key in PaperResult.model_fields}
+        )
 
     rubric_list: list[QuestionRubric]
     rubric_total_marks = job.rubric_total_marks
@@ -210,13 +240,48 @@ def _execute_grading_job(job: QueueJob):
             ),
             rubric_version=job.rubric_version,
             total_marks=rubric_total_marks or None,
+            source_sha256=job.file_sha256,
+            run=_batch_run(job.exam_id),
             on_stage=update_stage,
         )
         db_service.save_grading_result(job.exam_id, job.hall_ticket, result)
+        _finish_batch_if_done(job)
         return result
+    except (DailyLimitReached, RunCapReached):
+        raise  # The sheet goes back in line. It has not failed.
+    except GeminiCallFailed as error:
+        if not error.transient:
+            _update_submission_failure(job, error)
+        raise
     except Exception as error:
         _update_submission_failure(job, error)
         raise
+
+
+# One budget per batch: the cap covers a whole upload, not each sheet.
+_batch_runs: dict[str, RunBudget] = {}
+
+
+def _batch_run(exam_id: str) -> RunBudget:
+    if exam_id not in _batch_runs:
+        _batch_runs[exam_id] = get_client().new_run(f"{exam_id}-{uuid.uuid4().hex[:6]}")
+    return _batch_runs[exam_id]
+
+
+def _finish_batch_if_done(job: QueueJob) -> None:
+    if not queue_manager.exam_has_pending_jobs(job.exam_id, other_than=job.job_id):
+        _batch_runs.pop(job.exam_id, None)
+
+
+def _ticket_from_filename(filename: str) -> str:
+    return re.sub(r"[^\w.-]+", "_", Path(filename).stem).strip("._") or "UNNAMED"
+
+
+def _ticket_taken_by_another_file(exam_id: str, hall_ticket: str, file_sha256: str) -> bool:
+    return any(
+        job.hall_ticket == hall_ticket and job.file_sha256 != file_sha256 and job.status != "CANCELLED"
+        for job in queue_manager.get_exam_jobs(exam_id)
+    )
 
 
 def _update_submission_failure(job: QueueJob, error: Exception) -> None:
@@ -318,6 +383,7 @@ async def evaluate_single_student(
         rubric_version=rubric_version,
         rubric_total_marks=total_marks,
         rubric_data=[question.model_dump() for question in rubric_list],
+        priority=True,  # "Grade one now" goes ahead of any waiting batch.
     )
     queue_manager.start_worker(_execute_grading_job)
     log_timing(
@@ -412,6 +478,7 @@ def get_queue_status(exam_id: str):
     jobs = queue_manager.get_exam_jobs(exam_id)
     return {
         "exam_id": exam_id,
+        **queue_manager.pause_status(),
         "total_jobs": len(jobs),
         "pending": sum(1 for j in jobs if j.status == "PENDING"),
         "processing": sum(1 for j in jobs if j.status == "PROCESSING"),
@@ -439,6 +506,15 @@ def get_queue_status(exam_id: str):
             for j in jobs
         ],
     }
+
+
+@router.post("/queue/{exam_id}/resume")
+def resume_queue(exam_id: str):
+    """Start a new run after the call cap stopped the queue."""
+    _batch_runs.pop(exam_id, None)
+    queue_manager.resume()
+    queue_manager.start_worker(_execute_grading_job)
+    return {"exam_id": exam_id, **queue_manager.pause_status()}
 
 
 @router.post("/queue/{exam_id}/retry/{hall_ticket}")

@@ -70,6 +70,16 @@ export const api = {
   },
 
   // Single student evaluation is accepted quickly and processed in the background.
+  getQueueStatus: async (examId) => {
+    const res = await client.get(`/queue/${encodeURIComponent(examId)}`);
+    return res.data;
+  },
+
+  resumeQueue: async (examId) => {
+    const res = await client.post(`/queue/${encodeURIComponent(examId)}/resume`);
+    return res.data;
+  },
+
   evaluateSingleStudent: async (formData, onUploadProgress) => {
     const res = await client.post('/evaluate', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },

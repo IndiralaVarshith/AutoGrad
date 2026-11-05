@@ -77,6 +77,10 @@ GEMINI_MIN_CONFIDENCE: float = float(os.getenv("GEMINI_MIN_CONFIDENCE", "0.8"))
 GEMINI_HIGH_VALUE_MARKS: float = float(os.getenv("GEMINI_HIGH_VALUE_MARKS", "5"))
 # Second opinions from the stronger model. Off by default; they use its small daily allowance.
 GEMINI_REVIEW_ENABLED: bool = os.getenv("GEMINI_REVIEW_ENABLED", "false").strip().lower() == "true"
+# Queue state and sheets kept for review. Not the system temp folder, which can be wiped.
+QUEUE_DATA_DIR: str = os.getenv("QUEUE_DATA_DIR", str(_BACKEND_DIR / "queue_data"))
+# How long the whole queue waits when Gemini says it is overloaded.
+GEMINI_OVERLOAD_PAUSE_SECONDS: float = float(os.getenv("GEMINI_OVERLOAD_PAUSE_SECONDS", "300"))
 GEMINI_USAGE_DIR: str = os.getenv("GEMINI_USAGE_DIR", str(_BACKEND_DIR / "gemini_usage"))
 # Paid-tier prices, for the notional cost only. A model missing here reports cost unknown.
 GEMINI_PRICES_USD_PER_MILLION: dict[str, dict[str, float]] = {

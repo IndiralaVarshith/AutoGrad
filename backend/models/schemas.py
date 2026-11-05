@@ -148,6 +148,7 @@ class PaperResult(BaseModel):
     unmapped_answers: list[dict] = Field(default_factory=list)
     page_readers: list[dict] = Field(default_factory=list)  # which model read each page
     sheet_problems: list[str] = Field(default_factory=list)
+    source_sha256: str = ""  # which file these marks came from
     gemini_usage: dict = Field(default_factory=dict)  # calls, tokens, notional cost
 
 

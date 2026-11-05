@@ -15,21 +15,25 @@ from __future__ import annotations
 import json
 import hashlib
 import logging
-import os
-import tempfile
 import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import Any, Callable
 
 # get_firestore imported lazily inside sync_to_firestore to avoid blocking
 # Firebase SDK initialisation at import time during tests.
 
 
-SPOOL_DIR = Path(tempfile.gettempdir()) / "autograde_spool"
-QUEUE_FILE = Path(tempfile.gettempdir()) / "autograde_queue_state.json"
+
+import config
+from services.gemini_client import DailyLimitReached, GeminiCallFailed, RunCapReached
+
+SPOOL_DIR = Path(config.QUEUE_DATA_DIR) / "spool"
+QUEUE_FILE = Path(config.QUEUE_DATA_DIR) / "queue_state.json"
 SPOOL_DIR.mkdir(parents=True, exist_ok=True)
 _logger = logging.getLogger(__name__)
 _TERMINAL_STATUSES = {"COMPLETE", "NEEDS_REVIEW", "FAILED", "TIMED_OUT", "CANCELLED"}
@@ -64,6 +68,8 @@ class QueueJob:
     cancel_requested: bool = False
     error_code: str = ""
     result: dict[str, Any] | None = None
+    priority: bool = False  # "grade one now": goes ahead of the queue
+    not_before: float = 0.0  # do not start before this time
 
 
 class BatchQueueManager:
@@ -75,6 +81,9 @@ class BatchQueueManager:
         self._is_processing = False
         self._processor_callback: Callable | None = None
         self._jobs: dict[str, QueueJob] = self._load_state()
+        self._paused_until: float = 0.0
+        self._pause_reason: str = ""
+        self._needs_resume: bool = False
 
     def _load_state(self) -> dict[str, QueueJob]:
         """Load persistent queue state from disk."""
@@ -145,6 +154,7 @@ class BatchQueueManager:
         rubric_version: str = "",
         rubric_total_marks: float = 0.0,
         rubric_data: list[dict[str, Any]] | None = None,
+        priority: bool = False,
     ) -> QueueJob:
         """Spool answer sheet to disk and register in the queue."""
         file_sha256 = hashlib.sha256(file_bytes).hexdigest()
@@ -184,6 +194,7 @@ class BatchQueueManager:
                 rubric_version=rubric_version,
                 rubric_total_marks=rubric_total_marks,
                 rubric_data=rubric_data,
+                priority=priority,
             )
             self._jobs[job_id] = job
 
@@ -282,13 +293,13 @@ class BatchQueueManager:
                 return None
             if job.status not in {"FAILED", "TIMED_OUT"}:
                 raise ValueError(f"Only failed or timed-out jobs can be retried (status={job.status}).")
-            if job.attempt_count >= job.max_attempts:
-                raise ValueError(f"Retry limit reached ({job.max_attempts} total attempts).")
             if not Path(job.file_path).is_file():
                 raise FileNotFoundError("The uploaded answer sheet is no longer available for retry.")
             job.status = "PENDING"
             job.current_stage = "queued"
-            job.stage_detail = "Retry queued; completed OCR/preprocessing stages may be reused"
+            job.stage_detail = "Retry queued"
+            job.attempt_count = 0
+            job.not_before = 0.0
             job.error_message = ""
             job.error_code = ""
             job.cancel_requested = False
@@ -312,110 +323,189 @@ class BatchQueueManager:
         print("[QueueManager] Batch worker loop started.")
         while True:
             # Find next pending job
-            next_job: QueueJob | None = None
-            with self._lock:
-                for job in self._jobs.values():
-                    if job.status == "PENDING":
-                        next_job = job
-                        break
+            next_job = self._next_job()
 
             if next_job is None:
                 # Idle wait
                 time.sleep(1.0)
                 continue
 
-            if next_job.cancel_requested:
-                self.update_job_status(
-                    next_job.job_id,
-                    "CANCELLED",
-                    current_stage="cancelled",
-                    stage_detail="Cancelled before processing started",
-                )
-                continue
+            self._run_job(next_job)
+            time.sleep(0.1)
 
-            # Process job
-            _logger.info("Starting evaluation job %s for %s", next_job.job_id, next_job.hall_ticket)
+    def _run_job(self, next_job: QueueJob) -> None:
+        if next_job.cancel_requested:
             self.update_job_status(
                 next_job.job_id,
-                "PROCESSING",
-                current_stage="extracting_pages",
-                stage_detail="Preparing the answer-sheet pages",
+                "CANCELLED",
+                current_stage="cancelled",
+                stage_detail="Cancelled before processing started",
             )
-            with self._lock:
-                current = self._jobs.get(next_job.job_id)
-                if current:
-                    current.attempt_count += 1
-                    current.updated_at = time.time()
-            self._save_state()
+            return
 
-            try:
-                if self._processor_callback:
-                    outcome = self._processor_callback(next_job)
-                    if hasattr(outcome, "model_dump"):
-                        result = outcome.model_dump()
-                        self.update_job_status(
-                            next_job.job_id,
-                            outcome.status,
-                            score=outcome.total_score,
-                            max_score=outcome.max_total,
-                            current_stage="completed",
-                            stage_detail="Evaluation result is ready",
-                            result=result,
-                        )
-                    elif isinstance(outcome, tuple) and len(outcome) == 3:
-                        result_status, score, max_score = outcome
-                        self.update_job_status(
-                            next_job.job_id,
-                            result_status,
-                            score=score,
-                            max_score=max_score,
-                            current_stage="completed",
-                            stage_detail="Evaluation result is ready",
-                        )
-                    else:
-                        raise TypeError("Evaluation worker returned an unsupported result.")
+        # Process job
+        _logger.info("Starting evaluation job %s for %s", next_job.job_id, next_job.hall_ticket)
+        self.update_job_status(
+            next_job.job_id,
+            "PROCESSING",
+            current_stage="extracting_pages",
+            stage_detail="Preparing the answer-sheet pages",
+        )
+        with self._lock:
+            current = self._jobs.get(next_job.job_id)
+            if current:
+                current.attempt_count += 1
+                current.updated_at = time.time()
+        self._save_state()
+
+        try:
+            if self._processor_callback:
+                outcome = self._processor_callback(next_job)
+                if hasattr(outcome, "model_dump"):
+                    result = outcome.model_dump()
+                    self.update_job_status(
+                        next_job.job_id,
+                        outcome.status,
+                        score=outcome.total_score,
+                        max_score=outcome.max_total,
+                        current_stage="completed",
+                        stage_detail="Evaluation result is ready",
+                        result=result,
+                    )
+                elif isinstance(outcome, tuple) and len(outcome) == 3:
+                    result_status, score, max_score = outcome
+                    self.update_job_status(
+                        next_job.job_id,
+                        result_status,
+                        score=score,
+                        max_score=max_score,
+                        current_stage="completed",
+                        stage_detail="Evaluation result is ready",
+                    )
                 else:
-                    raise RuntimeError("No evaluation worker is configured.")
-            except JobCancelled as e:
+                    raise TypeError("Evaluation worker returned an unsupported result.")
+            else:
+                raise RuntimeError("No evaluation worker is configured.")
+        except DailyLimitReached as e:
+            self._requeue(next_job, "waiting_for_quota", str(e))
+            self._pause(_next_pacific_midnight(), f"{e} The queue continues by itself then.")
+        except RunCapReached as e:
+            self._requeue(next_job, "waiting_for_resume", str(e))
+            self._pause(float("inf"), f"{e} Press resume to start a new run.", needs_resume=True)
+        except GeminiCallFailed as e:
+            if e.transient and next_job.attempt_count < next_job.max_attempts:
+                # Overload hits every sheet alike, so spending calls on the next one is waste.
+                pause = config.GEMINI_OVERLOAD_PAUSE_SECONDS
+                self._requeue(next_job, "waiting_for_gemini", str(e), count_attempt=True)
+                self._pause(time.time() + pause, f"Gemini is busy. Trying again in {pause / 60:g} minutes.")
+            else:
                 self.update_job_status(
                     next_job.job_id,
-                    "CANCELLED",
+                    "FAILED",
                     error_message=str(e),
-                    error_code="CANCELLED",
-                    current_stage="cancelled",
+                    error_code=type(e).__name__,
+                    current_stage="failed",
+                    stage_detail="Gemini could not finish this sheet. No marks were given. It can be retried.",
                 )
-            except Exception as e:
-                teacher_review_required = bool(
-                    getattr(e, "requires_teacher_validation", False)
-                    or getattr(e, "teacher_validation_required", False)
-                )
-                is_timeout = isinstance(e, TimeoutError) or "timed out" in str(e).lower() or "timeout" in str(e).lower()
-                status = (
-                    "NEEDS_REVIEW" if teacher_review_required
-                    else "TIMED_OUT" if is_timeout
-                    else "FAILED"
-                )
-                error_code = (
-                    "MODEL_REVIEW_REQUIRED" if teacher_review_required
-                    else "MODEL_TIMEOUT" if is_timeout
-                    else type(e).__name__
-                )
-                _logger.exception("Evaluation job %s ended with %s", next_job.job_id, status)
-                self.update_job_status(
-                    next_job.job_id,
-                    status,
-                    error_message=str(e),
-                    error_code=error_code,
-                    current_stage="teacher_validation" if teacher_review_required else "failed",
-                    stage_detail=(
-                        "No model met the task requirements; teacher validation is required"
-                        if teacher_review_required
-                        else "Evaluation stopped before producing a complete result"
-                    ),
-                )
+        except JobCancelled as e:
+            self.update_job_status(
+                next_job.job_id,
+                "CANCELLED",
+                error_message=str(e),
+                error_code="CANCELLED",
+                current_stage="cancelled",
+            )
+        except Exception as e:
+            teacher_review_required = bool(
+                getattr(e, "requires_teacher_validation", False)
+                or getattr(e, "teacher_validation_required", False)
+            )
+            is_timeout = isinstance(e, TimeoutError) or "timed out" in str(e).lower() or "timeout" in str(e).lower()
+            status = (
+                "NEEDS_REVIEW" if teacher_review_required
+                else "TIMED_OUT" if is_timeout
+                else "FAILED"
+            )
+            error_code = (
+                "MODEL_REVIEW_REQUIRED" if teacher_review_required
+                else "MODEL_TIMEOUT" if is_timeout
+                else type(e).__name__
+            )
+            _logger.exception("Evaluation job %s ended with %s", next_job.job_id, status)
+            self.update_job_status(
+                next_job.job_id,
+                status,
+                error_message=str(e),
+                error_code=error_code,
+                current_stage="teacher_validation" if teacher_review_required else "failed",
+                stage_detail=(
+                    "No model met the task requirements; teacher validation is required"
+                    if teacher_review_required
+                    else "Evaluation stopped before producing a complete result"
+                ),
+            )
 
-            # Small pause between papers to let unified memory settle
-            time.sleep(0.5)
+    def _next_job(self) -> QueueJob | None:
+        """Priority jobs first, then oldest first. Nothing starts while paused."""
+        now = time.time()
+        with self._lock:
+            if now < self._paused_until:
+                return None
+            ready = [
+                job for job in self._jobs.values()
+                if job.status == "PENDING" and job.not_before <= now
+            ]
+        if not ready:
+            return None
+        return min(ready, key=lambda job: (not job.priority, job.created_at))
+
+    def _requeue(self, job: QueueJob, stage: str, detail: str, *, count_attempt: bool = False) -> None:
+        """Back in line, unmarked. Quota stops do not use up one of the sheet's attempts."""
+        with self._lock:
+            current = self._jobs.get(job.job_id)
+            if current and not count_attempt:
+                current.attempt_count = max(0, current.attempt_count - 1)
+        self.update_job_status(job.job_id, "PENDING", current_stage=stage, stage_detail=detail)
+
+    def _pause(self, until: float, reason: str, *, needs_resume: bool = False) -> None:
+        with self._lock:
+            self._paused_until = until
+            self._pause_reason = reason
+            self._needs_resume = needs_resume
+        _logger.warning("Queue paused: %s", reason)
+
+    def resume(self) -> None:
+        with self._lock:
+            self._paused_until = 0.0
+            self._pause_reason = ""
+            self._needs_resume = False
+
+    def pause_status(self) -> dict[str, Any]:
+        with self._lock:
+            paused = time.time() < self._paused_until
+            return {
+                "paused": paused,
+                "reason": self._pause_reason if paused else "",
+                "needs_resume": self._needs_resume if paused else False,
+            }
+
+    def has_pending_jobs(self) -> bool:
+        with self._lock:
+            return any(job.status == "PENDING" for job in self._jobs.values())
+
+    def exam_has_pending_jobs(self, exam_id: str, *, other_than: str = "") -> bool:
+        with self._lock:
+            return any(
+                job.exam_id == exam_id and job.job_id != other_than and job.status == "PENDING"
+                for job in self._jobs.values()
+            )
+
+
+def _next_pacific_midnight() -> float:
+    """When Gemini's daily quota resets, plus a minute's margin."""
+    now = datetime.now(ZoneInfo("America/Los_Angeles"))
+    midnight = (now + timedelta(days=1)).replace(hour=0, minute=1, second=0, microsecond=0)
+    return midnight.timestamp()
 
 
 queue_manager = BatchQueueManager()

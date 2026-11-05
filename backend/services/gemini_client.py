@@ -45,7 +45,11 @@ class DailyLimitReached(GeminiError):
 
 
 class GeminiCallFailed(GeminiError):
-    """The call failed for good, after any retries."""
+    """The call failed, after any retries. transient: worth trying again later."""
+
+    def __init__(self, message: str, *, transient: bool = False) -> None:
+        super().__init__(message)
+        self.transient = transient
 
 
 class BadModelResponse(GeminiError):
@@ -274,7 +278,8 @@ class GeminiClient:
             return self._finish(run, kind, sheet_id, model, attempt, response, response_schema)
         raise GeminiCallFailed(
             f"Gave up after {config.GEMINI_RETRY_ATTEMPTS} attempts: "
-            f"{_describe(last_error) if last_error else 'unknown'}"
+            f"{_describe(last_error) if last_error else 'unknown'}",
+            transient=True,
         )
 
     @staticmethod

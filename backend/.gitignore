@@ -20,3 +20,6 @@ evaluation/runs/
 
 # Gemini call log and daily counts
 gemini_usage/
+
+# Queue state and uploaded answer sheets
+queue_data/

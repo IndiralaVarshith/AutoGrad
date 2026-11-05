@@ -541,6 +541,7 @@ def grade_sheet(
     source_file_reference: str = "",
     rubric_version: str = "",
     total_marks: float | None = None,
+    source_sha256: str = "",
     client: GeminiClient | None = None,
     run: RunBudget | None = None,
     on_stage: Callable[[str, str], None] | None = None,
@@ -579,6 +580,7 @@ def grade_sheet(
             {"page": page, "model": model, "status": "UNREADABLE"} for page in unreadable_pages
         ],
         sheet_problems=problems,
+        source_sha256=source_sha256,
         gemini_usage=usage.as_dict(config.GEMINI_USD_INR) if usage else {},
     )
     if config.GEMINI_REVIEW_ENABLED and flagged:

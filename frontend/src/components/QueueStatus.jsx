@@ -1,56 +1,64 @@
 import React from 'react';
 
-export default function QueueStatus({ queue = [], stats = null }) {
-  const total = stats?.total ?? queue.length;
-  const processing = stats?.processing ?? queue.filter((i) => i.status === 'PROCESSING').length;
-  const completed = stats?.completed ?? queue.filter((i) => i.status === 'COMPLETE').length;
-  const needsReview = stats?.needsReview ?? queue.filter((i) => i.status === 'NEEDS_REVIEW' || i.flagged_count > 0).length;
+const WAITING = new Set(['PENDING', 'PROCESSING']);
+const STATUS_TEXT = {
+  PENDING: 'Waiting',
+  PROCESSING: 'Grading',
+  COMPLETE: 'Done',
+  NEEDS_REVIEW: 'Needs teacher review',
+  FAILED: 'Failed, no marks given',
+  TIMED_OUT: 'Timed out, no marks given',
+  CANCELLED: 'Cancelled',
+};
 
-  const progressPercent = total > 0 ? Math.round(((completed + needsReview) / total) * 100) : 0;
+export default function QueueStatus({ queue, onResume }) {
+  const jobs = queue.jobs || [];
+  const total = queue.total_jobs || 0;
+  const done = total - jobs.filter((job) => WAITING.has(job.status)).length;
+  const percent = total > 0 ? Math.round((done / total) * 100) : 0;
+  const current = jobs.find((job) => job.status === 'PROCESSING');
 
   return (
-    <div className="bg-[#121316] border border-[#22242a] rounded p-4">
-      <div className="flex items-center justify-between mb-3">
+    <div className="bg-[#121316] border border-[#22242a] rounded p-4 space-y-3">
+      <div className="flex items-center justify-between">
         <div className="text-xs font-mono uppercase tracking-wider text-[#8c9099] font-medium">
-          Grading Queue Progress
+          Grading queue: {done} of {total} finished
         </div>
-        {processing > 0 && (
-          <div className="font-mono text-xs text-[#a0a4ad]">
-            Processing {processing} {processing === 1 ? 'sheet' : 'sheets'}...
-          </div>
+        {current && (
+          <div className="font-mono text-xs text-[#a0a4ad]">Now: {current.hall_ticket}</div>
         )}
       </div>
 
-      {/* Progress Bar (Flat, solid) */}
-      <div className="w-full bg-[#1c1e23] h-1.5 rounded overflow-hidden mb-4">
-        <div
-          className="bg-[#3b82f6] h-full transition-all duration-300"
-          style={{ width: `${progressPercent}%` }}
-        />
+      <div className="h-1.5 rounded bg-[#22242a] overflow-hidden">
+        <div className="h-full bg-[#2563eb] transition-all" style={{ width: `${percent}%` }} />
       </div>
 
-      {/* Metric Cards (Flat, dark) */}
-      <div className="grid grid-cols-4 gap-2 text-center font-mono">
-        <div className="bg-[#16181c] p-2.5 rounded border border-[#22252c]">
-          <div className="text-[11px] text-[#717680] uppercase">Total</div>
-          <div className="text-base font-semibold text-[#e1e4ea] mt-0.5">{total}</div>
+      {queue.paused && (
+        <div className="flex items-center justify-between gap-3 border border-[#f59e0b]/40 rounded p-2 text-xs text-[#f59e0b]">
+          <span>Paused: {queue.reason}</span>
+          {queue.needs_resume && (
+            <button
+              type="button"
+              onClick={onResume}
+              className="shrink-0 bg-[#2563eb] text-white rounded px-3 py-1 cursor-pointer"
+            >
+              Resume
+            </button>
+          )}
         </div>
+      )}
 
-        <div className="bg-[#16181c] p-2.5 rounded border border-[#22252c]">
-          <div className="text-[11px] text-[#717680] uppercase">Processing</div>
-          <div className="text-base font-semibold text-[#a5b4fc] mt-0.5">{processing}</div>
-        </div>
-
-        <div className="bg-[#16181c] p-2.5 rounded border border-[#22252c]">
-          <div className="text-[11px] text-[#717680] uppercase">Accepted</div>
-          <div className="text-base font-semibold text-[#4ade80] mt-0.5">{completed}</div>
-        </div>
-
-        <div className="bg-[#16181c] p-2.5 rounded border border-[#22252c]">
-          <div className="text-[11px] text-[#717680] uppercase">Flagged</div>
-          <div className="text-base font-semibold text-[#f59e0b] mt-0.5">{needsReview}</div>
-        </div>
-      </div>
+      <ul className="max-h-48 overflow-y-auto divide-y divide-[#22242a] text-xs font-mono">
+        {jobs.map((job) => (
+          <li key={job.job_id} className="flex justify-between gap-3 py-1">
+            <span className="text-[#c8ccd4] truncate">{job.hall_ticket}</span>
+            <span className="text-[#8c9099] text-right">
+              {STATUS_TEXT[job.status] || job.status}
+              {job.status === 'PROCESSING' && job.stage_detail ? `: ${job.stage_detail}` : ''}
+            </span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
