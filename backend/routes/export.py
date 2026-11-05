@@ -14,6 +14,7 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 from config import get_firestore
+from services.marks_validator import safe_int_qnum
 
 
 router = APIRouter(tags=["Export"])
@@ -52,7 +53,7 @@ async def export_exam_results(exam_id: str):
     for paper in papers:
         for q in paper.get("questions", []):
             if "question_number" in q:
-                question_nums.add(int(q["question_number"]))
+                question_nums.add(safe_int_qnum(q["question_number"], 0))
     sorted_q_nums = sorted(list(question_nums))
 
     # Initialize workbook
@@ -106,7 +107,7 @@ async def export_exam_results(exam_id: str):
         # Map scores per question
         q_map = {}
         for q in paper.get("questions", []):
-            q_map[int(q.get("question_number", 0))] = q.get("final_score", 0.0)
+            q_map[safe_int_qnum(q.get("question_number", 0), 0)] = q.get("final_score", 0.0)
 
         row_data = [hall_ticket, name]
         for q_num in sorted_q_nums:

@@ -41,11 +41,14 @@ import services.queue_manager as queue_manager_module
 from services.router import (
     AIConfiguration,
     ModelRouter,
+    NoSuitableModelError,
     OllamaClient,
+    RouterResponse,
     RoutingPolicy,
     ai_config,
     model_router,
 )
+from services.provider_registry import OllamaModelCapability
 
 
 class TestRoutingPolicy(unittest.TestCase):
@@ -150,6 +153,41 @@ class TestOllamaClientJSONAndImages(unittest.TestCase):
         self.assertEqual(len(parsed), 2)
         self.assertEqual(parsed[0]["q"], 1)
 
+    def test_empty_completed_response_retries_instead_of_returning_success(self):
+        config = AIConfiguration()
+        config.max_retries = 1
+        client = OllamaClient(config)
+        empty_response = MagicMock(status_code=200)
+        empty_response.json.return_value = {"message": {"content": ""}, "done": True}
+        valid_response = MagicMock(status_code=200)
+        valid_response.json.return_value = {
+            "message": {"content": '{"classifications": []}'},
+            "done": True,
+            "eval_count": 1,
+        }
+        with (
+            patch.object(client._session, "post", side_effect=[empty_response, valid_response]) as post,
+            patch("services.router.time.sleep"),
+        ):
+            content, parsed, _ = client.chat("qwen3.5:4b", "classify", format_json=True)
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(content, '{"classifications": []}')
+        self.assertEqual(parsed, {"classifications": []})
+
+    def test_private_thinking_trace_is_never_used_as_answer(self):
+        config = AIConfiguration()
+        config.max_retries = 0
+        client = OllamaClient(config)
+        response = MagicMock(status_code=200)
+        response.json.return_value = {
+            "message": {"content": "", "thinking": "private reasoning trace"},
+            "done": True,
+        }
+        with patch.object(client._session, "post", return_value=response):
+            with self.assertRaisesRegex(RuntimeError, "empty response") as error:
+                client.chat("gemma4:e4b", "calculate", think=True)
+        self.assertNotIn("private reasoning trace", str(error.exception))
+
     def test_image_downscaling_preserves_bounds(self):
         from PIL import Image
         large_img = Image.new("RGB", (3000, 2000), color="white")
@@ -188,6 +226,45 @@ class TestModelSwitchingAndMemory(unittest.TestCase):
             client.chat(model="gemma4:e4b", prompt="hello gemma")
             client.unload_model.assert_called_with("qwen3.5:4b")
             self.assertEqual(client._active_model, "gemma4:e4b")
+
+
+class TestModelRouterFailureFallback(unittest.TestCase):
+    def test_empty_classification_uses_one_complex_local_model_fallback(self):
+        config = AIConfiguration()
+        router = ModelRouter()
+        router.config = config
+        router.policy = RoutingPolicy(config)
+        router.ollama = MagicMock()
+        router.ollama.discover_models.return_value = {
+            "online": True,
+            "models": [
+                OllamaModelCapability(
+                    name=config.simple_model,
+                    supports_images=False,
+                    supports_structured_json=True,
+                ),
+                OllamaModelCapability(
+                    name=config.complex_model,
+                    supports_images=True,
+                    supports_structured_json=True,
+                ),
+            ],
+        }
+        router.ollama.chat.side_effect = [
+            RuntimeError("Ollama returned an empty response"),
+            ('{"classifications": []}', {"classifications": []}, 1),
+        ]
+        router.ollama.last_usage.return_value = {"input_tokens": 3, "output_tokens": 1}
+        router.ollama.last_retry_count.return_value = 0
+        with patch("services.router.log_timing"):
+            result = router.generate(
+                task_type="classification",
+                prompt="Classify questions",
+                format_json=True,
+            )
+        self.assertEqual(result.model_used, config.complex_model)
+        self.assertIn("Fallback after RuntimeError", result.routing_reason)
+        self.assertEqual(router.ollama.chat.call_count, 2)
 
 
 class TestDeterministicGradingAndEvidence(unittest.TestCase):
@@ -383,6 +460,48 @@ class TestOllamaLiveHealth(unittest.TestCase):
         installed = health.get("models", [])
         self.assertTrue(any("qwen3.5:4b" in m for m in installed), "qwen3.5:4b must be installed")
         self.assertTrue(any("gemma4:e4b" in m for m in installed), "gemma4:e4b must be installed")
+
+
+class TestIndependentGeminiVerification(unittest.TestCase):
+    def test_explicit_verification_uses_single_gemini_path_and_marks_independent(self):
+        router = ModelRouter()
+        expected = RouterResponse(
+            text='{"suggested_score": 1}',
+            parsed_json={"suggested_score": 1},
+            model_used="gemini-test",
+            provider="gemini",
+        )
+        with (
+            patch.dict(os.environ, {"GEMINI_VERIFICATION_ENABLED": "true"}),
+            patch.object(router, "_gemini_allowed_for_fallback", return_value=True),
+            patch.object(router, "_generate_gemini", return_value=expected) as gemini_call,
+        ):
+            result = router.generate_gemini_verification(
+                task_id="verification-test",
+                prompt="synthetic answer verification",
+                images=[b"synthetic-image"],
+                response_json_schema={"type": "object"},
+            )
+
+        self.assertIs(result, expected)
+        kwargs = gemini_call.call_args.kwargs
+        self.assertEqual(kwargs["task_type"], "independent_grading_verification")
+        self.assertTrue(kwargs["profile"].independent_verification)
+        self.assertTrue(kwargs["profile"].requires_vision)
+        self.assertEqual(kwargs["reason"], "Selective independent Gemini verification; result cannot change marks automatically.")
+
+    def test_verification_disabled_does_not_call_provider(self):
+        router = ModelRouter()
+        with (
+            patch.dict(os.environ, {"GEMINI_VERIFICATION_ENABLED": "false"}),
+            patch.object(router, "_generate_gemini") as gemini_call,
+        ):
+            with self.assertRaises(NoSuitableModelError):
+                router.generate_gemini_verification(
+                    task_id="verification-disabled",
+                    prompt="synthetic",
+                )
+        gemini_call.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -9,15 +9,28 @@ from __future__ import annotations
 
 import os
 import json
-import time
-import random
 from pathlib import Path
+from typing import Any
 from dotenv import load_dotenv
 
 # Ensure .env is loaded from the backend directory regardless of cwd
 _BACKEND_DIR = Path(__file__).resolve().parent
 load_dotenv(dotenv_path=_BACKEND_DIR / ".env")
 load_dotenv()  # fallback to cwd if present
+
+
+def _safe_float_env(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int_env(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
 
 
 # =========================================================
@@ -31,19 +44,31 @@ OLLAMA_COMPLEX_MODEL: str = os.getenv("OLLAMA_COMPLEX_MODEL", "gemma4:e4b").stri
 OLLAMA_MAX_CONCURRENT_REQUESTS: int = int(os.getenv("OLLAMA_MAX_CONCURRENT_REQUESTS", "1"))
 GEMINI_ENABLED: bool = os.getenv("GEMINI_ENABLED", "false").strip().lower() == "true"
 GEMINI_FALLBACK_ENABLED: bool = os.getenv("GEMINI_FALLBACK_ENABLED", "false").strip().lower() == "true"
+GEMINI_VERIFICATION_ENABLED: bool = os.getenv("GEMINI_VERIFICATION_ENABLED", "false").strip().lower() == "true"
+GEMINI_VERIFICATION_SAMPLE_RATE: float = min(
+    1.0, max(0.0, _safe_float_env("GEMINI_VERIFICATION_SAMPLE_RATE", 0.0))
+)
 
-GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+HANDWRITING_DATASET_ENABLED: bool = os.getenv("HANDWRITING_DATASET_ENABLED", "false").strip().lower() == "true"
+HANDWRITING_DATASET_RETENTION_DAYS: int = max(
+    0, _safe_int_env("HANDWRITING_DATASET_RETENTION_DAYS", 0)
+)
+HANDWRITING_DATASET_SALT: str = os.getenv("HANDWRITING_DATASET_SALT", "")
+HANDWRITING_DATASET_ACCESS_POLICY_CONFIRMED: bool = (
+    os.getenv("HANDWRITING_DATASET_ACCESS_POLICY_CONFIRMED", "false").strip().lower() == "true"
+)
+HANDWRITING_DATASET_VERSION: str = os.getenv("HANDWRITING_DATASET_VERSION", "v1").strip() or "v1"
+
 GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
-
-# Ordered fallback chain — tried in sequence if primary model is unavailable
-# All names verified against live API (models.list()) on 2026-10-24
-MODEL_FALLBACK_CHAIN: list[str] = [
-    GEMINI_MODEL,        # gemini-3.8-flash (primary)
-    "gemini-3.7-flash",  # one generation back
-    "gemini-3.6-flash",  # two generations back
-    "gemini-3.5-flash",  # stable older release
-    "gemini-flash-latest",  # alias — always resolves to current stable
-]
+GEMINI_REQUEST_TIMEOUT_MS: int = max(
+    1_000, int(os.getenv("GEMINI_REQUEST_TIMEOUT_MS", "120000"))
+)
+GEMINI_MAX_RETRIES: int = max(
+    1, min(4, int(os.getenv("GEMINI_MAX_RETRIES", "2")))
+)
+GEMINI_MAX_FALLBACK_MODELS: int = max(
+    0, min(4, int(os.getenv("GEMINI_MAX_FALLBACK_MODELS", "2")))
+)
 
 FIREBASE_PROJECT_ID: str = os.getenv("FIREBASE_PROJECT_ID", "").strip()
 FIREBASE_STORAGE_BUCKET: str = os.getenv("FIREBASE_STORAGE_BUCKET", "").strip()
@@ -114,6 +139,9 @@ if isinstance(_resolved_initial, str):
 # FIREBASE ADMIN SDK INIT
 # =========================================================
 
+# "demo-" projects are emulator-only: they cannot reach real Firebase resources.
+EMULATOR_PROJECT_ID = "demo-autograd"
+
 _firebase_app = None
 _firestore_client = None
 _storage_bucket = None
@@ -129,6 +157,21 @@ def _init_firebase():
     try:
         import firebase_admin
         from firebase_admin import credentials
+
+        # Emulator mode: never touch the service account key or a real project.
+        if os.getenv("FIRESTORE_EMULATOR_HOST", "").strip():
+            from google.auth.credentials import AnonymousCredentials
+
+            class _EmulatorCredential(credentials.Base):
+                def get_credential(self):
+                    return AnonymousCredentials()
+
+            FIREBASE_PROJECT_ID = EMULATOR_PROJECT_ID
+            _firebase_app = firebase_admin.initialize_app(
+                _EmulatorCredential(), {"projectId": EMULATOR_PROJECT_ID}
+            )
+            print(f"[Config] Using the Firestore emulator (project '{EMULATOR_PROJECT_ID}').")
+            return
 
         sa_target = _resolve_service_account()
         cred = None
@@ -223,22 +266,17 @@ def get_storage_bucket():
 # =========================================================
 
 def get_gemini_client():
-    """Return a cached google.genai Client instance (lazy initialization)."""
-    api_key = os.getenv("GEMINI_API_KEY") or GEMINI_API_KEY
-    if not api_key:
-        if AI_PROVIDER == "gemini":
-            raise RuntimeError(
-                "GEMINI_API_KEY is missing from environment variables."
-            )
-        return None
+    """Return the selected, owner-authorized Gemini client without exposing its key."""
+    from services.provider_registry import GeminiCredentialError, gemini_credentials
 
+    if AI_PROVIDER != "gemini" and not GEMINI_ENABLED and not GEMINI_FALLBACK_ENABLED:
+        return None
     try:
-        from google import genai
-        return genai.Client(api_key=api_key)
-    except Exception as err:
-        if AI_PROVIDER == "gemini":
-            raise err
-        print(f"[Config] Gemini client init deferred: {err}")
+        credential_id = gemini_credentials.select_credential()
+        return gemini_credentials.client_for(credential_id)
+    except GeminiCredentialError:
+        if AI_PROVIDER == "gemini" or GEMINI_ENABLED or GEMINI_FALLBACK_ENABLED:
+            raise RuntimeError("No eligible Gemini credential is configured and owner-authorized.") from None
         return None
 
 
@@ -246,15 +284,12 @@ def get_gemini_client():
 # ADAPTIVE GENERATE WRAPPER (OLLAMA ROUTER + GEMINI FALLBACK)
 # =========================================================
 
-_RETRYABLE_CODES = {503, 429}
-_MAX_RETRIES = 4
-
-
 class _ModelOutputWrapper:
     """Lightweight wrapper providing .text attribute matching Google GenAI response."""
-    def __init__(self, text: str, parsed_json=None):
+    def __init__(self, text: str, parsed_json=None, model_used: str = ""):
         self.text = text
         self.parsed_json = parsed_json
+        self.model_used = model_used
 
 
 def gemini_generate_with_retry(
@@ -262,168 +297,110 @@ def gemini_generate_with_retry(
     contents,
     config: dict | None = None,
     model: str | None = None,
+    task_category: str | None = None,
+    requires_vision: bool | None = None,
+    requires_reasoning: bool | None = None,
+    avoid_model: str | None = None,
+    avoid_models: list[str] | set[str] | None = None,
+    task_id: str | None = None,
 ) -> object:
-    """
-    Generate content with intelligent routing:
-    - If AI_PROVIDER == 'ollama' (default): routes through local OllamaClient (Qwen / Gemma)
-    - If AI_PROVIDER == 'gemini': uses cloud Gemini API with retry fallback chain
-    """
-    # -----------------------------------------------------
-    # LOCAL OLLAMA ROUTING PATH
-    # -----------------------------------------------------
-    if AI_PROVIDER == "ollama":
-        from services.router import model_router
+    """Route existing OCR/agent calls through the shared capability router."""
+    from services.router import model_router
 
-        # Deconstruct contents into text prompts and image components
-        prompt_parts: list[str] = []
-        images: list[Any] = []
-
-        if isinstance(contents, str):
-            if len(contents) > 500 and (" " not in contents[:200] or contents.startswith("data:image/")):
-                images.append(contents)
+    prompt_parts: list[str] = []
+    images: list[Any] = []
+    incoming = contents if isinstance(contents, list) else [contents]
+    for part in incoming:
+        if isinstance(part, str):
+            path = Path(part)
+            if part.startswith("data:image/") or (
+                len(part) > 256 and not any(char.isspace() for char in part)
+                and all(char.isalnum() or char in "+/=_-" for char in part[:256])
+            ):
+                images.append(part)
+            elif path.is_file() and path.suffix.lower() in {
+                ".jpg", ".jpeg", ".png", ".webp", ".heic", ".pdf"
+            }:
+                images.append(path)
             else:
-                prompt_parts.append(contents)
-        elif isinstance(contents, list):
-            for part in contents:
-                if isinstance(part, str):
-                    # Detect base64 image strings vs normal text prompts
-                    if len(part) > 500 and (" " not in part[:200] or part.startswith("data:image/")):
-                        images.append(part)
-                    elif os.path.isfile(part) and Path(part).suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}:
-                        images.append(part)
-                    else:
-                        prompt_parts.append(part)
-                elif hasattr(part, "name") or hasattr(part, "tobytes") or isinstance(part, (bytes, Path)):
-                    images.append(part)
-                elif hasattr(part, "uri"):  # GenAI File
-                    images.append(part)
-                else:
-                    prompt_parts.append(str(part))
+                prompt_parts.append(part)
+        elif (
+            isinstance(part, (bytes, Path))
+            or hasattr(part, "tobytes")
+            or hasattr(part, "inline_data")
+            or hasattr(part, "file_data")
+            or hasattr(part, "uri")
+            or hasattr(part, "name")
+        ):
+            images.append(part)
         else:
-            prompt_parts.append(str(contents))
+            prompt_parts.append(str(part))
 
-        full_prompt = "\n".join(prompt_parts)
-
-        # Extract config parameters
-        temp = 0.1
-        sys_instruction = None
-        format_json = False
-
-        if config and isinstance(config, dict):
-            temp = float(config.get("temperature", 0.1))
-            sys_instruction = config.get("system_instruction")
-            if config.get("response_mime_type") == "application/json" or "response_json_schema" in config:
-                format_json = True
-
-        # Infer task type based on prompt content
-        task_type = "grading"
-        q_type = "THEORY"
-        illegible_count = 0
-        max_tokens = None
-
-        p_lower = full_prompt.lower()
-        if "classify this exam question" in p_lower:
-            task_type = "classification"
-            format_json = False
-            max_tokens = 50
-        elif "ocr module" in p_lower or "ocr transcription" in p_lower or "extract all handwritten text" in p_lower or "extract all answers" in p_lower or "illegible_regions" in p_lower:
-            task_type = "ocr_extraction"
-            format_json = True
-        elif "student name and hall ticket" in p_lower or "hall_ticket" in p_lower:
-            task_type = "student_meta"
-            format_json = True
-        elif "rubric generation module" in p_lower or ("rubric" in p_lower and "max_marks" in p_lower and "upload" in p_lower):
-            task_type = "rubric_generation"
-            format_json = True
-        elif "fix only latex syntax errors" in p_lower:
-            task_type = "math_syntax"
-            format_json = False
-        elif "review this grading" in p_lower or "critic" in p_lower:
-            task_type = "critique"
-            format_json = True
-        elif "evaluate the student's answer" in p_lower or "grading" in p_lower:
-            task_type = "grading"
-            format_json = True
-
-        if "diagram" in p_lower:
-            q_type = "DIAGRAM"
-        elif "numerical" in p_lower:
-            q_type = "NUMERICAL"
-
-        res = model_router.generate(
-            task_type=task_type,
-            prompt=full_prompt,
-            images=images if images else None,
-            system_instruction=sys_instruction,
-            format_json=format_json,
-            temperature=temp,
-            question_type=q_type,
-            illegible_count=illegible_count,
-            max_tokens=max_tokens,
-        )
-
-        return _ModelOutputWrapper(text=res.text, parsed_json=res.parsed_json)
-
-    # -----------------------------------------------------
-    # CLOUD GEMINI PROVIDER PATH
-    # -----------------------------------------------------
-    client = get_gemini_client()
-    if client is None:
-        raise RuntimeError("Gemini client is not initialized. Ensure GEMINI_API_KEY is configured.")
-
-    # Build the ordered list of models to try
-    primary = model or GEMINI_MODEL
-    chain = [primary] + [m for m in MODEL_FALLBACK_CHAIN if m != primary]
-
-    last_error: Exception | None = None
-
-    for current_model in chain:
-        for attempt in range(_MAX_RETRIES):
-            try:
-                kwargs: dict = {"model": current_model, "contents": contents}
-                if config:
-                    kwargs["config"] = config
-
-                response = client.models.generate_content(**kwargs)
-                if current_model != primary:
-                    print(f"[Gemini] Using fallback model: {current_model}")
-                return response
-
-            except Exception as exc:
-                last_error = exc
-                err_str = str(exc)
-
-                is_retryable = any(
-                    code in err_str for code in ("503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED")
-                )
-                is_not_found = any(
-                    code in err_str for code in ("404", "NOT_FOUND")
-                )
-                if is_not_found:
-                    print(f"[Gemini] Model {current_model} not found, trying next in chain.")
-                    break
-
-                is_daily_exhausted = "per day limit exceeded" in err_str.lower()
-                if is_daily_exhausted:
-                    print(f"[Gemini] Daily quota exceeded for {current_model}, switching to next model immediately.")
-                    break
-
-                if is_retryable and attempt < _MAX_RETRIES - 1:
-                    wait = (2 ** attempt) + random.uniform(0, 1)
-                    print(
-                        f"[Gemini] {current_model} overloaded "
-                        f"(attempt {attempt + 1}/{_MAX_RETRIES}), "
-                        f"retrying in {wait:.1f}s…"
-                    )
-                    time.sleep(wait)
-                    continue
-
-                if not is_retryable:
-                    raise
-
-        print(f"[Gemini] All retries exhausted for {current_model}, trying next model…")
-
-    raise RuntimeError(
-        f"All Gemini models in fallback chain failed. Last error: {last_error}"
+    full_prompt = "\n".join(prompt_parts)
+    cfg = config if isinstance(config, dict) else {}
+    temp = float(cfg.get("temperature", 0.1))
+    system_instruction = cfg.get("system_instruction")
+    format_json = (
+        cfg.get("response_mime_type") == "application/json"
+        or "response_json_schema" in cfg
+        or "response_schema" in cfg
     )
+    response_schema = cfg.get("response_json_schema") or cfg.get("response_schema")
 
+    prompt_lower = full_prompt.lower()
+    task_type = "grading"
+    if "classify this exam question" in prompt_lower:
+        task_type = "classification"
+        format_json = bool(response_schema)
+    elif any(term in prompt_lower for term in (
+        "ocr module", "ocr transcription", "extract all handwritten text",
+        "extract all answers", "illegible_regions",
+    )):
+        task_type = "ocr_extraction"
+        format_json = True
+    elif "student name and hall ticket" in prompt_lower or "hall_ticket" in prompt_lower:
+        task_type = "student_meta"
+        format_json = True
+    elif "rubric generation module" in prompt_lower or (
+        "rubric" in prompt_lower and "max_marks" in prompt_lower and "upload" in prompt_lower
+    ):
+        task_type = "rubric_generation"
+        format_json = True
+    elif "fix only latex syntax errors" in prompt_lower:
+        task_type = "math_syntax"
+        format_json = False
+    elif "review this grading" in prompt_lower or "critic" in prompt_lower:
+        task_type = "critique"
+        format_json = True
+    elif "resolve" in prompt_lower or "arbitration" in prompt_lower:
+        task_type = "resolution"
+        format_json = True
+
+    question_type = "THEORY"
+    if "diagram" in prompt_lower:
+        question_type = "DIAGRAM"
+    elif "numerical" in prompt_lower or "equation" in prompt_lower or "derivation" in prompt_lower:
+        question_type = "NUMERICAL"
+
+    response = model_router.generate(
+        task_type=task_type,
+        prompt=full_prompt,
+        images=images or None,
+        system_instruction=system_instruction,
+        format_json=format_json,
+        temperature=temp,
+        question_type=question_type,
+        task_category=task_category,
+        requires_vision=requires_vision,
+        requires_reasoning=requires_reasoning,
+        avoid_model=avoid_model,
+        avoid_models=avoid_models,
+        task_id=task_id,
+        response_json_schema=response_schema,
+        force_model=model if AI_PROVIDER == "gemini" else None,
+    )
+    return _ModelOutputWrapper(
+        text=response.text,
+        parsed_json=response.parsed_json,
+        model_used=response.model_used,
+    )

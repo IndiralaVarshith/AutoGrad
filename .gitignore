@@ -1,4 +1,5 @@
 .DS_Store
+.venv/
 
 # Environment variables & secrets — never commit
 .env
@@ -8,3 +9,4 @@
 *firebase-adminsdk*.json
 serviceAccountKey.json
 firebase-service-account.json
+test_data/mendeley/

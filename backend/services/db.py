@@ -17,6 +17,7 @@ from __future__ import annotations
 import time
 import uuid
 from typing import Any
+from google.cloud import firestore
 from google.cloud.firestore import Client
 
 from config import get_firestore, get_storage_bucket
@@ -93,6 +94,81 @@ class DatabaseService:
         return [doc.to_dict() for doc in docs if doc.to_dict()]
 
     # =========================================================
+    # QUESTION PAPER OPERATIONS
+    # =========================================================
+
+    def _question_paper_ref(self, client: Client, exam_id: str):
+        return (
+            client.collection("exams")
+            .document(exam_id)
+            .collection("question_paper")
+            .document("current")
+        )
+
+    def get_question_paper(self, exam_id: str) -> dict[str, Any] | None:
+        """Fetch the parsed question paper saved for an exam."""
+        client = self.db
+        if not client:
+            return None
+        doc = self._question_paper_ref(client, exam_id).get()
+        return doc.to_dict() if doc.exists else None
+
+    def save_question_paper(
+        self,
+        exam_id: str,
+        paper: dict[str, Any],
+        replace: bool = False,
+        teacher_id: str = "default_teacher",
+    ) -> dict[str, Any]:
+        """
+        Save an exam's parsed paper and exam record in one transaction, so a
+        failure can never leave a partial paper. Each exam has one paper.
+
+        Returns {"outcome": created | replaced | duplicate | conflict, "paper": dict}.
+        """
+        client = self.db
+        if not client:
+            raise RuntimeError("Firestore is unavailable.")
+
+        exam_ref = client.collection("exams").document(exam_id)
+        paper_ref = self._question_paper_ref(client, exam_id)
+
+        @firestore.transactional
+        def _write(transaction) -> dict[str, Any]:
+            paper_doc = paper_ref.get(transaction=transaction)
+            exam_doc = exam_ref.get(transaction=transaction)
+            current = paper_doc.to_dict() if paper_doc.exists else None
+            exam_data = exam_doc.to_dict() if exam_doc.exists else {}
+            same_file = bool(current) and current.get("doc_fingerprint") == paper.get("doc_fingerprint")
+
+            if current and not replace:
+                return {"outcome": "duplicate" if same_file else "conflict", "paper": current}
+
+            now = time.time()
+            saved = {
+                **paper,
+                "exam_id": exam_id,
+                "created_at": current.get("created_at", now) if current else now,
+                "updated_at": now,
+            }
+            transaction.set(paper_ref, saved)
+            transaction.set(exam_ref, {
+                "exam_id": exam_id,
+                "subject": exam_data.get("subject", exam_id),
+                "exam_name": exam_data.get("exam_name", exam_id),
+                "teacher_id": exam_data.get("teacher_id", teacher_id),
+                "created_at": exam_data.get("created_at", now),
+                "updated_at": now,
+                "total_marks": paper.get("total_marks", 0.0),
+                # The same file again must not undo an approval.
+                "status": exam_data.get("status", "PROPOSED") if same_file else "PROPOSED",
+                "question_paper_fingerprint": paper.get("doc_fingerprint", ""),
+            }, merge=True)
+            return {"outcome": "replaced" if current else "created", "paper": saved}
+
+        return _write(client.transaction())
+
+    # =========================================================
     # RUBRIC OPERATIONS
     # =========================================================
 
@@ -103,6 +179,7 @@ class DatabaseService:
         teacher_id: str = "default_teacher",
         doc_fingerprint: str = "",
         gen_fingerprint: str = "",
+        total_marks: float | None = None,
     ) -> dict[str, Any]:
         """
         Persist a teacher-approved grading rubric.
@@ -117,7 +194,7 @@ class DatabaseService:
 
         # Serialize questions to dicts
         serialized_questions = []
-        total_exam_marks = 0.0
+        naive_sum = 0.0
         for q in questions:
             if hasattr(q, "model_dump"):
                 q_dict = q.model_dump()
@@ -126,16 +203,47 @@ class DatabaseService:
             else:
                 q_dict = dict(q)
             serialized_questions.append(q_dict)
-            total_exam_marks += float(q_dict.get("max_marks", 0.0))
+            naive_sum += float(q_dict.get("max_marks", 0.0))
+
+        # Reconcile the approved maximum only from explicit question, choice, and
+        # attempt metadata. Never normalize a discrepancy to the declared total.
+        from services.marks_validator import validate_and_reconcile_exam_structure
+        struct = validate_and_reconcile_exam_structure({
+            "questions": serialized_questions,
+            "declared_maximum_marks": total_marks,
+        })
+        if struct.validation_status == "DISCREPANCY":
+            raise ValueError(
+                f"Rubric maximum mismatch: declared {struct.declared_maximum_marks:g}, "
+                f"but question/attempt structure totals {struct.calculated_maximum_marks:g}."
+            )
+        total_exam_marks = (
+            float(total_marks)
+            if total_marks is not None and float(total_marks) > 0
+            else struct.calculated_maximum_marks or naive_sum
+        )
 
         # Check existing version count to determine version number
         rubrics_coll = client.collection("rubrics")
         existing_versions = list(
             rubrics_coll.where("exam_id", "==", exam_id).stream()
         )
+        # Approving the same rubric again keeps the existing version.
+        versions = [doc.to_dict() for doc in existing_versions]
+        latest = max(versions, key=lambda doc: doc.get("version", 0), default=None)
+        if (
+            latest
+            and latest.get("questions") == serialized_questions
+            and latest.get("total_marks") == total_exam_marks
+            and latest.get("doc_fingerprint", "") == doc_fingerprint
+        ):
+            return latest
+
         version = len(existing_versions) + 1
         rubric_id = f"{exam_id}_v{version}"
         now = time.time()
+        exam_ref = client.collection("exams").document(exam_id)
+        exam_doc = exam_ref.get()
 
         rubric_data = {
             "rubric_id": rubric_id,
@@ -151,8 +259,11 @@ class DatabaseService:
             "gen_fingerprint": gen_fingerprint,
         }
 
+        # All three writes succeed or fail together.
+        batch = client.batch()
+
         # 1. Save top-level versioned rubric document
-        client.collection("rubrics").document(rubric_id).set(rubric_data)
+        batch.set(client.collection("rubrics").document(rubric_id), rubric_data)
 
         # 2. Maintain active path exams/{exam_id}/rubric/approved
         # Use full rubric_data (including rubric_id, version, approval_status)
@@ -170,16 +281,20 @@ class DatabaseService:
             "doc_fingerprint": doc_fingerprint,
             "gen_fingerprint": gen_fingerprint,
         }
-        client.collection("exams").document(exam_id).collection("rubric").document("approved").set(sub_data)
+        batch.set(exam_ref.collection("rubric").document("approved"), sub_data)
 
         # 3. Update exam document with approved status
-        client.collection("exams").document(exam_id).set({
+        # created_at is required: list_exams orders by it and skips documents without it.
+        batch.set(exam_ref, {
+            "exam_id": exam_id,
+            "created_at": (exam_doc.to_dict() or {}).get("created_at", now) if exam_doc.exists else now,
             "status": "CONFIGURED",
             "approved_rubric_id": rubric_id,
             "rubric_version": version,
             "total_marks": total_exam_marks,
             "updated_at": now,
         }, merge=True)
+        batch.commit()
 
         print(f"[DB] Approved rubric saved: {rubric_id} (Version {version}, {len(serialized_questions)} questions)")
         return rubric_data
@@ -326,7 +441,11 @@ class DatabaseService:
 
         # 3. Update submission status to EVALUATED
         client.collection("submissions").document(f"{exam_id}_{hall_ticket}").set({
-            "status": "EVALUATED",
+            "status": (
+                "NEEDS_REVIEW"
+                if data.get("status") == "NEEDS_REVIEW"
+                else "EVALUATED"
+            ),
             "score": data.get("total_score", 0.0),
             "max_score": data.get("max_total", 0.0),
             "updated_at": now,
@@ -370,4 +489,3 @@ class DatabaseService:
 
 # Singleton instance
 db_service = DatabaseService()
-

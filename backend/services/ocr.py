@@ -1,17 +1,49 @@
 """
 AutoGrade — OCR Module
 
-Uses Gemini 2.0 Flash with response_logprobs to extract
-handwritten text per question and compute c_ocr from
-token-level log-probabilities.
+Routes handwritten transcription through the shared Model Router. With the
+default policy this uses an eligible local Ollama vision model first and only
+uses Gemini when configured fallback/verification rules allow it. OCR scores
+remain uncalibrated until compared with teacher-verified ground truth.
 """
 
 from __future__ import annotations
 
 import json
-import math
+import hashlib
+import base64
+import io
+import logging
+import os
+import re
+import tempfile
+import threading
+import time
+from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
 
 from config import gemini_generate_with_retry
+from models.schemas import OCRPageResult, OCRRegion
+from services.marks_validator import parse_question_number_and_part
+from services.timing import log_timing
+
+
+_logger = logging.getLogger(__name__)
+_OCR_CACHE_VERSION = "handwriting-ocr-v4-page-preserving"
+_OCR_CACHE_DIR = Path(tempfile.gettempdir()) / "autograde_ocr_cache"
+_OCR_CACHE_TTL_SECONDS = int(os.getenv("AUTOGRADE_CACHE_TTL_SECONDS", "86400"))
+_OCR_CACHE_LOCK = threading.Lock()
+_REGION_OCR_VERSION = "rapidocr-page-regions-v6"
+_REGION_CACHE_DIR = Path(tempfile.gettempdir()) / "autograde_ocr_region_cache"
+_REGION_CACHE_LOCK = threading.Lock()
+_RAPID_OCR_LOCK = threading.RLock()
+_RAPID_OCR_ENGINE = None
+_RAPID_OCR_VERSION = "unknown"
+_RAPIDOCR_REQUIRED_MODELS = (
+    "PP-OCRv6_det_small.onnx",
+    "PP-OCRv6_rec_small.onnx",
+    "ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+)
 
 
 # =========================================================
@@ -27,6 +59,7 @@ OCR_RESPONSE_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "question_number": {"type": "integer"},
+                    "sub_part": {"type": "string"},
                     "extracted_text": {"type": "string"},
                     "illegible_regions": {
                         "type": "array",
@@ -35,6 +68,7 @@ OCR_RESPONSE_SCHEMA = {
                 },
                 "required": [
                     "question_number",
+                    "sub_part",
                     "extracted_text",
                     "illegible_regions"
                 ]
@@ -68,7 +102,8 @@ Important:
 - Do NOT grade the answers or assign marks.
 - Do NOT summarise or rephrase the student's writing.
 - Preserve mathematical expressions as accurately as possible.
-- If a question number is ambiguous, use your best judgment.
+- If a question number is ambiguous, use 0 and describe the mapping uncertainty
+  in illegible_regions. Never assign an answer to a question by guesswork.
 
 Return the required JSON only.
 """
@@ -80,67 +115,300 @@ Return the required JSON only.
 
 def extract_text(
     image_parts: list,
-) -> tuple[dict[int, dict], float]:
+    *,
+    source_hash: str = "",
+    job_id: str = "",
+    on_stage=None,
+    page_regions: list[OCRPageResult] | None = None,
+) -> tuple[dict[tuple[int, str], dict], float]:
     """
-    Run OCR on answer sheet images via Gemini 2.0 Flash
-    with response_logprobs.
+    Run OCR on answer-sheet images through the local-first Model Router.
 
     Parameters
     ----------
     image_parts : list
         List of image content parts (bytes, Part objects, or
-        uploaded file references) representing all pages of
-        one answer sheet.
+        uploaded file references) representing pages of one answer sheet.
+        Each page is processed independently to preserve page provenance.
 
     Returns
     -------
-    results : dict[int, dict]
-        Mapping of question_number → {extracted_text, illegible_regions}
+    results : dict[tuple[int, str], dict]
+        Mapping of (question_number, sub_part) to extracted answer data.
     c_ocr : float
-        OCR confidence in [0.0, 1.0] computed from logprobs.
+        Calibrated OCR confidence; currently zero because verified handwriting
+        ground truth is not yet available.
     """
 
-    contents = [OCR_PROMPT] + image_parts
+    cache_path = _ocr_cache_path(source_hash) if source_hash else None
+    if cache_path is not None:
+        cached = _load_ocr_cache(cache_path)
+        if cached is not None:
+            _logger.info(
+                "evaluation_cache_hit %s",
+                json.dumps({"kind": "ocr", "job_id": job_id}, sort_keys=True),
+            )
+            return cached
 
-    response = gemini_generate_with_retry(
-        contents=contents,
-        config={
-            "response_mime_type": "application/json",
-            "response_json_schema": OCR_RESPONSE_SCHEMA,
-            "temperature": 0.1,
-        }
-    )
-
-    if not response.text:
-        raise RuntimeError("Gemini OCR returned empty output.")
-
-    # -------------------------------------------------
-    # Parse JSON response
-    # -------------------------------------------------
-    data = json.loads(response.text)
-    answers = data.get("answers", [])
-
-    results: dict[int, dict] = {}
+    if on_stage is not None:
+        on_stage("reading_handwriting", "Transcribing the answer sheet")
+    if on_stage is not None:
+        on_stage("identifying_answers", "Mapping OCR text to question numbers and sub-parts")
+    results: dict[tuple[int, str], dict] = {}
     total_illegible = 0
+    highest_question_seen = 0
+    previous_page_tail: tuple[int, str] | None = None
+    started_at = time.perf_counter()
 
-    for item in answers:
-        q_num = int(item.get("question_number", 0))
-        regions = item.get("illegible_regions", [])
-        total_illegible += len(regions)
+    for page_number, image_part in enumerate(image_parts, start=1):
+        image_bytes = _page_image_bytes(image_part)
+        if image_bytes is None:
+            image_bytes = (
+                bytes(image_part) if isinstance(image_part, (bytes, bytearray))
+                else str(image_part).encode("utf-8", errors="replace")
+            )
+        page_hash = hashlib.sha256(image_bytes).hexdigest()
+        prompt = _page_ocr_prompt(page_number, len(image_parts), previous_page_tail)
+        page_started = time.perf_counter()
+        try:
+            response = gemini_generate_with_retry(
+                contents=[prompt, image_part],
+                config={
+                    "response_mime_type": "application/json",
+                    "response_json_schema": OCR_RESPONSE_SCHEMA,
+                    "temperature": 0.1,
+                },
+            )
+        finally:
+            log_timing(
+                "handwriting_ocr_inference",
+                page_started,
+                job_id=job_id,
+                page_number=page_number,
+                page_count=len(image_parts),
+            )
+        if not getattr(response, "text", ""):
+            raise RuntimeError(f"OCR returned empty output for answer-sheet page {page_number}.")
+        try:
+            data = json.loads(response.text)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"OCR returned invalid JSON for answer-sheet page {page_number}.") from exc
+        answers = data.get("answers") if isinstance(data, dict) else None
+        if not isinstance(answers, list):
+            raise ValueError(f"OCR response for answer-sheet page {page_number} has no answers list.")
 
-        results[q_num] = {
-            "extracted_text": item.get("extracted_text", ""),
-            "illegible_regions": regions,
-        }
+        page_max_question = highest_question_seen
+        page_tail = None
+        page_reference = _page_source_reference(page_number, page_hash, page_regions)
+        for item_index, item in enumerate(answers, start=1):
+            if not isinstance(item, dict):
+                continue
+            raw_question = item.get("question_number")
+            if raw_question is None or not str(raw_question).strip():
+                q_num, parsed_part = 0, ""
+            else:
+                q_num, parsed_part = parse_question_number_and_part(raw_question, default_idx=0)
+            sub_part = str(item.get("sub_part", "") or parsed_part).strip().upper()
+            raw_regions = item.get("illegible_regions", [])
+            if not isinstance(raw_regions, list):
+                raw_regions = [str(raw_regions)] if raw_regions else []
+            regions = [str(region) for region in raw_regions]
+            total_illegible += len(regions)
+            extracted_text = str(item.get("extracted_text", "") or "")
 
-    # -------------------------------------------------
-    # Compute c_ocr from logprobs
-    # -------------------------------------------------
-    c_ocr = _compute_c_ocr(response, total_illegible, len(results))
+            mapping_status = "MAPPED" if q_num > 0 else "UNRESOLVED"
+            candidate_question_number = None
+            if q_num <= 0 and previous_page_tail:
+                candidate_question_number = previous_page_tail[0]
+                mapping_status = "AMBIGUOUS_PAGE_CONTINUATION"
+                regions.append(
+                    f"Unnumbered content may continue Q{previous_page_tail[0]}{previous_page_tail[1]}; "
+                    "question mapping requires teacher validation."
+                )
+            elif q_num > 0 and page_max_question > 0 and q_num < page_max_question:
+                mapping_status = "AMBIGUOUS_PAGE_ORDER"
+                candidate_question_number = page_tail[0] if page_tail else (
+                    previous_page_tail[0] if previous_page_tail else None
+                )
+                regions.append(
+                    f"Question number Q{q_num}{sub_part} regresses from an earlier answer on this or a prior page; "
+                    "the page mapping requires teacher validation."
+                )
+
+            if q_num > 0:
+                page_max_question = max(page_max_question, q_num)
+                if mapping_status == "MAPPED":
+                    page_tail = (q_num, sub_part)
+
+            answer_data = {
+                "extracted_text": extracted_text,
+                "illegible_regions": regions,
+                "detected_question_number": q_num,
+                "sub_part": sub_part,
+                "mapping_status": mapping_status,
+                "candidate_question_number": candidate_question_number,
+                "page_references": [page_reference],
+                "page_fragments": [{
+                    "page_number": page_number,
+                    "image_sha256": page_hash,
+                    "extracted_text": extracted_text,
+                    "illegible_regions": list(regions),
+                    "mapping_status": mapping_status,
+                }],
+            }
+
+            key = (q_num, sub_part)
+            if q_num == 0:
+                key = (0, f"{sub_part or 'UNSPECIFIED'}@P{page_number}:{item_index}")
+            elif key in results:
+                results[key]["mapping_status"] = "AMBIGUOUS_DUPLICATE"
+                results[key]["illegible_regions"].append(
+                    f"Q{q_num}{sub_part} was independently detected on multiple pages; fragments were kept separate for teacher review."
+                )
+                answer_data["mapping_status"] = "AMBIGUOUS_DUPLICATE"
+                answer_data["candidate_question_number"] = (
+                    answer_data.get("candidate_question_number") or q_num
+                )
+                answer_data["illegible_regions"].append(
+                    f"Duplicate Q{q_num}{sub_part} detection; this fragment was not merged with another page."
+                )
+                key = (0, f"DUPLICATE_Q{q_num}{sub_part}@P{page_number}:{item_index}")
+            results[key] = answer_data
+
+        if page_tail:
+            previous_page_tail = page_tail
+        highest_question_seen = max(highest_question_seen, page_max_question)
+
+    c_ocr = _compute_c_ocr(None, total_illegible, len(results))
+    log_timing(
+        "question_answer_extraction",
+        started_at,
+        job_id=job_id,
+        answer_count=len(results),
+        illegible_region_count=total_illegible,
+    )
 
     print(f"[OCR] Extracted {len(results)} answers, c_ocr={c_ocr:.4f}")
 
+    if cache_path is not None:
+        _store_ocr_cache(cache_path, results, c_ocr)
     return results, c_ocr
+
+
+def _ocr_cache_path(source_hash: str) -> Path:
+    from services.router import model_router
+
+    identity = {
+        "source": source_hash,
+        "version": _OCR_CACHE_VERSION,
+        "prompt": hashlib.sha256(OCR_PROMPT.encode()).hexdigest(),
+        "routing_policy": model_router.routing_policy_fingerprint(),
+    }
+    key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+    return _OCR_CACHE_DIR / f"{key}.json"
+
+
+def _load_ocr_cache(path: Path) -> tuple[dict[tuple[int, str], dict], float] | None:
+    with _OCR_CACHE_LOCK:
+        try:
+            if not path.is_file():
+                return None
+            if time.time() - path.stat().st_mtime > _OCR_CACHE_TTL_SECONDS:
+                path.unlink(missing_ok=True)
+                return None
+            data = json.loads(path.read_text(encoding="utf-8"))
+            answers = {}
+            for item in data["answers"]:
+                key = (int(item["question_number"]), str(item.get("sub_part", "")))
+                answers[key] = {
+                    field: value for field, value in item.items()
+                    if field not in {"question_number", "sub_part"}
+                }
+                answers[key].setdefault("sub_part", key[1])
+            return answers, float(data["c_ocr"])
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+            _logger.warning("Ignoring invalid OCR cache entry %s", path.name)
+            return None
+
+
+def _store_ocr_cache(
+    path: Path,
+    results: dict[tuple[int, str], dict],
+    confidence: float,
+) -> None:
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        payload = {
+            "answers": [
+                {
+                    "question_number": question_number,
+                    "sub_part": sub_part,
+                    **answer,
+                }
+                for (question_number, sub_part), answer in results.items()
+            ],
+            "c_ocr": confidence,
+        }
+        with _OCR_CACHE_LOCK:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=path.parent,
+                prefix=f"{path.stem}.",
+                suffix=".tmp",
+                delete=False,
+            ) as cache_file:
+                os.chmod(cache_file.name, 0o600)
+                json.dump(payload, cache_file)
+                temporary_path = Path(cache_file.name)
+            temporary_path.replace(path)
+    except OSError:
+        _logger.exception("Could not persist OCR cache entry")
+
+
+def _page_ocr_prompt(
+    page_number: int,
+    page_count: int,
+    previous_page_tail: tuple[int, str] | None,
+) -> str:
+    if previous_page_tail:
+        context = (
+            f"The previous page's last clearly numbered answer was Q{previous_page_tail[0]}"
+            f"{previous_page_tail[1]}. This is context only. If this page has unnumbered "
+            "continuation writing, do not assign it to that question; use question_number 0 "
+            "and explain the possible continuation in illegible_regions."
+        )
+    else:
+        context = "There is no prior page context."
+    return (
+        f"{OCR_PROMPT}\n\nProcess source page {page_number} of {page_count} only. "
+        "Do not infer a question number from page order or from another page. "
+        f"{context} Keep every answer found on this page in the JSON output."
+    )
+
+
+def _page_source_reference(
+    page_number: int,
+    image_sha256: str,
+    page_regions: list[OCRPageResult] | None,
+) -> dict:
+    page = next(
+        (item for item in (page_regions or []) if int(getattr(item, "page_number", 0)) == page_number),
+        None,
+    )
+    regions = list(getattr(page, "regions", []) or []) if page is not None else []
+    return {
+        "page_number": page_number,
+        "image_sha256": image_sha256,
+        # These IDs point to reviewable OCR boxes on the page, not to exact
+        # answer-aligned boxes; RapidOCR's line segmentation is independent.
+        "source_region_ids": [
+            str(getattr(region, "region_id", ""))
+            for region in regions
+            if getattr(region, "region_id", "")
+        ],
+        "source_region_scope": "page_candidates_not_answer_aligned",
+    }
 
 
 # =========================================================
@@ -152,47 +420,380 @@ def _compute_c_ocr(
     illegible_count: int,
     total_questions: int,
 ) -> float:
+    """Return zero until handwriting confidence has been calibrated.
+
+    Provider token probabilities and detector scores are useful diagnostics,
+    but they are not calibrated estimates of transcription correctness. The
+    pipeline therefore treats OCR confidence as unavailable and routes the
+    resulting grade for review instead of manufacturing a numeric estimate.
     """
-    Compute OCR confidence:
-        mean_logprob = average of all token logprobs
-        oov_penalty  = count("[illegible]") / total_questions * 0.3
-        c_ocr        = exp(mean_logprob) * (1 - oov_penalty)
+    del response, illegible_count, total_questions
+    return 0.0
 
-    Clamped to [0.0, 1.0].
+
+def extract_page_regions(
+    image_parts: list,
+    *,
+    source_hash: str = "",
+    job_id: str = "",
+    on_stage=None,
+) -> list[OCRPageResult]:
+    """Run bounded, page-wise RapidOCR and retain original normalized boxes.
+
+    Raw images are preserved. No thresholding, contrast change, or deskew is
+    silently applied: the existing sample benchmark showed those variants can
+    trade CER against WER. Raw engine scores are never converted to confidence
+    classes until verified handwriting data supports calibration.
     """
+    if not image_parts:
+        return []
 
-    # Extract logprobs from response metadata
-    logprobs_list: list[float] = []
+    pages: list[OCRPageResult] = []
+    engine = None
+    engine_initialized = False
+    engine_error = ""
+    started_at = time.perf_counter()
+    for page_number, image_part in enumerate(image_parts, start=1):
+        if on_stage is not None:
+            on_stage(
+                "detecting_text_regions",
+                f"Inspecting page {page_number} of {len(image_parts)}",
+            )
+        image_bytes = _page_image_bytes(image_part)
+        if image_bytes is None:
+            pages.append(OCRPageResult(
+                page_number=page_number,
+                status="UNAVAILABLE",
+                error="The page image could not be decoded for local region OCR.",
+            ))
+            continue
 
+        image_sha256 = hashlib.sha256(image_bytes).hexdigest()
+        cache_path = _region_cache_path(source_hash, page_number, image_sha256)
+        if cache_path is not None:
+            cached = _load_region_cache(cache_path)
+            if cached is not None:
+                pages.append(cached)
+                continue
+
+        width, height, quality_flags, blank_candidate = _inspect_page_image(image_bytes)
+        if blank_candidate:
+            page = OCRPageResult(
+                page_number=page_number,
+                width=width,
+                height=height,
+                image_sha256=image_sha256,
+                status="BLANK_CANDIDATE",
+                blank_candidate=True,
+                quality_flags=quality_flags,
+            )
+        else:
+            if not engine_initialized:
+                engine_initialized = True
+                try:
+                    engine = _get_rapidocr_engine()
+                except Exception as exc:
+                    engine_error = (
+                        f"RapidOCR unavailable ({type(exc).__name__}); "
+                        "local page-region OCR could not initialize."
+                    )
+                    _logger.exception("Could not initialize RapidOCR page-region extraction")
+            if engine is None:
+                page = OCRPageResult(
+                    page_number=page_number,
+                    width=width,
+                    height=height,
+                    image_sha256=image_sha256,
+                    status="UNAVAILABLE",
+                    quality_flags=quality_flags,
+                    error=engine_error,
+                )
+            else:
+                page = _recognize_page_regions(
+                    engine,
+                    image_bytes,
+                    page_number=page_number,
+                    width=width,
+                    height=height,
+                    image_sha256=image_sha256,
+                    quality_flags=quality_flags,
+                    source_hash=source_hash,
+                )
+
+        if cache_path is not None and page.status != "UNAVAILABLE":
+            _store_region_cache(cache_path, page)
+        pages.append(page)
+
+    log_timing(
+        "page_region_ocr",
+        started_at,
+        job_id=job_id,
+        page_count=len(pages),
+        region_count=sum(len(page.regions) for page in pages),
+        unavailable_page_count=sum(page.status == "UNAVAILABLE" for page in pages),
+    )
+    return pages
+
+
+def _recognize_page_regions(
+    engine,
+    image_bytes: bytes,
+    *,
+    page_number: int,
+    width: int,
+    height: int,
+    image_sha256: str,
+    quality_flags: list[str],
+    source_hash: str,
+) -> OCRPageResult:
     try:
-        if hasattr(response, "candidates") and response.candidates:
-            candidate = response.candidates[0]
+        with _RAPID_OCR_LOCK:
+            output = engine(image_bytes)
+        raw_texts = getattr(output, "txts", None)
+        raw_scores = getattr(output, "scores", None)
+        raw_boxes = getattr(output, "boxes", None)
+        texts = list(raw_texts) if raw_texts is not None else []
+        scores = list(raw_scores) if raw_scores is not None else []
+        boxes = list(raw_boxes) if raw_boxes is not None else []
+        regions: list[OCRRegion] = []
+        for index, text in enumerate(texts):
+            text = str(text or "").strip()
+            if not text:
+                continue
+            box = boxes[index] if index < len(boxes) else []
+            try:
+                coords = [float(value) for point in box for value in point]
+                x_values, y_values = coords[0::2], coords[1::2]
+                x0 = max(0.0, min(x_values))
+                y0 = max(0.0, min(y_values))
+                x1 = min(float(width), max(x_values))
+                y1 = min(float(height), max(y_values))
+                bbox = [
+                    round(x0 / max(width, 1), 6),
+                    round(y0 / max(height, 1), 6),
+                    round(x1 / max(width, 1), 6),
+                    round(y1 / max(height, 1), 6),
+                ]
+            except (TypeError, ValueError, IndexError):
+                bbox = []
+            score = None
+            if index < len(scores):
+                try:
+                    candidate_score = float(scores[index])
+                    if candidate_score == candidate_score:
+                        score = max(0.0, min(1.0, candidate_score))
+                except (TypeError, ValueError):
+                    pass
+            uncertainty_class = "UNCALIBRATED"
+            candidate_match = re.fullmatch(
+                r"\s*(?:q(?:uestion)?\s*)?(\d{1,2})\s*[.):\-]?\s*",
+                text,
+                re.IGNORECASE,
+            )
+            question_candidate = int(candidate_match.group(1)) if candidate_match else None
+            # Answer numbering is normally in the left answer margin. This
+            # excludes common false detections from the cover header, logo,
+            # marks, and footer while retaining the text region itself.
+            if (
+                question_candidate is not None
+                and (len(bbox) != 4 or bbox[0] > 0.15 or bbox[1] < 0.12 or bbox[1] > 0.92)
+            ):
+                question_candidate = None
+            region_seed = f"{source_hash}:{page_number}:{image_sha256}:{bbox}:{text}"
+            reason = (
+                "RapidOCR raw score is low, but it is not calibrated against manually "
+                "verified handwriting; teacher validation is required."
+                if score is not None and score < 0.70
+                else "RapidOCR raw score is not calibrated against manually verified "
+                "handwriting; teacher validation is required."
+            )
+            regions.append(OCRRegion(
+                region_id=hashlib.sha256(region_seed.encode()).hexdigest()[:20],
+                page_number=page_number,
+                bbox=bbox,
+                extracted_text=text,
+                question_number_candidate=question_candidate,
+                question_mapping_status=(
+                    "UNVERIFIED_CANDIDATE" if question_candidate is not None else "UNRESOLVED"
+                ),
+                engine="RapidOCR",
+                model_version=_RAPID_OCR_VERSION,
+                engine_score=score,
+                uncertainty_class=uncertainty_class,
+                uncertainty_reason=reason,
+            ))
+        return OCRPageResult(
+            page_number=page_number,
+            width=width,
+            height=height,
+            image_sha256=image_sha256,
+            status="PROCESSED" if regions else "UNREADABLE",
+            quality_flags=quality_flags,
+            regions=regions,
+            error="" if regions else "RapidOCR returned no text regions.",
+        )
+    except Exception as exc:
+        _logger.exception("RapidOCR failed on page %s", page_number)
+        return OCRPageResult(
+            page_number=page_number,
+            width=width,
+            height=height,
+            image_sha256=image_sha256,
+            status="UNAVAILABLE",
+            quality_flags=quality_flags,
+            error=f"RapidOCR failed ({type(exc).__name__}); teacher validation is required.",
+        )
 
-            if hasattr(candidate, "logprobs_result") and candidate.logprobs_result:
-                for token_info in candidate.logprobs_result.chosen_candidates:
-                    if hasattr(token_info, "log_probability"):
-                        logprobs_list.append(token_info.log_probability)
-    except Exception:
-        pass
 
-    # If logprobs are available, compute mean; otherwise fall back
-    if logprobs_list:
-        mean_logprob = sum(logprobs_list) / len(logprobs_list)
-    else:
-        # Fallback: assume moderate confidence when logprobs
-        # are not available (e.g. model doesn't support them)
-        mean_logprob = -0.1
+def _get_rapidocr_engine():
+    global _RAPID_OCR_ENGINE, _RAPID_OCR_VERSION
+    with _RAPID_OCR_LOCK:
+        if _RAPID_OCR_ENGINE is None:
+            from rapidocr import RapidOCR
+            model_root = resolve_rapidocr_model_root()
+            _RAPID_OCR_ENGINE = RapidOCR(
+                params={"Global.model_root_dir": str(model_root)}
+            )
+            try:
+                _RAPID_OCR_VERSION = version("rapidocr")
+            except PackageNotFoundError:
+                _RAPID_OCR_VERSION = "unknown"
+        return _RAPID_OCR_ENGINE
 
-    # OOV penalty
-    if total_questions > 0:
-        oov_penalty = (illegible_count / total_questions) * 0.3
-    else:
-        oov_penalty = 0.0
 
-    c_ocr = math.exp(mean_logprob) * (1 - oov_penalty)
+def resolve_rapidocr_model_root(
+    configured_root: str | Path | None = None,
+    *,
+    bundled_root: str | Path | None = None,
+    cache_root: str | Path | None = None,
+) -> Path:
+    """Select only a directory already containing the configured ONNX weights.
 
-    # Clamp to [0.0, 1.0]
-    return max(0.0, min(1.0, c_ocr))
+    RapidOCR 3.9.2 bundles the currently configured PP-OCRv6 detector and
+    recognizer plus PP-OCRv4 classifier under ``rapidocr/models``. The old
+    application default overrode that valid package path with an empty temp
+    directory, which made RapidOCR attempt its download resolver.
+    """
+    explicit_root = configured_root or os.getenv("AUTOGRADE_RAPIDOCR_MODEL_DIR")
+    if bundled_root is None:
+        import rapidocr
+
+        bundled_root = Path(rapidocr.__file__).resolve().parent / "models"
+    candidates: list[Path] = []
+    if explicit_root:
+        candidates.append(Path(explicit_root).expanduser())
+    candidates.append(Path(bundled_root))
+    if cache_root is not None:
+        candidates.append(Path(cache_root))
+    elif not explicit_root:
+        candidates.append(Path(tempfile.gettempdir()) / "autograde_rapidocr_models")
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        resolved = candidate.expanduser().resolve()
+        if str(resolved) in seen:
+            continue
+        seen.add(str(resolved))
+        if all((resolved / filename).is_file() for filename in _RAPIDOCR_REQUIRED_MODELS):
+            return resolved
+    required = ", ".join(_RAPIDOCR_REQUIRED_MODELS)
+    checked = ", ".join(seen) or "no model directories"
+    raise FileNotFoundError(
+        "RapidOCR local model weights are unavailable; refusing to download. "
+        f"Expected {required} in one model directory. Checked: {checked}."
+    )
+
+
+def _page_image_bytes(image_part) -> bytes | None:
+    if isinstance(image_part, bytes):
+        return image_part
+    if isinstance(image_part, bytearray):
+        return bytes(image_part)
+    if isinstance(image_part, str):
+        value = image_part.strip()
+        if value.startswith("data:") and "," in value:
+            value = value.split(",", 1)[1]
+        try:
+            return base64.b64decode(value, validate=True)
+        except (ValueError, base64.binascii.Error):
+            return None
+    if hasattr(image_part, "save"):
+        buffer = io.BytesIO()
+        try:
+            image_part.save(buffer, format="PNG")
+            return buffer.getvalue()
+        except Exception:
+            return None
+    return None
+
+
+def _inspect_page_image(image_bytes: bytes) -> tuple[int, int, list[str], bool]:
+    from PIL import Image
+    import numpy as np
+
+    with Image.open(io.BytesIO(image_bytes)) as image:
+        gray = np.asarray(image.convert("L"))
+    height, width = gray.shape[:2]
+    mean = float(gray.mean()) if gray.size else 0.0
+    contrast = float(gray.std()) if gray.size else 0.0
+    ink_ratio = float((gray < 245).mean()) if gray.size else 1.0
+    quality_flags = []
+    if max(width, height) < 1000 or min(width, height) < 600:
+        quality_flags.append("LOW_RESOLUTION")
+    if contrast < 20:
+        quality_flags.append("LOW_CONTRAST")
+    blank_candidate = mean > 252 and ink_ratio < 0.0002
+    if blank_candidate:
+        quality_flags.append("POSSIBLY_BLANK")
+    return width, height, quality_flags, blank_candidate
+
+
+def _region_cache_path(source_hash: str, page_number: int, image_sha256: str) -> Path | None:
+    if not source_hash:
+        return None
+    identity = {
+        "source": source_hash,
+        "page_number": page_number,
+        "image": image_sha256,
+        "version": _REGION_OCR_VERSION,
+        "rapidocr": _RAPID_OCR_VERSION,
+    }
+    key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+    return _REGION_CACHE_DIR / f"{key}.json"
+
+
+def _load_region_cache(path: Path) -> OCRPageResult | None:
+    with _REGION_CACHE_LOCK:
+        try:
+            if not path.is_file():
+                return None
+            if time.time() - path.stat().st_mtime > _OCR_CACHE_TTL_SECONDS:
+                path.unlink(missing_ok=True)
+                return None
+            return OCRPageResult.model_validate(json.loads(path.read_text(encoding="utf-8")))
+        except Exception:
+            _logger.warning("Ignoring invalid OCR region cache entry %s", path.name)
+            return None
+
+
+def _store_region_cache(path: Path, page: OCRPageResult) -> None:
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with _REGION_CACHE_LOCK:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=path.parent,
+                prefix=f"{path.stem}.",
+                suffix=".tmp",
+                delete=False,
+            ) as cache_file:
+                os.chmod(cache_file.name, 0o600)
+                json.dump(page.model_dump(mode="json"), cache_file)
+                temporary_path = Path(cache_file.name)
+            temporary_path.replace(path)
+    except OSError:
+        _logger.exception("Could not persist OCR region cache entry")
 
 
 # =========================================================
@@ -226,8 +827,8 @@ Rules:
 
 def extract_student_meta(image_parts: list) -> dict:
     """
-    Use Gemini vision to extract student name and hall ticket
-    from the answer sheet cover page.
+    Use the shared local-first vision router to extract student name and hall
+    ticket from the answer-sheet cover page.
 
     Parameters
     ----------

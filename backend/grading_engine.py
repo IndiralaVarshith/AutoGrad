@@ -11,8 +11,6 @@ import requests
 import sympy as sp
 from rapidfuzz.distance import Levenshtein
 
-from google import genai
-
 try:
     from pix2text import Pix2Text
 except ImportError:
@@ -174,13 +172,9 @@ MATH_SCHEMA = {
 class GradingEngine:
 
     def __init__(self, api_key=None):
-        self.api_key = api_key or os.getenv("GEMINI_API_KEY", "")
+        # Kept as an accepted legacy argument for caller compatibility; all
+        # model calls are handled by the shared provider router.
         self.client = None
-        if self.api_key:
-            try:
-                self.client = genai.Client(api_key=self.api_key)
-            except Exception:
-                pass
 
         self.openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
         self.pix2text = None

@@ -23,7 +23,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 
-from config import get_gemini_client, get_firestore, GEMINI_MODEL, AI_PROVIDER
+from config import get_firestore
 from services.router import model_router
 from services.db import db_service
 from services.rubric_cache import (
@@ -35,12 +35,25 @@ from services.rubric_cache import (
     RUBRIC_SCHEMA_VERSION,
     RUBRIC_PROMPT_VERSION,
 )
+from services.marks_validator import (
+    validate_and_reconcile_exam_structure,
+    normalize_rubric_questions_with_structure,
+    parse_question_number_and_part,
+    read_marks,
+)
 from models.schemas import (
     QuestionRubric,
     RubricCriterion,
     RubricApproveRequest,
 )
 from services.rag import setup_rubric_knowledge, generate_rubric_for_question
+from services.ocr import _page_image_bytes
+from services.paper_intake import (
+    QualityCheckUnavailable,
+    check_image_quality,
+    parse_question_paper_text,
+    questions_from_model_reply,
+)
 
 
 router = APIRouter(prefix="/exam", tags=["Exam"])
@@ -55,6 +68,7 @@ ALLOWED_MIME = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".png": "image/png",
+    ".txt": "text/plain",
 }
 
 
@@ -66,40 +80,63 @@ RUBRIC_GENERATION_PROMPT = """You are the Rubric Generation Module of AutoGrade 
 
 Carefully analyze the uploaded question paper image(s).
 
-For EVERY question and sub-question visible in the paper:
-1. Extract the question number exactly as printed (e.g., 1, 2a, 2b, Q3, Part-A Q1).
-2. Extract the complete question text accurately.
-3. Identify the question type: THEORY, NUMERICAL, DIAGRAM, or MIXED.
-4. Identify the marks allocated to this question (look for marks in brackets like [5], (10 marks), etc.).
-5. If marks are not explicitly stated for a sub-question, infer from the section total.
-6. Create 2-4 clear marking criteria for the question. IMPORTANT: the sum of all criteria max_marks MUST EXACTLY EQUAL the question's max_marks.
-7. Note any internal choices (OR questions) — list each option as a separate entry with an 'is_choice_of' field.
-8. Note sections (Section A, Section B, etc.) using a 'section' field.
+1. EXAM HEADER & DECLARED MARKS:
+   - Identify the exam title/subject.
+   - Look for the explicit total maximum marks printed on the paper (e.g. "Marks: 20", "Max Marks: 20", "M.M.: 20", "Total Marks: 20").
+   - Set 'declared_maximum_marks' to this exact number.
+
+2. SECTIONS & INSTRUCTIONS:
+   - Identify all sections (e.g., Section I, Section II, Section III, Part A, Part B).
+   - Read the exact section instructions and formulas (e.g. "4x1=4M", "4x2=8M", "2x4=8M", "Answer any 2 of the following").
+   - Extract the attempt instruction and the marks per question for each section.
+
+3. FOR EVERY QUESTION AND SUB-QUESTION VISIBLE IN THE PAPER:
+   - Extract the question number exactly as printed (1, 2, 3... or 9A, 9B, 10A, 10B).
+   - If a question has sub-parts (e.g. A, B, a, b), record 'sub_part'.
+   - Extract the complete question text accurately.
+   - Question type: THEORY, NUMERICAL, DIAGRAM, or MIXED.
+   - Marks: Use the marks allocated by the section formula (e.g. in '4x1=4M', each question gets 1.0 mark; in '4x2=8M', each gets 2.0 marks; in '2x4=8M', each gets 4.0 marks). DO NOT INVENT MARKS.
+   - Choice groups: If questions are alternatives connected by 'OR' (e.g., 9A OR 9B), set 'choice_group' to the parent question (e.g., 'Q9') and 'is_or_choice' to true.
+   - If a question prints answer options, set 'question_format' to "MCQ" and copy them into 'options' as {"label": "A", "text": "..."}. Otherwise use "SHORT_ANSWER" and an empty list.
+   - If you cannot read a question's number, text or marks, leave that value empty. Never fill it in from context.
+   - Create 2-3 clear marking criteria for the question. The sum of all criteria max_marks MUST EXACTLY EQUAL the question's marks.
 
 CRITICAL RULES:
-- Never invent marks. Only extract what is explicitly or implicitly stated in the paper.
-- Never invent question text. Only extract what is visible.
-- Do NOT assume equal marks across all questions.
-- The sum of criteria marks for each question must EXACTLY equal the question's max_marks.
+- Never invent marks. Never assume all questions have equal marks.
+- The criteria marks sum for each question must EXACTLY equal the question's marks.
+- Always check the header for the declared maximum marks.
 
 Return ONLY valid JSON in this exact structure — no markdown, no explanation:
 {
-  "questions": [
+  "exam_title": "Class X Social DPT",
+  "declared_maximum_marks": 20.0,
+  "sections": [
     {
-      "question_number": 1,
-      "question_text": "...",
-      "question_type": "THEORY",
-      "max_marks": 5.0,
-      "section": "A",
-      "criteria": [
-        {"description": "...", "max_marks": 2.0},
-        {"description": "...", "max_marks": 3.0}
+      "section_id": "I",
+      "section_title": "Section I",
+      "attempt_instruction": "I. ANSWER THE FOLLOWING QUESTIONS: 4x1=4M",
+      "attempt_count": 4,
+      "marks_per_question": 1.0,
+      "section_maximum_marks": 4.0,
+      "questions": [
+        {
+          "question_number": 1,
+          "sub_part": "",
+          "question_text": "...",
+          "question_type": "THEORY",
+          "marks": 1.0,
+          "choice_group": "",
+          "is_or_choice": false,
+          "question_format": "SHORT_ANSWER",
+          "options": [],
+          "criteria": [
+            {"description": "...", "max_marks": 0.5},
+            {"description": "...", "max_marks": 0.5}
+          ]
+        }
       ]
     }
-  ],
-  "total_marks": 50.0,
-  "sections": ["A", "B"],
-  "extraction_warnings": []
+  ]
 }
 """
 
@@ -116,20 +153,19 @@ async def exam_setup(
     force_regenerate: str = Form("false"),
 ):
     """
-    Upload question paper.
-    1. Computes SHA-256 fingerprint of the document.
-    2. Checks in-memory cache for an existing rubric draft with the same fingerprint.
-    3. If cached → returns cached draft (same paper always gives same rubric).
-    4. If not cached or force_regenerate=true → generates fresh rubric, caches result.
+    Upload a question paper and turn it into structured questions and marks.
+
+    - Same file for this exam: returns the saved paper without parsing again.
+    - Different file for this exam: 409 unless force_regenerate=true.
+    - .txt papers are parsed without AI. Scans are quality-checked, then read by
+      the vision model.
+    - Unreadable uploads: 422, nothing saved.
+    - Ambiguous papers: draft returned with needs_teacher_review, nothing saved.
     """
 
     question_path = None
-    textbook_path = None
 
     try:
-        # --------------------------------------------------
-        # Validate inputs
-        # --------------------------------------------------
         exam_id = exam_id.strip()
         if not exam_id:
             raise HTTPException(400, "exam_id is required.")
@@ -138,253 +174,69 @@ async def exam_setup(
             raise HTTPException(400, "Question paper is required.")
 
         ext = Path(question_paper.filename).suffix.lower()
-        mime = ALLOWED_MIME.get(ext)
-        if not mime:
-            raise HTTPException(400, "Question paper must be PDF, JPG, or PNG.")
+        if not ALLOWED_MIME.get(ext):
+            raise HTTPException(400, "Question paper must be PDF, JPG, PNG, or TXT.")
 
         q_bytes = await question_paper.read()
         if not q_bytes:
             raise HTTPException(400, "Question paper file is empty.")
 
         should_force = force_regenerate.lower() in ("true", "1", "yes")
-
-        # --------------------------------------------------
-        # Document fingerprint
-        # --------------------------------------------------
         doc_fingerprint = compute_doc_fingerprint(q_bytes)
 
-        # Reference material fingerprint
-        ref_bytes = b""
-        if textbook and textbook.filename:
-            t_ext = Path(textbook.filename).suffix.lower()
-            if ALLOWED_MIME.get(t_ext):
-                ref_bytes = await textbook.read() or b""
-        ref_fingerprint = compute_doc_fingerprint(ref_bytes) if ref_bytes else ""
+        # Checked first so a repeat upload costs no parsing or model time.
+        existing = _load_saved_paper(exam_id)
+        if existing and not should_force:
+            if existing.get("doc_fingerprint") != doc_fingerprint:
+                raise HTTPException(409, _DIFFERENT_PAPER_MESSAGE.format(exam_id=exam_id))
+            return _paper_response(exam_id, existing, saved=True, duplicate=True)
 
-        # Determine model name for fingerprint
-        if AI_PROVIDER == "ollama":
-            model_name = model_router.ai_config.complex_model  # gemma4:e4b for visual
-        else:
-            model_name = GEMINI_MODEL
+        if ext == ".txt":
+            return _finish_paper(exam_id, _paper_from_text(q_bytes, doc_fingerprint), should_force)
 
         gen_fingerprint = compute_generation_fingerprint(
             doc_fingerprint=doc_fingerprint,
-            model_name=model_name,
+            model_name=model_router.routing_policy_fingerprint(),
             schema_version=RUBRIC_SCHEMA_VERSION,
             prompt_version=RUBRIC_PROMPT_VERSION,
-            ref_fingerprint=ref_fingerprint,
         )
 
-        # --------------------------------------------------
-        # Check cache first (unless force-regenerate)
-        # --------------------------------------------------
         if not should_force:
             cached = get_cached_draft(gen_fingerprint)
             if cached:
                 print(f"[ExamSetup] Cache hit for gen_fingerprint={gen_fingerprint[:12]}… returning cached rubric.")
-                # Register exam (idempotent)
-                _register_exam(exam_id, cached)
-                return {
-                    "success": True,
-                    "exam_id": exam_id,
-                    "rubric": cached,
-                    "doc_fingerprint": doc_fingerprint,
-                    "gen_fingerprint": gen_fingerprint,
-                    "from_cache": True,
-                }
+                return _finish_paper(exam_id, cached, should_force, from_cache=True)
 
-        # --------------------------------------------------
-        # Write question paper to temp file
-        # --------------------------------------------------
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
             tmp.write(q_bytes)
             question_path = tmp.name
 
-        # Write reference material if any
-        if ref_bytes:
-            t_ext = Path(textbook.filename).suffix.lower()
-            with tempfile.NamedTemporaryFile(delete=False, suffix=t_ext) as tmp:
-                tmp.write(ref_bytes)
-                textbook_path = tmp.name
+        paper_images, page_bytes = _render_pages(question_path, ext, q_bytes, doc_fingerprint)
+        _reject_unreadable(page_bytes)
 
-        rubric_data = None
+        # Reference material is not sent here: its pages could be read as questions.
+        res = model_router.generate(
+            task_type="rubric_generation",
+            prompt=RUBRIC_GENERATION_PROMPT,
+            images=paper_images,
+            format_json=True,
+            temperature=0,
+            is_rubric_from_scanned_paper=True,
+            requires_vision=True,
+        )
+        if not res.parsed_json or not isinstance(res.parsed_json, dict):
+            raise HTTPException(422, _UNUSABLE_REPLY_MESSAGE)
 
-        if AI_PROVIDER == "ollama":
-            # --------------------------------------------------
-            # LOCAL OLLAMA PATH — Gemma 4 E4B for visual papers
-            # --------------------------------------------------
-            print(f"[ExamSetup] Generating rubric via local ModelRouter (doc_fp={doc_fingerprint[:12]}…)")
-            paper_images = []
-            if ext == ".pdf":
-                paper_images = model_router.ollama.render_pdf_to_images(question_path, max_pages=6, dpi=150)
-            else:
-                paper_images = [question_path]
+        try:
+            rubric_data = _paper_from_model_reply(res.parsed_json, doc_fingerprint, gen_fingerprint)
+        except (AttributeError, KeyError, TypeError, ValueError) as error:
+            print(f"[ExamSetup] Unusable model reply: {type(error).__name__}")
+            raise HTTPException(422, _UNUSABLE_REPLY_MESSAGE)
 
-            # Include reference material images if any
-            if textbook_path:
-                ref_ext = Path(textbook_path).suffix.lower()
-                if ref_ext == ".pdf":
-                    ref_images = model_router.ollama.render_pdf_to_images(textbook_path, max_pages=3, dpi=100)
-                    paper_images = paper_images + ref_images
-                elif ref_ext in (".jpg", ".jpeg", ".png"):
-                    paper_images = paper_images + [textbook_path]
+        if not rubric_data["needs_teacher_review"]:
+            store_draft_cache(gen_fingerprint, rubric_data)
 
-            res = model_router.generate(
-                task_type="rubric_generation",
-                prompt=RUBRIC_GENERATION_PROMPT,
-                images=paper_images,
-                format_json=True,
-                temperature=0,          # Deterministic generation
-                is_rubric_from_scanned_paper=True,
-            )
-
-            if not res.parsed_json or not isinstance(res.parsed_json, dict):
-                raise HTTPException(
-                    500,
-                    f"Local model returned invalid rubric structure. Raw response: {res.text[:300]}"
-                )
-            rubric_data = res.parsed_json
-
-        else:
-            # --------------------------------------------------
-            # PRESERVED GEMINI CLOUD PATH
-            # --------------------------------------------------
-            client = get_gemini_client()
-            if not client:
-                raise HTTPException(500, "Gemini client not initialized.")
-
-            question_file = client.files.upload(
-                file=question_path,
-                config={"mime_type": mime}
-            )
-
-            textbook_file = None
-            if textbook_path:
-                t_ext = Path(textbook_path).suffix.lower()
-                t_mime = ALLOWED_MIME.get(t_ext)
-                if t_mime:
-                    textbook_file = client.files.upload(
-                        file=textbook_path,
-                        config={"mime_type": t_mime}
-                    )
-
-            contents = [RUBRIC_GENERATION_PROMPT, question_file]
-            if textbook_file:
-                contents.extend(["\nREFERENCE TEXTBOOK:\n", textbook_file])
-
-            response = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=contents,
-                config={
-                    "response_mime_type": "application/json",
-                    "temperature": 0,
-                }
-            )
-
-            if not response.text:
-                raise HTTPException(500, "Gemini returned empty rubric.")
-            rubric_data = json.loads(response.text)
-
-        # --------------------------------------------------
-        # VALIDATE & NORMALIZE RUBRIC DATA
-        # --------------------------------------------------
-        questions_list = rubric_data.get("questions", [])
-        if not questions_list:
-            raise HTTPException(500, "No questions were extracted from the question paper.")
-
-        validated_questions = []
-        for idx, q in enumerate(questions_list):
-            q_num_raw = q.get("question_number", idx + 1)
-            try:
-                q_num_str = re.sub(r"[^\d]", "", str(q_num_raw))
-                q_num = int(q_num_str) if q_num_str else (idx + 1)
-            except Exception:
-                q_num = idx + 1
-
-            q_text = str(q.get("question_text", f"Question {q_num}")).strip()
-            q_type = str(q.get("question_type", "THEORY")).upper()
-            if q_type not in {"THEORY", "NUMERICAL", "DIAGRAM", "MIXED"}:
-                q_type = "THEORY"
-
-            section = str(q.get("section", "")).strip()
-            total_marks = float(q.get("max_marks", q.get("total_marks", 0.0)))
-
-            criteria_raw = q.get("criteria", [])
-            validated_criteria = []
-            criteria_sum = 0.0
-
-            for c in criteria_raw:
-                desc = str(c.get("description", "Evaluation criterion")).strip()
-                c_marks = float(c.get("max_marks", c.get("marks", 0.0)))
-                validated_criteria.append({"description": desc, "max_marks": c_marks})
-                criteria_sum += c_marks
-
-            if not validated_criteria:
-                validated_criteria.append({
-                    "description": "Comprehensive and accurate answer demonstrating full understanding",
-                    "max_marks": total_marks
-                })
-                criteria_sum = total_marks
-
-            # Enforce mathematical consistency: sum(criteria) == total_marks
-            if total_marks > 0 and abs(criteria_sum - total_marks) > 0.01 and criteria_sum > 0:
-                scale = total_marks / criteria_sum
-                new_sum = 0.0
-                for c in validated_criteria:
-                    c["max_marks"] = round(c["max_marks"] * scale, 1)
-                    new_sum += c["max_marks"]
-                diff = round(total_marks - new_sum, 1)
-                validated_criteria[-1]["max_marks"] = max(0.5, validated_criteria[-1]["max_marks"] + diff)
-            elif total_marks == 0 and criteria_sum > 0:
-                # Marks missing from question — use criteria sum as fallback
-                total_marks = criteria_sum
-
-            entry = {
-                "question_number": q_num,
-                "question_text": q_text,
-                "question_type": q_type,
-                "max_marks": total_marks,
-                "criteria": validated_criteria,
-            }
-            if section:
-                entry["section"] = section
-
-            validated_questions.append(entry)
-
-        # Compute totals
-        computed_total = sum(q.get("max_marks", 0.0) for q in validated_questions)
-        sections = sorted(set(
-            q.get("section", "") for q in validated_questions if q.get("section")
-        ))
-
-        # Run structural validation — collect warnings, don't block
-        warnings = validate_rubric_structure({"questions": validated_questions})
-
-        rubric_data = {
-            "questions": validated_questions,
-            "total_marks": computed_total,
-            "sections": sections,
-            "extraction_warnings": warnings,
-            "doc_fingerprint": doc_fingerprint,
-            "gen_fingerprint": gen_fingerprint,
-            "schema_version": RUBRIC_SCHEMA_VERSION,
-            "prompt_version": RUBRIC_PROMPT_VERSION,
-        }
-
-        # Cache the validated result
-        store_draft_cache(gen_fingerprint, rubric_data)
-
-        # Register exam in Firestore (idempotent)
-        _register_exam(exam_id, rubric_data)
-
-        return {
-            "success": True,
-            "exam_id": exam_id,
-            "rubric": rubric_data,
-            "doc_fingerprint": doc_fingerprint,
-            "gen_fingerprint": gen_fingerprint,
-            "from_cache": False,
-        }
+        return _finish_paper(exam_id, rubric_data, should_force)
 
     except HTTPException:
         raise
@@ -400,25 +252,226 @@ async def exam_setup(
                 Path(question_path).unlink(missing_ok=True)
             except Exception:
                 pass
-        if textbook_path:
-            try:
-                Path(textbook_path).unlink(missing_ok=True)
-            except Exception:
-                pass
 
 
-def _register_exam(exam_id: str, rubric_data: dict) -> None:
-    """Idempotent exam registration in Firestore."""
+_UNREADABLE_MESSAGE = (
+    "This question paper could not be read, so nothing was saved. {reasons} "
+    "Please upload a clearer scan."
+)
+_UNUSABLE_REPLY_MESSAGE = (
+    "The question paper could not be read reliably, so nothing was saved. "
+    "Please upload a clearer scan or check it with the teacher."
+)
+_DIFFERENT_PAPER_MESSAGE = (
+    "Exam '{exam_id}' already has a different question paper saved. "
+    "Use force_regenerate=true to replace it, or a new exam ID."
+)
+
+
+def _load_saved_paper(exam_id: str) -> dict | None:
+    if not db_service.is_connected():
+        raise HTTPException(503, "Firestore is unavailable, so the question paper cannot be saved.")
     try:
-        total_marks = rubric_data.get("total_marks", 0.0)
-        db_service.save_exam(
-            exam_id=exam_id,
-            exam_name=exam_id,
-            total_marks=total_marks,
-            status="PROPOSED",
+        return db_service.get_question_paper(exam_id)
+    except Exception as error:
+        print(f"[ExamSetup] Could not read saved paper: {type(error).__name__}")
+        raise HTTPException(503, "Firestore is unavailable, so the question paper cannot be saved.")
+
+
+def _render_pages(
+    question_path: str, ext: str, q_bytes: bytes, doc_fingerprint: str
+) -> tuple[list, list[bytes]]:
+    """Return page images for the model and raw page bytes for the quality check."""
+    if ext != ".pdf":
+        return [question_path], [q_bytes]
+    try:
+        images = model_router.ollama.render_pdf_to_images(
+            question_path, max_pages=None, dpi=150, source_hash=doc_fingerprint
         )
-    except Exception as e:
-        print(f"[ExamSetup] DB exam registration skipped: {e}")
+    except Exception as error:
+        print(f"[ExamSetup] PDF could not be rendered: {type(error).__name__}")
+        raise HTTPException(
+            422,
+            _UNREADABLE_MESSAGE.format(reasons="The PDF file is damaged or cannot be opened."),
+        )
+    return images, [page for page in map(_page_image_bytes, images) if page]
+
+
+def _reject_unreadable(page_bytes: list[bytes]) -> None:
+    try:
+        problems = check_image_quality(page_bytes)
+    except QualityCheckUnavailable as error:
+        raise HTTPException(503, f"{error} Nothing was saved.")
+    if problems:
+        raise HTTPException(422, _UNREADABLE_MESSAGE.format(reasons=" ".join(problems)))
+
+
+def _paper_from_text(q_bytes: bytes, doc_fingerprint: str) -> dict:
+    try:
+        text = q_bytes.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise HTTPException(
+            422, _UNREADABLE_MESSAGE.format(reasons="The text file is not UTF-8 text.")
+        )
+
+    parsed = parse_question_paper_text(text)
+    if not parsed.questions:
+        raise HTTPException(
+            422, _UNREADABLE_MESSAGE.format(reasons="No numbered questions were found.")
+        )
+
+    declared = parsed.raw.get("declared_maximum_marks")
+    structure = validate_and_reconcile_exam_structure(parsed.raw)
+    problems = parsed.problems + structure.validation_warnings
+    return _paper_record(
+        questions=parsed.questions,
+        structure=structure,
+        declared=declared,
+        problems=problems,
+        warnings=[],
+        source_kind="text",
+        doc_fingerprint=doc_fingerprint,
+        gen_fingerprint=compute_generation_fingerprint(
+            doc_fingerprint=doc_fingerprint,
+            model_name="text-parser",
+            schema_version=RUBRIC_SCHEMA_VERSION,
+            prompt_version=RUBRIC_PROMPT_VERSION,
+        ),
+    )
+
+
+def _paper_from_model_reply(reply: dict, doc_fingerprint: str, gen_fingerprint: str) -> dict:
+    questions_list, problems = questions_from_model_reply(reply)
+    if not questions_list:
+        raise HTTPException(422, _UNREADABLE_MESSAGE.format(reasons="No questions were found."))
+
+    declared = read_marks(reply.get("declared_maximum_marks"))
+    # Validate the same question list that gets saved, so the total matches it.
+    structure = validate_and_reconcile_exam_structure(reply)
+
+    validated_questions = []
+    for idx, q in enumerate(questions_list):
+        q_num, extracted_part = parse_question_number_and_part(q.get("question_number"), idx + 1)
+        q_type = str(q.get("question_type", "THEORY")).upper()
+        if q_type not in {"THEORY", "NUMERICAL", "DIAGRAM", "MIXED"}:
+            q_type = "THEORY"
+
+        validated_criteria = [
+            {
+                "description": str(c.get("description", "Evaluation criterion")).strip(),
+                "max_marks": read_marks(c.get("max_marks", c.get("marks"))) or 0.0,
+            }
+            for c in q.get("criteria") or []
+        ]
+        validated_questions.append({
+            "question_number": q_num,
+            "sub_part": str(q.get("sub_part", "")).strip() or extracted_part,
+            "question_text": str(q.get("question_text", "")).strip(),
+            "question_type": q_type,
+            "question_format": str(q.get("question_format", "")).upper(),
+            "options": q.get("options") or [],
+            "max_marks": read_marks(q.get("max_marks", q.get("marks"))),
+            "marks": read_marks(q.get("marks", q.get("max_marks"))),
+            "section": str(q.get("section", q.get("section_id", ""))).strip(),
+            "choice_group": str(q.get("choice_group", "")),
+            "is_or_choice": bool(q.get("is_or_choice", False)),
+            "criteria": validated_criteria,
+        })
+
+    normalized_questions = normalize_rubric_questions_with_structure(validated_questions, structure)
+    return _paper_record(
+        questions=normalized_questions,
+        structure=structure,
+        declared=declared,
+        problems=problems + structure.validation_warnings,
+        warnings=validate_rubric_structure({"questions": normalized_questions}),
+        source_kind="scan",
+        doc_fingerprint=doc_fingerprint,
+        gen_fingerprint=gen_fingerprint,
+    )
+
+
+def _paper_record(
+    *,
+    questions: list[dict],
+    structure,
+    declared: float | None,
+    problems: list[str],
+    warnings: list[str],
+    source_kind: str,
+    doc_fingerprint: str,
+    gen_fingerprint: str,
+) -> dict:
+    if declared is None:
+        warnings = warnings + [
+            f"The paper does not print a total; {structure.calculated_maximum_marks:g} marks "
+            "was calculated from the question marks. Teacher should confirm it."
+        ]
+    sections = sorted({q.get("section", "") for q in questions if q.get("section")})
+    return {
+        "exam_title": structure.exam_title,
+        "questions": questions,
+        "question_count": len(questions),
+        "total_marks": structure.calculated_maximum_marks,
+        "declared_maximum_marks": declared,
+        "calculated_maximum_marks": structure.calculated_maximum_marks,
+        "validation_status": structure.validation_status,
+        "reconciliation_notes": structure.reconciliation_notes,
+        "sections": sections,
+        "extraction_warnings": warnings,
+        "problems": problems,
+        "needs_teacher_review": bool(problems) or structure.validation_status == "DISCREPANCY",
+        "source_kind": source_kind,
+        "doc_fingerprint": doc_fingerprint,
+        "gen_fingerprint": gen_fingerprint,
+        "schema_version": RUBRIC_SCHEMA_VERSION,
+        "prompt_version": RUBRIC_PROMPT_VERSION,
+    }
+
+
+def _finish_paper(
+    exam_id: str, rubric_data: dict, should_force: bool, *, from_cache: bool = False
+) -> dict:
+    """Save a clean paper. A paper needing teacher review is returned, never saved."""
+    if rubric_data["needs_teacher_review"]:
+        return _paper_response(exam_id, rubric_data, saved=False, from_cache=from_cache)
+
+    try:
+        result = db_service.save_question_paper(exam_id, rubric_data, replace=should_force)
+    except Exception as error:
+        print(f"[ExamSetup] Could not save paper: {type(error).__name__}")
+        raise HTTPException(503, "Firestore is unavailable, so the question paper was not saved.")
+    if result["outcome"] == "conflict":
+        raise HTTPException(409, _DIFFERENT_PAPER_MESSAGE.format(exam_id=exam_id))
+    return _paper_response(
+        exam_id,
+        result["paper"],
+        saved=True,
+        duplicate=result["outcome"] == "duplicate",
+        from_cache=from_cache,
+    )
+
+
+def _paper_response(
+    exam_id: str,
+    rubric: dict,
+    *,
+    saved: bool,
+    duplicate: bool = False,
+    from_cache: bool = False,
+) -> dict:
+    return {
+        "success": True,
+        "exam_id": exam_id,
+        "rubric": rubric,
+        "doc_fingerprint": rubric.get("doc_fingerprint", ""),
+        "gen_fingerprint": rubric.get("gen_fingerprint", ""),
+        "from_cache": from_cache,
+        "saved": saved,
+        "duplicate": duplicate,
+        "needs_teacher_review": bool(rubric.get("needs_teacher_review")),
+        "problems": rubric.get("problems", []),
+    }
 
 
 # =========================================================
@@ -451,16 +504,34 @@ async def approve_rubric(request: RubricApproveRequest):
             for q in request.rubric
         ]}
         warnings = validate_rubric_structure(rubric_dict)
+        rubric_structure = validate_and_reconcile_exam_structure({
+            **rubric_dict,
+            "declared_maximum_marks": request.total_marks,
+        })
+        if rubric_structure.validation_status == "DISCREPANCY":
+            raise HTTPException(
+                422,
+                detail=(
+                    f"Rubric maximum mismatch: declared "
+                    f"{rubric_structure.declared_maximum_marks:g}, but question/attempt "
+                    f"structure totals {rubric_structure.calculated_maximum_marks:g}. "
+                    "Correct the rubric or preserve the paper's section attempt rules "
+                    "before approval."
+                ),
+            )
+
+        without_criteria = [
+            f"Q{q.question_number}{q.sub_part}" for q in request.rubric if not q.criteria
+        ]
+        if without_criteria:
+            raise HTTPException(
+                422,
+                "These questions have no marking criteria yet: "
+                f"{', '.join(without_criteria)}. Add criteria before approving.",
+            )
 
         if not db_service.is_connected():
-            return {
-                "success": True,
-                "exam_id": exam_id,
-                "rubric_id": f"{exam_id}_v1",
-                "version": 1,
-                "warnings": warnings,
-                "message": "Rubric approved (Firestore offline — local fallback mode).",
-            }
+            raise HTTPException(503, "Firestore is unavailable, so the rubric was not saved.")
 
         # Save to Firestore
         saved = db_service.save_approved_rubric(
@@ -468,6 +539,7 @@ async def approve_rubric(request: RubricApproveRequest):
             questions=request.rubric,
             doc_fingerprint=getattr(request, "doc_fingerprint", ""),
             gen_fingerprint=getattr(request, "gen_fingerprint", ""),
+            total_marks=getattr(request, "total_marks", None),
         )
 
         # WRITE-VERIFY: read back the saved document

@@ -1,49 +1,12 @@
-"""
-AutoGrade — Math Agent
-
-Pix2Text → Gemini LaTeX cleanup → SymPy symbolic verification.
-All SymPy calls are wrapped in try/except. A parse failure
-sets c_math=0.4 and falls back to LLM-method evaluation.
-"""
+"""SymPy verification for answers with an explicit approved answer expression."""
 
 from __future__ import annotations
 
-import json
 import re
 
 import sympy as sp
 
 from models.schemas import MathResult
-from config import gemini_generate_with_retry
-
-try:
-    from pix2text import Pix2Text
-except ImportError:
-    Pix2Text = None
-
-_pix2text_instance = None
-
-
-# =========================================================
-# PIX2TEXT INITIALISATION
-# =========================================================
-
-def _get_pix2text():
-    """Lazily initialise Pix2Text."""
-    global _pix2text_instance
-
-    if _pix2text_instance is not None:
-        return _pix2text_instance
-
-    if Pix2Text is None:
-        raise RuntimeError(
-            "Pix2Text is not installed. "
-            "Run: pip install pix2text"
-        )
-
-    print("[Pix2Text] Initialising...")
-    _pix2text_instance = Pix2Text()
-    return _pix2text_instance
 
 
 # =========================================================
@@ -70,10 +33,18 @@ def _sympy_locals() -> dict:
 
 
 def _clean_latex(expression: str) -> str:
-    """Basic cleanup for LaTeX → SymPy compatible expression."""
+    """Normalize common OCR math delimiters and assignment syntax."""
     if not expression:
         return ""
     expr = str(expression).strip()
+    expr = re.sub(r"\\(?:\(|\)|\[|\])", "", expr)
+    expr = expr.replace("$", "")
+    expr = re.sub(r"\\boxed\{([^{}]*)\}", r"\1", expr)
+    expr = re.sub(r"\\(?:text|mathrm)\{([^{}]*)\}", r"\1", expr)
+    expr = re.sub(r"\\frac\{([^{}]+)\}\{([^{}]+)\}", r"((\1)/(\2))", expr)
+    expr = re.sub(r"\\sqrt\{([^{}]+)\}", r"sqrt(\1)", expr)
+    expr = expr.replace(r"\cdot", "*").replace(r"\times", "*")
+    expr = expr.replace(r"\pi", "pi")
     expr = expr.replace("^", "**")
     expr = expr.replace("×", "*")
     expr = expr.replace("÷", "/")
@@ -81,27 +52,20 @@ def _clean_latex(expression: str) -> str:
     return expr
 
 
-# =========================================================
-# GEMINI LATEX SYNTAX FIXER
-# =========================================================
-
-LATEX_FIX_PROMPT = """
-Fix only LaTeX syntax errors in this expression without
-changing its mathematical meaning.
-Return only the corrected LaTeX. Nothing else.
-"""
-
-
-def _fix_latex_with_gemini(raw_latex: str) -> str:
-    """Use Gemini to fix LaTeX syntax errors."""
-    response = gemini_generate_with_retry(
-        contents=[LATEX_FIX_PROMPT, raw_latex],
-        config={"temperature": 0.1}
+def expected_expression_from_rubric(rubric: list) -> str | None:
+    """Use only an explicitly stated answer expression; never infer a key."""
+    explicit_answer = re.compile(
+        r"(?:expected\s+answer|correct\s+answer|answer|result)\s*[:=]\s*([^;\n]+)",
+        re.IGNORECASE,
     )
-
-    if response.text:
-        return response.text.strip()
-    return raw_latex
+    for criterion in rubric:
+        description = getattr(criterion, "description", "")
+        match = explicit_answer.search(description)
+        if match:
+            expression = _clean_latex(match.group(1).strip())
+            if expression:
+                return expression
+    return None
 
 
 # =========================================================
@@ -109,22 +73,18 @@ def _fix_latex_with_gemini(raw_latex: str) -> str:
 # =========================================================
 
 def verify_math(
-    image_bytes: bytes,
+    student_expression: str,
     model_answer_expr: str,
 ) -> MathResult:
     """
-    Full math verification pipeline:
-    1. Pix2Text → raw LaTeX from image
-    2. Gemini LaTeX syntax fix
-    3. SymPy: parse + simplify(student - model) == 0
-    4. Fallback if SymPy fails
+    Compare OCR text with an explicit approved answer using SymPy.
 
     Parameters
     ----------
-    image_bytes : bytes
-        The question image bytes.
+    student_expression : str
+        OCR text for the student's mapped answer.
     model_answer_expr : str
-        The model answer expression (LaTeX or SymPy-compatible).
+        An answer expression explicitly included in the approved rubric.
 
     Returns
     -------
@@ -132,56 +92,22 @@ def verify_math(
         Contains c_math, symbolic_correct, latex_extracted.
     """
 
-    # -------------------------------------------------
-    # Step 1: Pix2Text extraction
-    # -------------------------------------------------
-    latex_extracted = ""
-
-    try:
-        import tempfile
-        import os
-
-        with tempfile.NamedTemporaryFile(
-            delete=False, suffix=".png"
-        ) as tmp:
-            tmp.write(image_bytes)
-            tmp_path = tmp.name
-
-        try:
-            p2t = _get_pix2text()
-            result = p2t.recognize(tmp_path, return_text=True)
-
-            if isinstance(result, list):
-                latex_extracted = "\n".join(str(r) for r in result)
-            else:
-                latex_extracted = str(result)
-        finally:
-            os.unlink(tmp_path)
-
-    except Exception as error:
-        print(f"[MathAgent] Pix2Text error: {error}")
-        latex_extracted = ""
-
-    # -------------------------------------------------
-    # Step 2: Gemini LaTeX fix
-    # -------------------------------------------------
-    if latex_extracted:
-        try:
-            latex_extracted = _fix_latex_with_gemini(latex_extracted)
-        except Exception as error:
-            print(f"[MathAgent] LaTeX fix error: {error}")
+    latex_extracted = _clean_latex(student_expression)
+    expected = _clean_latex(model_answer_expr)
+    if not latex_extracted or not expected:
+        return MathResult(
+            c_math=0.0,
+            symbolic_correct=None,
+            latex_extracted=latex_extracted,
+        )
 
     # -------------------------------------------------
     # Step 3: SymPy verification
     # -------------------------------------------------
     try:
-        student_expr_str = _clean_latex(latex_extracted)
-        model_expr_str = _clean_latex(model_answer_expr)
-
         locals_map = _sympy_locals()
-
-        student_expr = sp.sympify(student_expr_str, locals=locals_map)
-        model_expr = sp.sympify(model_expr_str, locals=locals_map)
+        student_expr = sp.sympify(_final_expression(latex_extracted), locals=locals_map)
+        model_expr = sp.sympify(_final_expression(expected), locals=locals_map)
 
         result = sp.simplify(student_expr - model_expr) == 0
 
@@ -200,7 +126,6 @@ def verify_math(
 
     except (sp.SympifyError, SyntaxError, TypeError, ValueError) as error:
         print(f"[MathAgent] SymPy parse failed: {error}")
-        # c_math=0.4, fall back to LLM method eval
         return MathResult(
             c_math=0.4,
             symbolic_correct=None,
@@ -214,3 +139,16 @@ def verify_math(
             symbolic_correct=None,
             latex_extracted=latex_extracted,
         )
+
+
+def _final_expression(text: str) -> str:
+    """Prefer the right-hand side of the final explicit equality."""
+    expression_lines = [
+        line.strip()
+        for line in text.splitlines()
+        if any(operator in line for operator in ("=", "+", "-", "*", "/", "^"))
+    ]
+    candidate = expression_lines[-1] if expression_lines else text
+    if "=" in candidate:
+        candidate = candidate.rsplit("=", 1)[-1]
+    return candidate.strip().rstrip(".")

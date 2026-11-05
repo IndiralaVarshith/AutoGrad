@@ -16,8 +16,8 @@ import time
 from typing import Any
 
 # SCHEMA / PROMPT version — bump when rubric schema or prompts change
-RUBRIC_SCHEMA_VERSION = "v1"
-RUBRIC_PROMPT_VERSION = "v1"
+RUBRIC_SCHEMA_VERSION = "v2"
+RUBRIC_PROMPT_VERSION = "v3"
 
 
 def compute_doc_fingerprint(file_bytes: bytes) -> str:

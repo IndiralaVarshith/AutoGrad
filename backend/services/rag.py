@@ -1,7 +1,7 @@
 """
 AutoGrade — RAG Module
 
-ChromaDB + Gemini text-embedding-004 for rubric generation
+ChromaDB + capability-checked Gemini embeddings for rubric retrieval
 from textbook/notes content.
 """
 
@@ -11,8 +11,9 @@ import json
 import hashlib
 import os
 
-from config import get_gemini_client, gemini_generate_with_retry
+from config import gemini_generate_with_retry
 from models.schemas import QuestionRubric, RubricCriterion
+from services.router import model_router
 
 try:
     import chromadb
@@ -25,7 +26,7 @@ except ImportError:
 # =========================================================
 
 CHUNK_SIZE = 300  # tokens (approximate by words)
-EMBEDDING_MODEL = "text-embedding-004"
+EMBEDDING_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-2")
 
 
 # =========================================================
@@ -76,22 +77,15 @@ def _chunk_text(text: str, chunk_size: int = CHUNK_SIZE) -> list[str]:
 
 def _embed_texts(texts: list[str]) -> list[list[float]]:
     """
-    Embed a list of texts using Gemini if available, or deterministic
-    local word-frequency embeddings if running offline/local-only.
+    Embed through the shared Gemini router when enabled, or use the existing
+    local representation when Gemini is disabled or unavailable.
     """
-    client = get_gemini_client()
-    if client:
-        try:
-            embeddings = []
-            for text in texts:
-                response = client.models.embed_content(
-                    model=EMBEDDING_MODEL,
-                    contents=text,
-                )
-                embeddings.append(response.embeddings[0].values)
+    try:
+        embeddings = model_router.embed_texts(texts, requested_model=EMBEDDING_MODEL)
+        if embeddings is not None:
             return embeddings
-        except Exception as e:
-            print(f"[RAG] Gemini embedding failed ({e}), falling back to local representation.")
+    except Exception as e:
+        print(f"[RAG] Gemini embedding unavailable ({type(e).__name__}); using local representation.")
 
     # Local fallback: 768-dimensional normalized deterministic hash embedding
     dim = 768

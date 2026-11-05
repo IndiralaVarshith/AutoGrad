@@ -12,6 +12,7 @@ Wires all modular routes:
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import tempfile
 from pathlib import Path
@@ -185,13 +186,13 @@ Return JSON in this format:
         Path(q_path).unlink(missing_ok=True)
 
 
-@app.post("/process-answer-sheet")
+@app.post("/process-answer-sheet", status_code=202)
 async def process_answer_sheet(
     answer_sheet: UploadFile = File(...),
     rubric: str = Form(""),
 ):
     """
-    Direct answer-sheet evaluation for root UI (app.js).
+    Accept an answer-sheet evaluation from the legacy root UI.
     """
     if not rubric:
         raise HTTPException(400, "Approved rubric JSON is required.")
@@ -211,42 +212,70 @@ async def process_answer_sheet(
     sheet_bytes = await answer_sheet.read()
     if not sheet_bytes:
         raise HTTPException(400, "Answer sheet is empty.")
+    page_count = upload._validate_answer_sheet_bytes(sheet_bytes, ext)
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-        tmp.write(sheet_bytes)
-        sheet_path = tmp.name
-
-    try:
-        if ext == ".pdf":
-            image_parts = model_router.ollama.render_pdf_to_images(sheet_path, max_pages=6, dpi=120)
-        else:
-            image_parts = [sheet_path]
-
-        # Convert rubric dictionary to list of QuestionRubric
-        from models.schemas import QuestionRubric, RubricCriterion
-        rubric_list = []
-        q_raw_list = rubric_data.get("questions", []) if isinstance(rubric_data, dict) else rubric_data
-        for q in q_raw_list:
-            rubric_list.append(
-                QuestionRubric(
-                    question_number=int(q.get("question_number", 1)),
-                    question_text=str(q.get("question_text", "")),
-                    max_marks=float(q.get("max_marks", 5.0)),
-                    criteria=[RubricCriterion(**c) for c in q.get("criteria", [])],
-                )
-            )
-
-        from pipeline import process_paper
-        paper_res = process_paper(
-            exam_id="manual_run",
-            hall_ticket="STUDENT_1",
-            student_name="Student",
-            image_parts=image_parts,
-            rubric_list=rubric_list,
-            image_bytes_list=[sheet_bytes],
+    from models.schemas import QuestionRubric, RubricCriterion
+    from services.marks_validator import safe_int_qnum, validate_and_reconcile_exam_structure
+    q_raw_list = rubric_data.get("questions", []) if isinstance(rubric_data, dict) else rubric_data
+    rubric_list = [
+        QuestionRubric(
+            question_number=safe_int_qnum(q.get("question_number", 1), 1),
+            question_text=str(q.get("question_text", "")),
+            max_marks=float(q.get("max_marks", 5.0)),
+            criteria=[RubricCriterion(**criterion) for criterion in q.get("criteria", [])],
+            sub_part=str(q.get("sub_part", "")),
+            choice_group=str(q.get("choice_group", "")),
+            is_or_choice=bool(q.get("is_or_choice", False)),
         )
+        for q in q_raw_list
+    ]
+    if not rubric_list:
+        raise HTTPException(400, "Rubric contains no questions.")
 
-        return paper_res.model_dump()
+    total_marks = (
+        float(rubric_data.get("total_marks", 0))
+        if isinstance(rubric_data, dict)
+        else 0
+    )
+    if total_marks <= 0:
+        total_marks = validate_and_reconcile_exam_structure(
+            {"questions": [question.model_dump() for question in rubric_list]}
+        ).calculated_maximum_marks
+    if total_marks <= 0:
+        raise HTTPException(400, "Rubric does not define a positive maximum mark total.")
 
-    finally:
-        Path(sheet_path).unlink(missing_ok=True)
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            {
+                "total_marks": total_marks,
+                "questions": [question.model_dump() for question in rubric_list],
+            },
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
+    job = upload.queue_manager.enqueue(
+        exam_id="manual_run",
+        hall_ticket="STUDENT_1",
+        student_name="Student",
+        file_bytes=sheet_bytes,
+        file_ext=ext,
+        mime_type={
+            ".pdf": "application/pdf",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png": "image/png",
+        }[ext],
+        original_filename=answer_sheet.filename,
+        rubric_fingerprint=fingerprint,
+        rubric_total_marks=total_marks,
+        rubric_data=[question.model_dump() for question in rubric_list],
+    )
+    upload.queue_manager.start_worker(upload._execute_grading_job)
+    return {
+        "job_id": job.job_id,
+        "exam_id": job.exam_id,
+        "hall_ticket": job.hall_ticket,
+        "status": job.status,
+        "current_stage": job.current_stage,
+        "page_count": page_count,
+    }

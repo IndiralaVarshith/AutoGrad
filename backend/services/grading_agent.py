@@ -9,6 +9,8 @@ the EXACT substring from the student answer as verbatim_quote.
 from __future__ import annotations
 
 import json
+import math
+import re
 
 from models.schemas import CriterionResult, QuestionRubric
 from config import gemini_generate_with_retry
@@ -78,6 +80,9 @@ def grade_answer(
     temperature: float = 0.1,
     question_type: str = "THEORY",
     illegible_count: int = 0,
+    avoid_model: str | None = None,
+    avoid_models: list[str] | set[str] | None = None,
+    task_category: str | None = None,
 ) -> tuple[list[CriterionResult], float, str, str]:
     """
     Grade a student's answer against the rubric.
@@ -113,6 +118,18 @@ def grade_answer(
         Reason for model selection.
     """
 
+    criteria_budget = sum(criterion.max_marks for criterion in rubric.criteria)
+    if not math.isfinite(max_marks) or max_marks < 0:
+        raise ValueError(f"Invalid approved maximum for question {rubric.question_number}.")
+    if any(
+        not math.isfinite(criterion.max_marks) or criterion.max_marks < 0
+        for criterion in rubric.criteria
+    ) or criteria_budget > max_marks:
+        raise ValueError(
+            f"Approved criteria for question {rubric.question_number} total "
+            f"{criteria_budget:.2f}, exceeding its maximum of {max_marks:.2f}."
+        )
+
     rubric_json = json.dumps(
         [
             {"description": c.description, "max_marks": c.max_marks}
@@ -135,6 +152,17 @@ Grade this answer. For each criterion, cite EXACT text from
 the student answer as verbatim_quote. Return JSON only.
 """
 
+    complex_reasoning_verbs = {
+        "analyze", "analyse", "evaluate", "justify", "derive", "prove", "compare",
+        "contrast", "critically", "synthesize", "synthesise", "multi-step", "multi step",
+    }
+    question_lower = question_text.casefold()
+    if task_category is None and (
+        len(rubric.criteria) >= 4
+        or any(verb in question_lower for verb in complex_reasoning_verbs)
+    ):
+        task_category = "high_complexity"
+
     res = model_router.generate(
         task_type="grading",
         prompt=user_prompt,
@@ -144,31 +172,47 @@ the student answer as verbatim_quote. Return JSON only.
         temperature=temperature,
         question_type=question_type,
         illegible_count=illegible_count,
+        avoid_model=avoid_model,
+        avoid_models=avoid_models,
+        task_category=task_category,
+        requires_reasoning=(task_category == "high_complexity") if task_category else None,
     )
 
-    data = res.parsed_json or {}
+    data = res.parsed_json
     if not isinstance(data, dict):
         try:
             data = json.loads(res.text)
-        except Exception:
-            data = {}
+        except (json.JSONDecodeError, TypeError) as error:
+            raise RuntimeError("Grading agent returned invalid structured output.") from error
+    if not isinstance(data, dict) or not isinstance(data.get("criterion_results"), list):
+        raise RuntimeError("Grading agent response omitted criterion_results.")
 
     # -------------------------------------------------
     # Parse into CriterionResult models
     # -------------------------------------------------
     criteria: list[CriterionResult] = []
+    rubric_by_description = {
+        re.sub(r"\s+", " ", item.description).strip().casefold(): item
+        for item in rubric.criteria
+    }
+    seen_criteria: set[str] = set()
     for item in data.get("criterion_results", []):
+        criterion_desc = str(item.get("criterion", "")).strip()
+        criterion_key = re.sub(r"\s+", " ", criterion_desc).casefold()
+        rubric_criterion = rubric_by_description.get(criterion_key)
+        if rubric_criterion is None or criterion_key in seen_criteria:
+            continue
+        seen_criteria.add(criterion_key)
         marks = float(item.get("marks_awarded", 0))
-
-        # Find the matching rubric criterion to enforce max
-        criterion_desc = item.get("criterion", "")
-        max_for_criterion = max_marks  # fallback
-        for rc in rubric.criteria:
-            if rc.description == criterion_desc:
-                max_for_criterion = rc.max_marks
-                break
-
-        marks = max(0.0, min(marks, max_for_criterion))
+        if (
+            not math.isfinite(marks)
+            or marks < 0
+            or marks > rubric_criterion.max_marks
+        ):
+            raise ValueError(
+                f"Grader awarded invalid marks for criterion '{criterion_desc}' "
+                f"({marks}; approved maximum {rubric_criterion.max_marks})."
+            )
 
         criteria.append(
             CriterionResult(
@@ -180,7 +224,7 @@ the student answer as verbatim_quote. Return JSON only.
             )
         )
 
-    # If model failed to return criteria, create fallback criteria
+    # Missing rubric criteria receive no marks and remain visible in the report.
     if not criteria and rubric.criteria:
         for rc in rubric.criteria:
             criteria.append(
@@ -192,11 +236,26 @@ the student answer as verbatim_quote. Return JSON only.
                     quote_verified=False,
                 )
             )
+    elif len(seen_criteria) < len(rubric.criteria):
+        for rc in rubric.criteria:
+            key = re.sub(r"\s+", " ", rc.description).strip().casefold()
+            if key not in seen_criteria:
+                criteria.append(
+                    CriterionResult(
+                        criterion=rc.description,
+                        verbatim_quote="",
+                        marks_awarded=0.0,
+                        rationale="Grading agent did not return this approved rubric criterion",
+                        quote_verified=False,
+                    )
+                )
 
-    total_score = min(
-        sum(c.marks_awarded for c in criteria),
-        max_marks
-    )
+    total_score = sum(c.marks_awarded for c in criteria)
+    if total_score > max_marks:
+        raise ValueError(
+            f"Grader criteria total {total_score:.2f} exceeds the approved "
+            f"maximum {max_marks:.2f} for question {rubric.question_number}."
+        )
 
     print(f"[Grader] Model: {res.model_used} | Score: {total_score}/{max_marks} | Reason: {res.routing_reason}")
 

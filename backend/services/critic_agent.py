@@ -72,6 +72,7 @@ def critique_grade(
     grader_criteria: list[CriterionResult],
     grader_score: float,
     max_marks: float,
+    avoid_model: str | None = None,
 ) -> CriticVerdict:
     """
     Review the Grading Agent's output adversarially.
@@ -138,23 +139,32 @@ Review this grading. Return JSON only.
             "response_mime_type": "application/json",
             "response_json_schema": CRITIC_RESPONSE_SCHEMA,
             "temperature": 0.3,
-        }
+        },
+        task_category="critical_validation",
+        requires_vision=bool(image_parts),
+        requires_reasoning=True,
+        avoid_model=avoid_model,
     )
 
     if not response.text:
-        # If critic fails, default to ACCEPT
-        return CriticVerdict(
-            verdict="ACCEPT",
-            reason="Critic agent returned no output; defaulting to ACCEPT.",
-        )
+        raise RuntimeError("Critic agent returned an empty response.")
 
     data = json.loads(response.text)
 
+    raw_challenged = data.get("challenged_criteria", [])
+    clean_challenged = []
+    for item in raw_challenged:
+        if isinstance(item, dict):
+            clean_challenged.append(str(item.get("description", item.get("criterion", str(item)))))
+        else:
+            clean_challenged.append(str(item))
+
     verdict = CriticVerdict(
         verdict=data.get("verdict", "ACCEPT"),
-        challenged_criteria=data.get("challenged_criteria", []),
+        challenged_criteria=clean_challenged,
         suggested_score=float(data.get("suggested_score", grader_score)),
         reason=data.get("reason", ""),
+        model_used=response.model_used,
     )
 
     print(f"[Critic] Verdict: {verdict.verdict}, suggested: {verdict.suggested_score}")

@@ -4,8 +4,34 @@ import QueueStatus from '../components/QueueStatus';
 import ConfidenceBadge from '../components/ConfidenceBadge';
 import EvidenceTable from '../components/EvidenceTable';
 
-export default function Upload({ examId = 'EXAM_2026_01', onGoToDashboard }) {
+const evaluationStages = [
+  { id: 'uploading', label: 'Uploading answer sheet' },
+  { id: 'extracting_pages', label: 'Extracting PDF pages' },
+  { id: 'reading_handwriting', label: 'Reading handwritten answers' },
+  { id: 'identifying_answers', label: 'Identifying question-wise responses' },
+  { id: 'rubric_matching_and_grading', label: 'Evaluating against the approved rubric' },
+  { id: 'verifying', label: 'Verifying evidence and calculations' },
+  { id: 'calculating', label: 'Calculating final marks' },
+  { id: 'completed', label: 'Evaluation completed' },
+];
+
+const terminalJobStatuses = new Set(['COMPLETE', 'NEEDS_REVIEW', 'FAILED', 'TIMED_OUT', 'CANCELLED']);
+
+const evaluationStageIndex = (stage) => {
+  if (stage === 'uploading') return 0;
+  if (stage === 'extracting_pages' || stage === 'preprocessing_images') return 1;
+  if (stage === 'reading_handwriting' || stage === 'handwriting_ocr') return 2;
+  if (stage === 'identifying_answers' || stage === 'question_classification' || stage === 'question_answer_extraction') return 3;
+  if (stage === 'rubric_matching_and_grading') return 4;
+  if (['sympy_numerical_verification', 'critic_agent', 'critic_resolver', 'evidence_verification'].includes(stage)) return 5;
+  if (['confidence_calculation', 'final_marks_calculation', 'response_and_firestore_persistence'].includes(stage)) return 6;
+  if (stage === 'completed') return 7;
+  return 0;
+};
+
+export default function Upload({ examId = 'varshith', onExamIdChange, onGoToDashboard }) {
   const [selectedExamId, setSelectedExamId] = useState(examId);
+  const [availableExams, setAvailableExams] = useState([]);
   const [files, setFiles] = useState([]);
   const [studentMeta, setStudentMeta] = useState([]);
   const [uploading, setUploading] = useState(false);
@@ -20,10 +46,38 @@ export default function Upload({ examId = 'EXAM_2026_01', onGoToDashboard }) {
 
   // Single student immediate grading result
   const [singleResult, setSingleResult] = useState(null);
+  const [evaluationJobId, setEvaluationJobId] = useState('');
+  const [evaluationJob, setEvaluationJob] = useState(null);
+  const [uploadTransferPercent, setUploadTransferPercent] = useState(null);
+  const [pollGeneration, setPollGeneration] = useState(0);
 
   useEffect(() => {
-    if (examId) setSelectedExamId(examId);
-  }, [examId]);
+    if (examId && examId !== selectedExamId) {
+      setSelectedExamId(examId);
+    }
+  }, [examId, selectedExamId]);
+
+  // Fetch list of exams from Firestore on mount
+  useEffect(() => {
+    const fetchExams = async () => {
+      try {
+        const res = await api.getExams();
+        if (res && res.exams) {
+          setAvailableExams(res.exams);
+        }
+      } catch {
+        // ignore
+      }
+    };
+    fetchExams();
+  }, []);
+
+  const handleExamIdChange = (newId) => {
+    setSelectedExamId(newId);
+    if (onExamIdChange) {
+      onExamIdChange(newId);
+    }
+  };
 
   // Check approved rubric status in Firestore whenever exam ID changes
   useEffect(() => {
@@ -44,6 +98,10 @@ export default function Upload({ examId = 'EXAM_2026_01', onGoToDashboard }) {
       } catch (err) {
         if (isMounted) {
           setRubricInfo(null);
+          setError(
+            err.response?.data?.detail
+            || 'Could not verify the approved rubric with the backend.',
+          );
         }
       } finally {
         if (isMounted) setRubricLoading(false);
@@ -56,12 +114,71 @@ export default function Upload({ examId = 'EXAM_2026_01', onGoToDashboard }) {
     };
   }, [selectedExamId]);
 
+  useEffect(() => {
+    if (!evaluationJobId) return undefined;
+    let active = true;
+    let timer;
+
+    const poll = async () => {
+      try {
+        const job = await api.getEvaluationJob(evaluationJobId);
+        if (!active) return;
+        setEvaluationJob(job);
+
+        if (terminalJobStatuses.has(job.status)) {
+          setEvaluatingSingle(false);
+          if (job.status === 'COMPLETE' || job.status === 'NEEDS_REVIEW') {
+            if (!job.result) {
+              setStatusMsg('Teacher validation required. No marks were generated because no compatible model could complete this task.');
+              setError(job.error || job.stage_detail || 'The answer sheet is pending teacher validation.');
+              return;
+            }
+            setSingleResult(job.result);
+            setStatusMsg(
+              job.status === 'NEEDS_REVIEW'
+                ? `Evaluation completed with ${job.score}/${job.max_score}; teacher review is required.`
+                : `Evaluation completed with ${job.score}/${job.max_score}.`,
+            );
+            setError('');
+          } else {
+            setError(
+              job.error
+                ? `Evaluation ${job.status.toLowerCase().replace('_', ' ')}: ${job.error}`
+                : `Evaluation ${job.status.toLowerCase().replace('_', ' ')}.`,
+            );
+            setStatusMsg('');
+          }
+          return;
+        }
+
+        timer = setTimeout(poll, 1200);
+      } catch (pollError) {
+        if (!active) return;
+        setEvaluatingSingle(false);
+        setError(
+          pollError.response?.data?.detail
+          || pollError.message
+          || 'Could not retrieve evaluation status from the backend.',
+        );
+      }
+    };
+
+    poll();
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [evaluationJobId, pollGeneration]);
+
   const handleFileSelection = (e) => {
     const fileList = Array.from(e.target.files);
     if (fileList.length === 0) return;
 
     setFiles(fileList);
     setSingleResult(null);
+    setEvaluationJobId('');
+    setEvaluationJob(null);
+    setUploadTransferPercent(null);
 
     const generatedMeta = fileList.map((f, idx) => {
       const base = f.name.replace(/\.[^/.]+$/, '');
@@ -88,7 +205,7 @@ export default function Upload({ examId = 'EXAM_2026_01', onGoToDashboard }) {
     if (updatedFiles.length === 0) setSingleResult(null);
   };
 
-  // Direct Synchronous Evaluation for ONE Student
+  // Submit one student and poll the persistent background evaluation job.
   const handleSingleStudentEvaluation = async () => {
     if (files.length === 0) {
       setError('Please select one student answer sheet file.');
@@ -103,10 +220,14 @@ export default function Upload({ examId = 'EXAM_2026_01', onGoToDashboard }) {
       return;
     }
 
+    let accepted = false;
     try {
       setEvaluatingSingle(true);
       setError('');
-      setStatusMsg('Evaluating handwritten answer sheet with local vision model & approved rubric...');
+      setStatusMsg('Uploading answer sheet...');
+      setEvaluationJob(null);
+      setEvaluationJobId('');
+      setUploadTransferPercent(0);
 
       const targetFile = files[0];
       const meta = studentMeta[0] || { hall_ticket: 'STUDENT_001', name: 'Student 1' };
@@ -117,14 +238,50 @@ export default function Upload({ examId = 'EXAM_2026_01', onGoToDashboard }) {
       formData.append('student_name', meta.name.trim());
       formData.append('file', targetFile);
 
-      const res = await api.evaluateSingleStudent(formData);
-      setSingleResult(res.result);
-      setStatusMsg(`Evaluation complete! Result persisted to Firestore for ${res.hall_ticket}.`);
+      const res = await api.evaluateSingleStudent(formData, (event) => {
+        if (event.total) {
+          setUploadTransferPercent(Math.round((event.loaded / event.total) * 100));
+        }
+      });
+      if (!res.job_id) {
+        throw new Error('Backend accepted the upload without returning an evaluation job ID.');
+      }
+      accepted = true;
+      setEvaluationJobId(res.job_id);
+      setEvaluationJob(res);
+      setPollGeneration((value) => value + 1);
+      setStatusMsg('Answer sheet accepted. Tracking the evaluation job returned by the backend.');
     } catch (err) {
       console.error('Single evaluation error:', err);
       setError(err.response?.data?.detail || err.message || 'Evaluation failed.');
     } finally {
-      setEvaluatingSingle(false);
+      if (!accepted) setEvaluatingSingle(false);
+    }
+  };
+
+  const handleRetryEvaluation = async () => {
+    if (!evaluationJobId) return;
+    try {
+      setError('');
+      setStatusMsg('Retrying the failed evaluation using its retained preprocessing and OCR cache...');
+      setSingleResult(null);
+      const job = await api.retryEvaluationJob(evaluationJobId);
+      setEvaluationJob(job);
+      setEvaluatingSingle(true);
+      setPollGeneration((value) => value + 1);
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || 'Could not retry the evaluation.');
+    }
+  };
+
+  const handleCancelEvaluation = async () => {
+    if (!evaluationJobId) return;
+    try {
+      const job = await api.cancelEvaluationJob(evaluationJobId);
+      setEvaluationJob((current) => ({ ...current, ...job }));
+      setStatusMsg('Cancellation requested. It will take effect at the next safe stage boundary.');
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || 'Could not cancel the evaluation.');
     }
   };
 
@@ -217,10 +374,78 @@ export default function Upload({ examId = 'EXAM_2026_01', onGoToDashboard }) {
         <QueueStatus stats={queueStats} />
       )}
 
+      {(evaluatingSingle || evaluationJob) && (
+        <section className="rounded border border-[#22242a] bg-[#121316] p-4 space-y-3" aria-live="polite">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 className="text-xs font-mono uppercase tracking-wider text-[#c4c7cf]">
+                Answer-sheet evaluation
+              </h2>
+              <p className="mt-1 text-[11px] font-mono text-[#8c9099]">
+                {evaluationJob?.job_id
+                  ? `Job ${evaluationJob.job_id} · ${evaluationJob.status || 'PENDING'}`
+                  : uploadTransferPercent === null
+                    ? 'Preparing upload'
+                    : `Uploading answer sheet · ${uploadTransferPercent}% transferred`}
+              </p>
+            </div>
+            {evaluationJobId && evaluationJob && !terminalJobStatuses.has(evaluationJob.status) && (
+              <button
+                type="button"
+                onClick={handleCancelEvaluation}
+                className="text-[11px] font-mono text-[#f59e0b] hover:text-[#fbbf24]"
+              >
+                Cancel evaluation
+              </button>
+            )}
+          </div>
+
+          <ol className="grid gap-2 sm:grid-cols-2">
+            {evaluationStages.map((stage, index) => {
+              const isPending = evaluationJob?.status === 'PENDING';
+              const activeIndex = evaluationStageIndex(
+                evaluationJob?.current_stage || (evaluationJobId ? 'queued' : 'uploading'),
+              );
+              const isActive = !isPending && index === activeIndex && (evaluatingSingle || !evaluationJobId);
+              const isDone = (evaluationJobId && index === 0) || index < activeIndex || (
+                index === evaluationStages.length - 1
+                && (evaluationJob?.status === 'COMPLETE'
+                  || (evaluationJob?.status === 'NEEDS_REVIEW' && evaluationJob?.result))
+              );
+              return (
+                <li
+                  key={stage.id}
+                  className={`flex items-center gap-2 text-[11px] font-mono ${
+                    isActive ? 'text-[#38bdf8]' : isDone ? 'text-[#4ade80]' : 'text-[#555963]'
+                  }`}
+                >
+                  <span aria-hidden="true">{isDone ? '✓' : isActive ? '●' : '○'}</span>
+                  <span>{stage.label}</span>
+                </li>
+              );
+            })}
+          </ol>
+          <p className="text-[11px] font-mono text-[#8c9099]">
+            {evaluationJob?.stage_detail
+              || (evaluationJobId ? 'Waiting for backend stage details...' : 'Upload transfer progress is shown above.')}
+          </p>
+
+          {evaluationJob && ['FAILED', 'TIMED_OUT'].includes(evaluationJob.status) && (
+            <button
+              type="button"
+              onClick={handleRetryEvaluation}
+              className="rounded bg-[#b45309] px-3 py-1.5 text-[11px] font-mono text-white hover:bg-[#92400e]"
+            >
+              Retry evaluation
+            </button>
+          )}
+        </section>
+      )}
+
       {/* Upload Form */}
       <div className="space-y-5">
         <div className="bg-[#121316] border border-[#22242a] rounded p-5 space-y-4">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="text-xs font-mono uppercase tracking-wider text-[#8c9099] font-medium">
               Target Examination
             </div>
@@ -229,12 +454,34 @@ export default function Upload({ examId = 'EXAM_2026_01', onGoToDashboard }) {
               <input
                 type="text"
                 value={selectedExamId}
-                onChange={(e) => setSelectedExamId(e.target.value)}
+                onChange={(e) => handleExamIdChange(e.target.value)}
+                placeholder="varshith"
                 className="bg-[#0c0d0e] border border-[#25282f] rounded px-2.5 py-1 text-xs text-[#ededed] font-mono focus:outline-none focus:border-[#404552]"
                 required
               />
             </div>
           </div>
+
+          {/* Quick Exam Selectors */}
+          {availableExams.length > 0 && (
+            <div className="flex items-center gap-1.5 flex-wrap pt-1 border-t border-[#1a1c21]">
+              <span className="text-[10px] font-mono text-[#717680]">Configured Exams:</span>
+              {availableExams.map((ex) => (
+                <button
+                  key={ex.exam_id}
+                  type="button"
+                  onClick={() => handleExamIdChange(ex.exam_id)}
+                  className={`text-[10px] font-mono px-2 py-0.5 rounded border transition-colors cursor-pointer ${
+                    selectedExamId === ex.exam_id
+                      ? 'bg-[#1e2533] text-[#38bdf8] border-[#294263]'
+                      : 'bg-[#0e1013] text-[#8c9099] border-[#20232a] hover:bg-[#16181f]'
+                  }`}
+                >
+                  {ex.exam_id} {ex.total_marks ? `(${ex.total_marks}M)` : ''}
+                </button>
+              ))}
+            </div>
+          )}
 
           {/* Firestore Rubric Verification Banner */}
           <div className="p-3 rounded border text-xs font-mono">
@@ -266,6 +513,7 @@ export default function Upload({ examId = 'EXAM_2026_01', onGoToDashboard }) {
               type="file"
               multiple
               accept=".pdf,.jpg,.jpeg,.png"
+              disabled={evaluatingSingle}
               onChange={handleFileSelection}
               className="text-xs text-[#717680] file:mr-2 file:py-1.5 file:px-3 file:rounded file:border file:border-[#2e323b] file:bg-[#1a1c21] file:text-[#b0b4be] file:text-xs file:font-mono hover:file:bg-[#22252c] cursor-pointer"
             />
@@ -299,6 +547,7 @@ export default function Upload({ examId = 'EXAM_2026_01', onGoToDashboard }) {
                           <input
                             type="text"
                             value={m.hall_ticket}
+                            disabled={evaluatingSingle}
                             onChange={(e) => handleMetaChange(idx, 'hall_ticket', e.target.value)}
                             className="w-full bg-[#121316] border border-[#22242a] rounded px-2 py-0.5 text-xs text-[#ededed] font-mono focus:outline-none"
                           />
@@ -307,6 +556,7 @@ export default function Upload({ examId = 'EXAM_2026_01', onGoToDashboard }) {
                           <input
                             type="text"
                             value={m.name}
+                            disabled={evaluatingSingle}
                             onChange={(e) => handleMetaChange(idx, 'name', e.target.value)}
                             className="w-full bg-[#121316] border border-[#22242a] rounded px-2 py-0.5 text-xs text-[#ededed] focus:outline-none"
                           />
@@ -315,6 +565,7 @@ export default function Upload({ examId = 'EXAM_2026_01', onGoToDashboard }) {
                           <button
                             type="button"
                             onClick={() => handleRemoveFile(idx)}
+                            disabled={evaluatingSingle}
                             className="text-[#555963] hover:text-[#ef4444] text-xs"
                           >
                             ×
@@ -339,7 +590,7 @@ export default function Upload({ examId = 'EXAM_2026_01', onGoToDashboard }) {
                 disabled={evaluatingSingle || !rubricInfo}
                 className="bg-[#10b981] hover:bg-[#059669] text-white font-medium py-2 px-5 rounded text-xs font-mono transition-colors cursor-pointer disabled:opacity-50"
               >
-                {evaluatingSingle ? 'Evaluating with Local AI...' : '⚡ Evaluate Answer Sheet (Immediate)'}
+                {evaluatingSingle ? 'Evaluation in progress...' : '⚡ Evaluate One Answer Sheet'}
               </button>
             )}
 
@@ -398,7 +649,7 @@ export default function Upload({ examId = 'EXAM_2026_01', onGoToDashboard }) {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <span className="font-mono font-bold text-xs text-[#ededed]">
-                      Q{q.question_number}
+                      Q{q.question_number}{q.sub_part ? `(${q.sub_part})` : ''}
                     </span>
                     <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#181a1f] text-[#8c9099] border border-[#26282f]">
                       {q.question_type}

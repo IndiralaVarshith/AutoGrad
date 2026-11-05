@@ -1,16 +1,13 @@
 """
-AutoGrade — Local Dual Model Benchmarking Suite
+AutoGrad — Synthetic Local Model Smoke Suite
 
-Compares `qwen3.5:4b` and `gemma4:e4b` locally across:
-1. Question classification accuracy
-2. Structured JSON compliance
-3. Mathematical notation fixing
-4. Theory answer evaluation & partial marking
-5. Evidence quotation citation
-6. Response latency (seconds)
-7. Memory residency & unload responsiveness
+Runs four synthetic text prompts against `qwen3.5:4b` and `gemma4:e4b`,
+recording response parsing, expected-key presence, latency, token counts, and
+model unload behavior. It does not verify semantic correctness of the outputs.
 
-Outputs a comprehensive evaluation report saved as `benchmark_report.md`.
+This does not measure handwriting transcription accuracy or grading agreement
+against teacher decisions. It makes no production routing recommendation.
+Outputs a smoke-test report saved as `benchmark_report.md`.
 """
 
 from __future__ import annotations
@@ -135,10 +132,11 @@ def run_benchmark():
     # Generate Markdown Report
     # ---------------------------------------------------------
     report_lines = [
-        "# AutoGrade — Local Model Benchmark Report",
+        "# AutoGrad — Synthetic Local Model Smoke Report",
         f"\n**Date:** {time.strftime('%Y-%m-%d %H:%M:%S')}",
-        f"**Hardware:** Apple Silicon M3 (16 GB Unified Memory)",
+        f"**Hardware:** Apple Silicon (16 GB unified memory; operator reported)",
         f"**Runtime:** Ollama (Inference on 127.0.0.1:11434)",
+        "\n> These synthetic prompts test response shape and task-specific outputs only. They do not measure handwriting OCR accuracy, question mapping accuracy, or grading agreement against teacher decisions.\n",
         "\n## Benchmark Summary Table\n",
         "| Task ID | Task Description | Model | Latency (s) | Valid JSON | Target Key Found | Tokens Evaluated |",
         "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
@@ -156,19 +154,13 @@ def run_benchmark():
             report_lines.append(f"| {t_id} | {t_name} | `{model}` | {lat}s | {v_json} | {k_found} | {tok} |")
 
     report_lines.extend([
-        "\n## Architectural Observations & Routing Policy Recommendation\n",
-        f"1. **`{ai_config.simple_model}` (Qwen 3.5 4B)**:",
-        "   - Extremely fast for routine text classification and structured JSON extraction.",
-        "   - Ideal for Theory grading, LaTeX normalization, and text-only OCR normalization.",
-        "   - Lower memory footprint (~4.2 GB VRAM), allowing instant warm-up.",
-        f"2. **`{ai_config.complex_model}` (Gemma 4 E4B)**:",
-        "   - High visual acuity and comprehensive document reasoning.",
-        "   - Best suited for handwritten PDF OCR transcription, scanned question papers, and diagram questions.",
-        "   - Higher memory footprint (~9.4 GB VRAM); requires explicit model unloading to prevent dual residency.",
+        "\n## Limits of This Smoke Test\n",
+        f"- `{ai_config.simple_model}` and `{ai_config.complex_model}` are tested only on the synthetic text prompts above.",
+        "- No answer-sheet image is supplied here, so this script cannot support claims about visual or handwriting quality.",
+        "- Use the separate human-reviewed handwriting benchmark for CER/WER; no score is valid until its references are teacher-verified.",
         "\n## Final Configuration Decision",
-        "- `OLLAMA_SIMPLE_MODEL=qwen3.5:4b` assigned to: Classification, Theory Grading, Math Syntax, Text Rubric.",
-        "- `OLLAMA_COMPLEX_MODEL=gemma4:e4b` assigned to: Handwritten OCR, Scanned Rubric Generation, Diagram/Numerical evaluation, Disputed Resolver.",
-        "- `OLLAMA_MAX_CONCURRENT_REQUESTS=1` with single active model residency in VRAM.",
+        "- This smoke test makes no production routing recommendation.",
+        "- Confirm image and structured-output requirements using the live Ollama capability registry before routing those tasks.",
     ])
 
     report_content = "\n".join(report_lines)

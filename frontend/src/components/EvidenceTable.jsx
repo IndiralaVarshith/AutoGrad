@@ -1,6 +1,6 @@
 import React from 'react';
 
-export default function EvidenceTable({ criteria = [], questionNumber }) {
+export default function EvidenceTable({ criteria = [], questionNumber, onOpenRegion }) {
   if (!criteria || criteria.length === 0) {
     return (
       <div className="text-xs text-[#6e737d] italic py-2">
@@ -16,6 +16,7 @@ export default function EvidenceTable({ criteria = [], questionNumber }) {
           <tr className="border-b border-[#22242a] bg-[#15171b] text-[#8c9099] font-mono text-[11px] uppercase tracking-wider">
             <th className="py-2.5 px-3 w-1/4 font-medium">Criterion</th>
             <th className="py-2.5 px-3 w-2/5 font-medium">Student Answer Quote</th>
+            <th className="py-2.5 px-3 font-medium">Page Evidence</th>
             <th className="py-2.5 px-3 text-center w-28 font-medium">Verification</th>
             <th className="py-2.5 px-3 text-right w-20 font-medium">Score</th>
             <th className="py-2.5 px-3 font-medium">Grader Notes</th>
@@ -41,6 +42,26 @@ export default function EvidenceTable({ criteria = [], questionNumber }) {
                     </div>
                   ) : (
                     <span className="text-[#595d66] italic">No direct citation found</span>
+                  )}
+                </td>
+
+                <td className="py-2.5 px-3 align-top font-mono text-[10px]">
+                  {item.evidence_region_ids?.length ? (
+                    <div className="flex flex-wrap gap-1">
+                      {item.evidence_region_ids.map((regionId) => (
+                        <button
+                          key={regionId}
+                          type="button"
+                          onClick={() => onOpenRegion?.(regionId)}
+                          className="px-1.5 py-0.5 rounded border border-[#3b3440] text-[#c4b5fd] hover:bg-[#211d29]"
+                          title="Open the matching original handwriting region"
+                        >
+                          {regionId}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <span className="text-[#8a6d45]">No high-confidence region match</span>
                   )}
                 </td>
 

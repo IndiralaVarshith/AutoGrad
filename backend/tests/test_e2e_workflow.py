@@ -77,6 +77,7 @@ class TestAutoGradeEndToEnd(unittest.TestCase):
                 question_number=1,
                 question_text="Explain the working principle and construction of an ideal electrical transformer.",
                 max_marks=10.0,
+                question_type="THEORY",
                 criteria=[
                     RubricCriterion(
                         description="Principle of mutual electromagnetic induction between primary and secondary windings",
@@ -96,6 +97,7 @@ class TestAutoGradeEndToEnd(unittest.TestCase):
                 question_number=2,
                 question_text="Derive the efficiency equation of a single-phase transformer and state the condition for maximum efficiency.",
                 max_marks=10.0,
+                question_type="MIXED",
                 criteria=[
                     RubricCriterion(
                         description="Expression for efficiency in terms of copper and iron losses",
@@ -167,6 +169,7 @@ class TestAutoGradeEndToEnd(unittest.TestCase):
                 question_number=q["question_number"],
                 question_text=q["question_text"],
                 max_marks=float(q["max_marks"]),
+                question_type=q.get("question_type"),
                 criteria=[
                     RubricCriterion(
                         description=c["description"],
@@ -247,4 +250,3 @@ class TestAutoGradeEndToEnd(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

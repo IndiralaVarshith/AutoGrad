@@ -1,0 +1,161 @@
+{
+  "dataset_id": "student1-manual-v1",
+  "source_file": "test_data/student1.pdf",
+  "source_pages": 5,
+  "render_dpi": 180,
+  "annotation_status": "UNVERIFIED_CANDIDATE",
+  "verified_by": null,
+  "verified_at": null,
+  "scope_note": "One neat-to-moderate cursive answer sheet. It includes multi-page continuation and crossed-out edits, but no faint-pencil, poor-handwriting, math, or diagram examples. These passages are a reproducible sample benchmark, not a confidence-calibration dataset.",
+  "segments": [
+    {
+      "id": "q1-page1",
+      "question": "1",
+      "tags": [
+        "cursive",
+        "crossed_out_or_marked_page"
+      ],
+      "windows": [
+        {
+          "page": 1,
+          "bbox": [
+            0.08,
+            0.22,
+            0.9,
+            0.345
+          ]
+        }
+      ],
+      "reference_text": "On September 1st, 1939 Hitler invaded Poland as a punishment for refusing to handover the port of Danzing of Germany.",
+      "verification": {
+        "status": "UNVERIFIED_CANDIDATE",
+        "verified_by": null,
+        "verified_at": null
+      }
+    },
+    {
+      "id": "q2-page1",
+      "question": "2",
+      "tags": [
+        "cursive",
+        "full_answer_region"
+      ],
+      "windows": [
+        {
+          "page": 1,
+          "bbox": [
+            0.08,
+            0.34,
+            0.91,
+            0.545
+          ]
+        }
+      ],
+      "reference_text": "During Stalin leadership collective farming was introduced to decrease small farmers and peasants problems by letting all the farmers surrender their lands and let them to unite to farmings using Advance Agriculture tools. The products of the farming will be shared.",
+      "verification": {
+        "status": "UNVERIFIED_CANDIDATE",
+        "verified_by": null,
+        "verified_at": null
+      }
+    },
+    {
+      "id": "q5-pages1-2",
+      "question": "5",
+      "tags": [
+        "multi_page_continuation",
+        "cursive",
+        "crossed_out_edits"
+      ],
+      "windows": [
+        {
+          "page": 1,
+          "bbox": [
+            0.07,
+            0.79,
+            0.92,
+            0.95
+          ]
+        },
+        {
+          "page": 2,
+          "bbox": [
+            0.04,
+            0.21,
+            0.92,
+            0.49
+          ]
+        }
+      ],
+      "reference_text": "The immediate provocation of World War-II led German tanks to enter into Poland. Hitler invaded Poland as a punishment for refusing to handover the port of Danzing of Germany. Polish territories was laid down on the parts of Germany. Hitler thought Poland invasion would need less military operation. But Poland had defence pacts as Britain and later France also joined the party with Poland making it hard for Hitler. This was the immediate provocation of World War-II.",
+      "verification": {
+        "status": "UNVERIFIED_CANDIDATE",
+        "verified_by": null,
+        "verified_at": null
+      }
+    },
+    {
+      "id": "q7-page3",
+      "question": "7",
+      "tags": [
+        "cursive",
+        "short_answers"
+      ],
+      "windows": [
+        {
+          "page": 3,
+          "bbox": [
+            0.05,
+            0.22,
+            0.92,
+            0.39
+          ]
+        }
+      ],
+      "reference_text": "Slogans on prevention of wars: No for war, go for peace. Prevent war, promote peace. War is destruction, peace is construction. Stopping wars, creates peace.",
+      "verification": {
+        "status": "UNVERIFIED_CANDIDATE",
+        "verified_by": null,
+        "verified_at": null
+      }
+    },
+    {
+      "id": "q8-page3",
+      "question": "8",
+      "tags": [
+        "cursive",
+        "multi_line"
+      ],
+      "windows": [
+        {
+          "page": 3,
+          "bbox": [
+            0.05,
+            0.4,
+            0.93,
+            0.79
+          ]
+        }
+      ],
+      "reference_text": "After defeating France in 1870, Bismarck the German chancellor created secret alliances with Austria in 1879 and with Italy in 1882. Secret alliances were created to protect Austria from Russia and Italy from France. Later France have created secret alliances with Russian and also with Britain after sorting out their issues. These alliances of Austria, Italy and Germany was called as Triple Alliance whereas France, Britain and Russia are called as Triple Entette. They were formed for creating peace but it resulted in a violent atmosphere.",
+      "verification": {
+        "status": "UNVERIFIED_CANDIDATE",
+        "verified_by": null,
+        "verified_at": null
+      }
+    }
+  ],
+  "manual_review_examples": [
+    {
+      "id": "q3-crossed-out-page1",
+      "question": "3",
+      "page": 1,
+      "bbox": [
+        0.08,
+        0.545,
+        0.91,
+        0.63
+      ],
+      "reason": "The line contains an overwritten/crossed-out name and must remain teacher-reviewed if the recognizer returns an uncertain transcription."
+    }
+  ]
+}

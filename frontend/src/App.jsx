@@ -9,8 +9,12 @@ import Review from './pages/Review';
 
 export default function App() {
   const [user, setUser] = useState(null);
-  const [currentPage, setCurrentPage] = useState('dashboard');
-  const [currentExamId, setCurrentExamId] = useState('EXAM_2026_01');
+  const [currentPage, setCurrentPage] = useState(() => {
+    return sessionStorage.getItem('autograde_current_page') || 'setup';
+  });
+  const [currentExamId, setCurrentExamId] = useState(() => {
+    return sessionStorage.getItem('autograde_current_exam_id') || 'varshith';
+  });
   const [selectedHallTicket, setSelectedHallTicket] = useState(null);
 
   // Monitor Firebase Auth
@@ -23,6 +27,27 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  const handlePageChange = (page) => {
+    setCurrentPage(page);
+    try {
+      sessionStorage.setItem('autograde_current_page', page);
+    } catch (e) {
+      // ignore
+    }
+  };
+
+  const handleExamIdChange = (newExamId) => {
+    if (newExamId && typeof newExamId === 'string') {
+      const trimmed = newExamId.trim();
+      setCurrentExamId(trimmed);
+      try {
+        sessionStorage.setItem('autograde_current_exam_id', trimmed);
+      } catch (e) {
+        // ignore
+      }
+    }
+  };
+
   const handleLogout = async () => {
     try {
       await signOut(auth);
@@ -30,7 +55,7 @@ export default function App() {
       console.warn('Sign out notice:', e);
     }
     setUser(null);
-    setCurrentPage('login');
+    handlePageChange('login');
   };
 
   // If not logged in, show Login
@@ -39,7 +64,7 @@ export default function App() {
       <Login
         onLoginSuccess={(loggedInUser) => {
           setUser(loggedInUser);
-          setCurrentPage('setup');
+          handlePageChange('setup');
         }}
       />
     );
@@ -59,12 +84,18 @@ export default function App() {
             <span className="hidden sm:inline-block font-mono text-[11px] text-[#717680] uppercase tracking-wider">
               Evaluation Workbench
             </span>
+            {currentExamId && (
+              <span className="hidden md:inline-block font-mono text-[11px] text-[#3b82f6] bg-[#0f172a] border border-[#1e293b] px-2 py-0.5 rounded">
+                Exam: {currentExamId}
+              </span>
+            )}
           </div>
 
           {/* Clean Flat Navigation Tabs */}
           <nav className="flex items-center gap-1">
             <button
-              onClick={() => setCurrentPage('setup')}
+              type="button"
+              onClick={() => handlePageChange('setup')}
               className={`px-3 py-1.5 rounded text-xs font-mono tracking-wide transition-colors cursor-pointer ${
                 currentPage === 'setup'
                   ? 'bg-[#1e2026] text-[#ffffff] font-medium border border-[#30333c]'
@@ -75,7 +106,8 @@ export default function App() {
             </button>
 
             <button
-              onClick={() => setCurrentPage('upload')}
+              type="button"
+              onClick={() => handlePageChange('upload')}
               className={`px-3 py-1.5 rounded text-xs font-mono tracking-wide transition-colors cursor-pointer ${
                 currentPage === 'upload'
                   ? 'bg-[#1e2026] text-[#ffffff] font-medium border border-[#30333c]'
@@ -86,7 +118,8 @@ export default function App() {
             </button>
 
             <button
-              onClick={() => setCurrentPage('dashboard')}
+              type="button"
+              onClick={() => handlePageChange('dashboard')}
               className={`px-3 py-1.5 rounded text-xs font-mono tracking-wide transition-colors cursor-pointer ${
                 currentPage === 'dashboard'
                   ? 'bg-[#1e2026] text-[#ffffff] font-medium border border-[#30333c]'
@@ -97,9 +130,10 @@ export default function App() {
             </button>
 
             <button
+              type="button"
               onClick={() => {
                 setSelectedHallTicket(null);
-                setCurrentPage('review');
+                handlePageChange('review');
               }}
               className={`px-3 py-1.5 rounded text-xs font-mono tracking-wide transition-colors cursor-pointer ${
                 currentPage === 'review'
@@ -118,6 +152,7 @@ export default function App() {
             </div>
 
             <button
+              type="button"
               onClick={handleLogout}
               className="px-2.5 py-1 rounded bg-[#16171b] hover:bg-[#202227] text-[#858a94] hover:text-[#c4c7cf] border border-[#23262c] text-xs font-mono transition-colors cursor-pointer"
             >
@@ -127,42 +162,44 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main Content Area */}
+      {/* Main Content Area — Persistent mounting with CSS display control */}
       <main className="flex-1 pb-10">
-        {currentPage === 'setup' && (
+        <div style={{ display: currentPage === 'setup' ? 'block' : 'none' }}>
           <Setup
             initialExamId={currentExamId}
+            onExamIdChange={handleExamIdChange}
             onExamApproved={(approvedExamId) => {
-              setCurrentExamId(approvedExamId);
-              setCurrentPage('upload');
+              handleExamIdChange(approvedExamId);
+              handlePageChange('upload');
             }}
           />
-        )}
+        </div>
 
-        {currentPage === 'upload' && (
+        <div style={{ display: currentPage === 'upload' ? 'block' : 'none' }}>
           <Upload
             examId={currentExamId}
-            onGoToDashboard={() => setCurrentPage('dashboard')}
+            onExamIdChange={handleExamIdChange}
+            onGoToDashboard={() => handlePageChange('dashboard')}
           />
-        )}
+        </div>
 
-        {currentPage === 'dashboard' && (
+        <div style={{ display: currentPage === 'dashboard' ? 'block' : 'none' }}>
           <Dashboard
             examId={currentExamId}
             onGoToReview={(hallTicket) => {
               setSelectedHallTicket(hallTicket);
-              setCurrentPage('review');
+              handlePageChange('review');
             }}
           />
-        )}
+        </div>
 
-        {currentPage === 'review' && (
+        <div style={{ display: currentPage === 'review' ? 'block' : 'none' }}>
           <Review
             examId={currentExamId}
             initialHallTicket={selectedHallTicket}
-            onBackToDashboard={() => setCurrentPage('dashboard')}
+            onBackToDashboard={() => handlePageChange('dashboard')}
           />
-        )}
+        </div>
       </main>
 
       {/* Minimalist Flat Footer */}

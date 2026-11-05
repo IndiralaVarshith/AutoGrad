@@ -5,7 +5,7 @@ Run this script to verify your Firebase credentials, Firestore connectivity,
 and Firebase Storage bucket access:
 
     cd backend
-    .venv/bin/python verify_firebase.py
+    ../.venv/bin/python verify_firebase.py
 """
 
 from __future__ import annotations
@@ -89,4 +89,3 @@ def run_verification():
 if __name__ == "__main__":
     success = run_verification()
     sys.exit(0 if success else 1)
-

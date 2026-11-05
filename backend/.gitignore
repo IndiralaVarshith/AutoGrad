@@ -9,3 +9,8 @@ __pycache__/
 firebase-service-account.json
 *-firebase-adminsdk-*.json
 serviceAccountKey.json
+
+# Firestore emulator logs
+firebase-debug.log
+firestore-debug.log
+ui-debug.log

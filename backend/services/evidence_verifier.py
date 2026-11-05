@@ -10,6 +10,8 @@ Threshold constant: PARTIAL_RATIO_THRESHOLD = 85
 
 from __future__ import annotations
 
+import re
+
 from rapidfuzz.fuzz import partial_ratio
 
 from models.schemas import CriterionResult
@@ -29,6 +31,7 @@ PARTIAL_RATIO_THRESHOLD: int = 85
 def verify_evidence(
     criteria: list[CriterionResult],
     ocr_transcript: str,
+    ocr_regions: list | None = None,
 ) -> tuple[list[CriterionResult], float]:
     """
     Verify verbatim quotes against the OCR transcript.
@@ -61,6 +64,7 @@ def verify_evidence(
         c = criterion.model_copy()
 
         if c.marks_awarded > 0:
+            c.evidence_region_ids = []
             total_k += 1
 
             if c.verbatim_quote.strip():
@@ -72,6 +76,10 @@ def verify_evidence(
                 if score >= PARTIAL_RATIO_THRESHOLD:
                     c.quote_verified = True
                     valid_count += 1
+                    c.evidence_region_ids = _match_source_regions(
+                        c.verbatim_quote,
+                        ocr_regions or [],
+                    )
                 else:
                     c.quote_verified = False
                     c.marks_awarded = 0
@@ -95,3 +103,35 @@ def verify_evidence(
     )
 
     return updated, c_evid
+
+
+def _match_source_regions(quote: str, regions: list) -> list[str]:
+    """Attach high-similarity OCR region IDs as navigable source evidence."""
+    normalized_quote = re.sub(r"[^a-z0-9]", "", quote.casefold())
+    if len(normalized_quote) < 12:
+        return []
+
+    ranked: list[tuple[int, str]] = []
+    for region in regions:
+        text = (
+            region.get("extracted_text", "")
+            if isinstance(region, dict)
+            else getattr(region, "extracted_text", "")
+        )
+        region_id = (
+            region.get("region_id", "")
+            if isinstance(region, dict)
+            else getattr(region, "region_id", "")
+        )
+        normalized_text = re.sub(r"[^a-z0-9]", "", str(text).casefold())
+        if region_id and len(normalized_text) >= 12:
+            score = partial_ratio(normalized_quote, normalized_text)
+            if score >= 95:
+                ranked.append((score, str(region_id)))
+
+    if not ranked:
+        return []
+    best_score = max(score for score, _ in ranked)
+    return list(dict.fromkeys(
+        region_id for score, region_id in ranked if score == best_score
+    ))[:3]

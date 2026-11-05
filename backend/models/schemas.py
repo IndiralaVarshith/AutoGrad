@@ -25,6 +25,16 @@ class QuestionRubric(BaseModel):
     question_text: str
     max_marks: float
     criteria: list[RubricCriterion]
+    question_type: str | None = None
+    sub_part: str = ""
+    choice_group: str = ""
+    is_or_choice: bool = False
+    section: str = ""
+    section_attempt_count: int | None = None
+    section_max_marks: float | None = None
+    attempt_instruction: str = ""
+    question_format: str = ""  # MCQ | SHORT_ANSWER | "" when not known
+    options: list[dict[str, str]] = Field(default_factory=list)  # [{"label", "text"}]
 
 
 # =========================================================
@@ -38,14 +48,22 @@ class CriterionResult(BaseModel):
     marks_awarded: float = 0.0
     rationale: str = ""
     quote_verified: bool = False
+    evidence_region_ids: list[str] = Field(default_factory=list)
 
 
 class QuestionGrade(BaseModel):
     """Complete grading result for one question."""
     question_number: int
+    sub_part: str = ""
+    choice_group: str = ""
     question_type: str = "THEORY"  # THEORY | NUMERICAL | DIAGRAM
     max_marks: float = 0.0
     extracted_text: str = ""
+    grading_input_text: str = ""
+    teacher_corrected_text: str = ""
+    ocr_region_ids: list[str] = Field(default_factory=list)
+    source_page_references: list[dict] = Field(default_factory=list)
+    regrade_required: bool = False
     grader_score: float = 0.0
     critic_score: float = 0.0
     final_score: float = 0.0
@@ -56,9 +74,49 @@ class QuestionGrade(BaseModel):
     c_math: float = 0.0
     c_final: float = 0.0
     routing: str = "FLAGGED"  # AUTO_ACCEPT | FLAGGED | MANUAL
+    ocr_confidence_class: str = "UNCALIBRATED"
     illegible_regions: list[str] = Field(default_factory=list)
     model_used: str = ""
     routing_reason: str = ""
+    verification_status: str = "NOT_REQUESTED"
+    independent_verification: dict | None = None
+
+
+class OCRRegion(BaseModel):
+    """One OCR line with a normalized box on its original rendered page."""
+    region_id: str
+    page_number: int
+    bbox: list[float] = Field(default_factory=list)  # normalized x0, y0, x1, y1
+    extracted_text: str = ""
+    question_number_candidate: int | None = None
+    question_mapping_status: str = "UNRESOLVED"
+    engine: str = ""
+    model_version: str = ""
+    engine_score: float | None = None
+    uncertainty_class: str = "UNCALIBRATED"
+    uncertainty_reason: str = ""
+    validation_status: str = "PENDING"
+    teacher_corrected_text: str | None = None
+    teacher_question_number: int | None = None
+    teacher_sub_part: str = ""
+    validated_at: str = ""
+
+
+class OCRPageResult(BaseModel):
+    """Page-level OCR diagnostics; source page numbering is one-based."""
+    page_number: int
+    width: int = 0
+    height: int = 0
+    image_sha256: str = ""
+    status: str = "UNAVAILABLE"  # PROCESSED | BLANK_CANDIDATE | UNREADABLE | UNAVAILABLE
+    blank_candidate: bool = False
+    quality_flags: list[str] = Field(default_factory=list)
+    regions: list[OCRRegion] = Field(default_factory=list)
+    error: str = ""
+    validation_status: str = "PENDING"
+    teacher_question_number: int | None = None
+    teacher_sub_part: str = ""
+    validated_at: str = ""
 
 
 class PaperResult(BaseModel):
@@ -72,6 +130,11 @@ class PaperResult(BaseModel):
     avg_confidence: float = 0.0
     flagged_count: int = 0
     status: str = "PROCESSING"  # PROCESSING | COMPLETE | NEEDS_REVIEW
+    finality_status: str = "PENDING_VALIDATION"
+    source_file_reference: str = ""
+    rubric_version: str = ""
+    ocr_pages: list[OCRPageResult] = Field(default_factory=list)
+    unmapped_answers: list[dict] = Field(default_factory=list)
 
 
 # =========================================================
@@ -90,6 +153,7 @@ class RubricApproveRequest(BaseModel):
     rubric: list[QuestionRubric]
     doc_fingerprint: str = ""
     gen_fingerprint: str = ""
+    total_marks: float | None = None
 
 
 class StudentMeta(BaseModel):
@@ -103,6 +167,7 @@ class ReviewConfirmRequest(BaseModel):
     exam_id: str
     hall_ticket: str
     question_number: int
+    sub_part: str = ""
 
 
 class ReviewEditRequest(BaseModel):
@@ -110,8 +175,39 @@ class ReviewEditRequest(BaseModel):
     exam_id: str
     hall_ticket: str
     question_number: int
+    sub_part: str = ""
     new_score: float
     edit_reason: str = ""
+
+
+class OCRRegionReviewRequest(BaseModel):
+    """Teacher validation for one page-level OCR region."""
+    exam_id: str
+    hall_ticket: str
+    page_number: int
+    region_id: str
+    action: str  # ACCEPT | CORRECT | UNREADABLE
+    corrected_text: str = ""
+    question_number: int | None = None
+    sub_part: str = ""
+
+
+class OCRPageReviewRequest(BaseModel):
+    """Teacher disposition for a blank or unreadable page."""
+    exam_id: str
+    hall_ticket: str
+    page_number: int
+    action: str  # ACCEPT_BLANK | UNREADABLE
+    question_number: int | None = None
+    sub_part: str = ""
+
+
+class OCRQuestionRegradeRequest(BaseModel):
+    """Re-run existing grading agents on teacher-validated OCR text."""
+    exam_id: str
+    hall_ticket: str
+    question_number: int
+    sub_part: str = ""
 
 
 # =========================================================
@@ -131,6 +227,7 @@ class CriticVerdict(BaseModel):
     challenged_criteria: list[str] = Field(default_factory=list)
     suggested_score: float = 0.0
     reason: str = ""
+    model_used: str = ""
 
 
 class MathResult(BaseModel):
