@@ -14,3 +14,6 @@ serviceAccountKey.json
 firebase-debug.log
 firestore-debug.log
 ui-debug.log
+
+# Evaluation runs hold student transcripts
+evaluation/runs/
