@@ -1,3 +1,30 @@
+# Gemini-only rebuild (current work)
+
+Started 2026-11-06. This section overrides the Milestone A rules below where they conflict.
+
+## Rules
+- Gemini does all AI work on the new path. No dataset-specific logic. Free only.
+- Use only `GEMINI_API_KEY_2` (owner's choice). Never print, log or commit it. Other key slots stay unused.
+- Firestore emulator only. No deleting files, no pushing. Commit on `wip` when a step's tests pass.
+- Never guess marks. Unreadable, unmatched or uncertain = "needs teacher review".
+- Stops: after steps 1, 5 and 9. Step 5 lists Ollama files and waits for OK before any deletion.
+
+## Decisions (2026-11-06)
+- One request per sheet both reads and grades (two only if over 12 pages). MCQ marks computed in code from the letter read.
+- Milestone A decision 2 (no names or headers sent to Gemini) is retired for the Mendeley test sheets only. See "Personal data" under Step 1; real student sheets are an open question for the owner.
+- Evaluation rubrics are auto-approved from `answerkey.txt` (Q1 = B) and labelled as such.
+
+## Checklist
+- [x] Step 1 Model setup: `GEMINI_MODEL=gemini-3.5-flash-lite` (`config.py` default, `.env`, `.env.example`). Test call OK (9 tokens). Stored quota block cleared. Tests: 281 passed, 2 skipped. **Waiting for owner OK before step 2.**
+
+## Step 1 notes
+- Price (paid tier, pricing page): $0.30 input, $2.50 output per 1M tokens. Free tier listed as free of charge. Actual cost is Rs 0 only if the key's project has no billing; owner to confirm.
+- Free limits: not published in docs; AI Studio's page needs sign-in. Only figure found: 500 requests/day, from a user-quoted 429 (forum, 2026-11-03). RPM and TPM unknown.
+- Personal data: Gemini API terms (effective 2026-03-23) say of unpaid services that content may improve Google products, human reviewers may read input and output, and "Do not submit sensitive, confidential, or personal information". Consent does not change this.
+- `GEMINI_MODEL_PRIORITY` and per-complexity model lists in `.env` still serve the old path; the new path must read `GEMINI_MODEL` only (step 2).
+
+---
+
 # Milestone A: make grading work and measure it
 
 Branch `wip`. Update after every step so a new session can resume.
