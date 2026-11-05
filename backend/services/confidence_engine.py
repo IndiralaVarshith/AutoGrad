@@ -58,6 +58,10 @@ def route_answer(
         return "FLAGGED", "CRITIC_DISAGREED"
     if abs(grader_score - critic_score) > AUTO_ACCEPT_MAX_SCORE_GAP:
         return "FLAGGED", "SCORE_GAP"
+    # On the tuning sheets a model's 0 on a written answer was usually wrong, so the
+    # teacher decides. Blank answers never reach this point.
+    if grader_score <= 0:
+        return "FLAGGED", "ZERO_ON_WRITTEN_ANSWER"
     if c_evid < 1.0:
         return "FLAGGED", "EVIDENCE_NOT_VERIFIED"
     return "AUTO_ACCEPT", ""

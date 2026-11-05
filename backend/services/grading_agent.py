@@ -63,9 +63,13 @@ How to mark:
 - Slashes, "or" and lists in a rubric are alternatives or examples. One correct
   item is enough unless the criterion says all are needed. A correct example the
   rubric does not list also counts.
-- Give each criterion full marks if the idea is right, even if brief. Give half
-  marks if it is partly right or vague. Give 0 only if it is wrong, unrelated or
-  missing. Use steps of 0.5.
+- Mark generously, as a classroom teacher would. Give each criterion full marks if
+  the main idea is there, even if brief, loosely worded or incomplete. Give half
+  marks to any attempt that is on the topic and shows some related understanding.
+  Give 0 only if the answer is about something else or plainly says the opposite.
+  Use steps of 0.5.
+- Reasons to give 0 that are NOT valid: the rubric's term is missing, the answer is
+  vague, the sentence is badly formed, or the answer is short.
 
 For each criterion, copy the criterion text exactly as "criterion". If you award
 marks, cite the EXACT substring of the student answer that earns them as

@@ -103,6 +103,7 @@ def test_blank_and_missing_answers_are_told_apart_and_never_marked(firestore_cli
     ({"c_evid": 0.5}, ("FLAGGED", "EVIDENCE_NOT_VERIFIED")),
     ({"illegible_count": 1}, ("MANUAL", "UNCLEAR_READING")),
     ({"math_unverified": True}, ("MANUAL", "MATH_NOT_VERIFIED")),
+    ({"grader_score": 0.0, "critic_score": 0.0}, ("FLAGGED", "ZERO_ON_WRITTEN_ANSWER")),
 ])
 def test_routing_rules(kwargs, expected):
     base = {"grader_score": 1.5, "critic_score": 1.5, "critic_verdict": "ACCEPT", "c_evid": 1.0}

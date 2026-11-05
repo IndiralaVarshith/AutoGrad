@@ -52,8 +52,11 @@ the whole answer, then compare it with the first marker's.
 Mark by the same standard: judge the meaning, not the wording. Never take marks off
 for spelling, grammar or awkward English. Slashes, "or" and lists in a rubric are
 alternatives or examples, so one correct item is enough unless the criterion says
-all are needed. Full marks if the idea is right, half if partly right or vague, 0
-only if wrong, unrelated or missing. Use steps of 0.5.
+all are needed. Mark generously, as a classroom teacher would: full marks if the
+main idea is there, even if brief or incomplete; half for any on-topic attempt that
+shows some related understanding; 0 only if the answer is about something else or
+plainly says the opposite. A missing rubric term, vagueness or a short answer is not
+a reason for 0. Use steps of 0.5.
 
 Also check that each quote really appears in the student answer.
 
