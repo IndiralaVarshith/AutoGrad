@@ -5,7 +5,9 @@ Refuses to run unless Firestore is a local emulator. The model is patched to fai
 unless a test supplies a reply, so these tests use no AI and no network.
 """
 
+import copy
 import io
+import json
 import os
 import socket
 import subprocess
@@ -25,10 +27,13 @@ from routes import exam as exam_route
 from services import rubric_cache
 from services.db import db_service
 from services.marks_validator import validate_and_reconcile_exam_structure
+from services.provider_registry import OllamaModelCapability
 
 ROOT = Path(__file__).resolve().parents[2]
 PAPER = ROOT / "test_data" / "mendeley" / "Question.txt"
 SCAN = ROOT / "test_data" / "question_paper.pdf"
+# Despite its name, this is a 20-mark Social Studies paper, not the Data Science exam.
+FOOD_SECURITY_SCAN = ROOT / "test_data" / "mendeley" / "clean_question_paper.pdf"
 EXAM = "test_exam"
 
 CLEAN_REPLY = {
@@ -93,11 +98,18 @@ def upload(client, content, name="paper.txt", exam_id=EXAM, **fields):
     )
 
 
+def fake_reply(reply):
+    return SimpleNamespace(
+        parsed_json=reply, text="", model_used="fake-reader", routing_reason="",
+        provider="ollama", task_id="task-1",
+    )
+
+
 def model_returns(monkeypatch, reply):
     monkeypatch.setattr(
         exam_route.model_router,
         "generate",
-        lambda *a, **k: SimpleNamespace(parsed_json=reply, text="", model_used="fake", routing_reason=""),
+        lambda *a, **k: fake_reply(reply),
     )
 
 
@@ -230,7 +242,10 @@ def test_reupload_keeps_approval_and_double_approve_keeps_one_version(client, fi
         "question_number": 1, "question_text": "a", "max_marks": 50,
         "criteria": [{"description": "c", "max_marks": 50}],
     }]
-    approve = {"exam_id": EXAM, "rubric": rubric, "total_marks": 50, "doc_fingerprint": "f"}
+    approve = {
+        "exam_id": EXAM, "rubric": rubric, "total_marks": 50, "doc_fingerprint": "f",
+        "teacher_confirmed": True,
+    }
 
     first = client.post("/exam/rubric/approve", json=approve)
     second = client.post("/exam/rubric/approve", json=approve)
@@ -337,7 +352,6 @@ def test_missing_marks_in_text_paper_is_flagged_not_saved(client, firestore_clie
     ids=["no-marks", "null-marks", "word-marks", "no-number", "duplicate-number", "no-text"],
 )
 def test_ambiguous_model_reply_is_flagged_not_saved(client, firestore_client, monkeypatch, change, expected):
-    import copy
     reply = copy.deepcopy(CLEAN_REPLY)
     change(reply["sections"][0]["questions"][1])
     model_returns(monkeypatch, reply)
@@ -401,6 +415,7 @@ def test_firestore_offline_is_an_error_not_a_success(client, monkeypatch, paper_
 
     response = client.post("/exam/rubric/approve", json={
         "exam_id": EXAM,
+        "teacher_confirmed": True,
         "rubric": [{"question_number": 1, "question_text": "a", "max_marks": 1,
                     "criteria": [{"description": "c", "max_marks": 1}]}],
     })
@@ -411,6 +426,7 @@ def test_approve_refuses_questions_without_criteria(client, firestore_client, pa
     body = upload(client, paper_bytes).json()
     response = client.post("/exam/rubric/approve", json={
         "exam_id": EXAM, "rubric": body["rubric"]["questions"], "total_marks": 50,
+        "teacher_confirmed": True,
     })
     assert response.status_code == 422
     assert "no marking criteria" in response.json()["detail"]
@@ -440,3 +456,370 @@ def test_real_scan_with_local_model(client, firestore_client, monkeypatch):
     # This scan prints "any two" in Section III but shows only one question group.
     assert body["saved"] is False and body["needs_teacher_review"] is True
     assert all_documents(firestore_client) == []
+
+
+# ---------------------------------------------------------
+# Which model reads the paper
+# ---------------------------------------------------------
+
+def installed(*names):
+    return {
+        "online": True,
+        "models": [
+            OllamaModelCapability(
+                name=name, supports_images=True, supports_structured_json=True,
+                reasoning_suitable=True, capabilities=("vision",),
+            )
+            for name in names
+        ],
+    }
+
+
+def use_real_router(monkeypatch, models, chat):
+    """Undo the fake generate so the real selection code runs. No model is called."""
+    monkeypatch.undo()
+    monkeypatch.setattr(exam_route.model_router, "routing_policy_fingerprint", lambda: "test")
+    monkeypatch.setattr(exam_route.model_router.ollama, "discover_models", lambda **k: models)
+    monkeypatch.setattr(exam_route.model_router.ollama, "chat", chat)
+
+
+def test_setting_is_what_reads_the_scan_through_real_selection(client, monkeypatch, capsys):
+    chosen = []
+
+    def chat(model, **kwargs):
+        chosen.append(model)
+        return "", copy.deepcopy(CLEAN_REPLY), 1
+
+    use_real_router(monkeypatch, installed("gemma4:e4b", "qwen3.5:4b", "other:1b"), chat)
+    monkeypatch.setattr(exam_route, "OLLAMA_PAPER_READER_MODEL", "other:1b")
+
+    response = upload(client, pdf_of(scan_page(), scan_page()), name="scan.pdf")
+    assert response.status_code == 200, response.text
+    assert chosen == ["other:1b"]
+
+    readers = db_service.get_question_paper(EXAM)["page_readers"]
+    assert [(r["page"], r["model"], r["provider"]) for r in readers] == [
+        (1, "other:1b", "ollama"), (2, "other:1b", "ollama"),
+    ]
+    logged = capsys.readouterr().out
+    assert f"exam={EXAM} page=1/2 read_by=other:1b" in logged
+    assert f"exam={EXAM} page=2/2 read_by=other:1b" in logged
+
+
+def test_default_setting_is_the_complex_model():
+    assert config.OLLAMA_PAPER_READER_MODEL == config.OLLAMA_COMPLEX_MODEL
+
+
+def test_missing_reader_never_falls_back_to_another_local_model(client, firestore_client, monkeypatch):
+    called = []
+
+    def chat(model, **kwargs):
+        called.append(model)
+        raise AssertionError(f"No other model may be used, but {model} was called.")
+
+    use_real_router(monkeypatch, installed("qwen3.5:4b"), chat)
+    monkeypatch.setattr(exam_route, "OLLAMA_PAPER_READER_MODEL", "gemma4:e4b")
+
+    response = upload(client, SCAN.read_bytes(), name="scan.pdf")
+    assert response.status_code == 503, response.text
+    assert called == []
+    assert "gemma4:e4b" in response.json()["detail"]
+    assert "nothing was saved" in response.json()["detail"]
+    assert all_documents(firestore_client) == []
+
+
+# ---------------------------------------------------------
+# Replacing a paper cancels the old approved rubric
+# ---------------------------------------------------------
+
+RUBRIC = [{
+    "question_number": 1, "question_text": "a", "max_marks": 50,
+    "criteria": [{"description": "c", "max_marks": 50}],
+}]
+
+
+def approve(client, fingerprint):
+    response = client.post("/exam/rubric/approve", json={
+        "exam_id": EXAM, "rubric": RUBRIC, "total_marks": 50, "doc_fingerprint": fingerprint,
+        "teacher_confirmed": True,
+    })
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def other_paper(paper_bytes):
+    return paper_bytes.replace(b"Define Gradient Descent.", b"Define Backpropagation.")
+
+
+def test_forced_replacement_cancels_the_approved_rubric(client, firestore_client, paper_bytes):
+    first = upload(client, paper_bytes).json()
+    rubric_id = approve(client, first["doc_fingerprint"])["rubric_id"]
+    assert db_service.get_approved_rubric(EXAM)["rubric_id"] == rubric_id
+
+    response = upload(client, other_paper(paper_bytes), force_regenerate="true")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["invalidated_rubric_ids"] == [rubric_id]
+    assert any("cancelled" in w for w in body["rubric"]["extraction_warnings"])
+
+    # Every route that get_approved_rubric can take now finds nothing.
+    assert db_service.get_approved_rubric(EXAM) is None
+    assert client.get(f"/exam/{EXAM}/rubric").status_code == 404
+    exam = firestore_client.collection("exams").document(EXAM).get().to_dict()
+    assert exam["status"] == "PROPOSED"
+    assert exam["approved_rubric_id"] is None and exam["rubric_version"] is None
+
+    # The old version stays readable for results already graded with it.
+    archived = firestore_client.collection("rubrics").document(rubric_id).get().to_dict()
+    assert archived["approval_status"] == "SUPERSEDED" and archived["questions"]
+    assert "cancelled" not in str(db_service.get_question_paper(EXAM)["extraction_warnings"])
+
+
+def test_forcing_the_same_file_cancels_nothing(client, firestore_client, paper_bytes):
+    first = upload(client, paper_bytes).json()
+    rubric_id = approve(client, first["doc_fingerprint"])["rubric_id"]
+
+    body = upload(client, paper_bytes, force_regenerate="true").json()
+    assert body["invalidated_rubric_ids"] == []
+    assert db_service.get_approved_rubric(EXAM)["rubric_id"] == rubric_id
+    exam = firestore_client.collection("exams").document(EXAM).get().to_dict()
+    assert exam["status"] == "CONFIGURED"
+
+
+def test_going_back_to_the_first_paper_needs_a_new_approval(client, firestore_client, paper_bytes):
+    first = upload(client, paper_bytes).json()
+    approve(client, first["doc_fingerprint"])
+    upload(client, other_paper(paper_bytes), force_regenerate="true")
+
+    upload(client, paper_bytes, force_regenerate="true")
+    assert db_service.get_approved_rubric(EXAM) is None
+
+    again = approve(client, first["doc_fingerprint"])
+    assert again["version"] == 2
+    assert db_service.get_approved_rubric(EXAM)["rubric_id"] == again["rubric_id"]
+
+
+def test_new_paper_cancels_rubric_approved_without_a_saved_paper(client, firestore_client, paper_bytes):
+    """A teacher can approve a corrected flagged draft, which leaves no saved paper."""
+    rubric_id = approve(client, "fingerprint-of-another-file")["rubric_id"]
+
+    body = upload(client, paper_bytes).json()
+    assert body["invalidated_rubric_ids"] == [rubric_id]
+    assert db_service.get_approved_rubric(EXAM) is None
+
+
+# ---------------------------------------------------------
+# Textbook uploads are not silently ignored
+# ---------------------------------------------------------
+
+def upload_with_textbook(client, content, name="paper.txt", **fields):
+    return client.post(
+        "/exam/setup",
+        data={"exam_id": EXAM, **fields},
+        files={"question_paper": (name, content), "textbook": ("book.pdf", b"book")},
+    )
+
+
+def assert_textbook_warning(body):
+    assert any("textbook" in warning for warning in body["warnings"])
+    assert any("textbook" in warning for warning in body["rubric"]["extraction_warnings"])
+
+
+def test_textbook_warning_on_new_and_duplicate_uploads(client, paper_bytes):
+    assert_textbook_warning(upload_with_textbook(client, paper_bytes).json())
+    second = upload_with_textbook(client, paper_bytes).json()
+    assert second["duplicate"] is True
+    assert_textbook_warning(second)
+    assert "textbook" not in str(db_service.get_question_paper(EXAM)["extraction_warnings"])
+
+
+def test_textbook_warning_on_flagged_draft(client, firestore_client, paper_bytes):
+    body = upload_with_textbook(client, paper_bytes.replace(b"(2 Marks Each)", b"")).json()
+    assert body["saved"] is False
+    assert_textbook_warning(body)
+    assert all_documents(firestore_client) == []
+
+
+def test_textbook_pages_are_not_sent_to_the_model(client, monkeypatch):
+    seen = []
+
+    def generate(*args, **kwargs):
+        seen.append(len(kwargs["images"]))
+        return fake_reply(copy.deepcopy(CLEAN_REPLY))
+
+    monkeypatch.setattr(exam_route.model_router, "generate", generate)
+    body = upload_with_textbook(client, SCAN.read_bytes(), name="scan.pdf").json()
+    assert seen == [1]
+    assert_textbook_warning(body)
+
+
+def test_no_warning_without_a_textbook(client, paper_bytes):
+    body = upload(client, paper_bytes).json()
+    assert body["warnings"] == []
+
+
+# ---------------------------------------------------------
+# Teacher confirmation
+# ---------------------------------------------------------
+
+def approve_body(fingerprint, **extra):
+    return {
+        "exam_id": EXAM, "rubric": RUBRIC, "total_marks": 50,
+        "doc_fingerprint": fingerprint, **extra,
+    }
+
+
+@pytest.mark.parametrize("extra", [{}, {"teacher_confirmed": False}], ids=["absent", "false"])
+def test_approve_without_confirmation_is_refused(client, firestore_client, paper_bytes, extra):
+    first = upload(client, paper_bytes).json()
+    before = all_documents(firestore_client)
+
+    response = client.post("/exam/rubric/approve", json=approve_body(first["doc_fingerprint"], **extra))
+    assert response.status_code == 422
+    assert "must confirm" in response.json()["detail"]
+    assert all_documents(firestore_client) == before
+    assert db_service.get_question_paper(EXAM)["verification_status"] == "UNVERIFIED"
+    assert db_service.get_approved_rubric(EXAM) is None
+
+
+def test_saved_paper_starts_unverified_and_confirmation_marks_it(client, paper_bytes):
+    first = upload(client, paper_bytes).json()
+    assert db_service.get_question_paper(EXAM)["verification_status"] == "UNVERIFIED"
+
+    approve(client, first["doc_fingerprint"])
+    assert db_service.get_question_paper(EXAM)["verification_status"] == "TEACHER_CONFIRMED"
+    assert db_service.get_approved_rubric(EXAM)["teacher_confirmed"] is True
+
+
+def test_rereading_same_file_needs_confirming_again_but_keeps_the_version(client, paper_bytes):
+    first = upload(client, paper_bytes).json()
+    fingerprint = first["doc_fingerprint"]
+    rubric_id = approve(client, fingerprint)["rubric_id"]
+
+    upload(client, paper_bytes, force_regenerate="true")
+    assert db_service.get_question_paper(EXAM)["verification_status"] == "UNVERIFIED"
+
+    again = approve(client, fingerprint)
+    assert again["rubric_id"] == rubric_id
+    assert db_service.get_question_paper(EXAM)["verification_status"] == "TEACHER_CONFIRMED"
+
+
+def test_rubric_from_another_file_does_not_confirm_the_saved_paper(client, paper_bytes):
+    upload(client, paper_bytes)
+    approve(client, "fingerprint-of-another-file")
+    assert db_service.get_question_paper(EXAM)["verification_status"] == "UNVERIFIED"
+
+
+# ---------------------------------------------------------
+# Figure questions
+# ---------------------------------------------------------
+
+def figure_reply(**question_fields):
+    reply = copy.deepcopy(CLEAN_REPLY)
+    reply["sections"][0]["questions"][1].update(question_fields)
+    return reply
+
+
+def test_figure_question_is_saved_and_listed_for_review(client, monkeypatch):
+    model_returns(monkeypatch, figure_reply(
+        question_text="Study the figure and explain it.", has_figure=True, figure_page=2,
+    ))
+    body = upload(client, SCAN.read_bytes(), name="scan.pdf").json()
+    assert body["saved"] is True and body["needs_teacher_review"] is False
+
+    stored = db_service.get_question_paper(EXAM)
+    question = stored["questions"][1]
+    assert question["has_figure"] is True and question["figure_page"] == 2
+    assert [item["question"] for item in stored["review_items"]] == ["Q2"]
+    assert "page 2" in stored["review_items"][0]["reason"]
+
+
+def test_wording_check_catches_a_figure_the_model_missed(client, monkeypatch):
+    model_returns(monkeypatch, figure_reply(
+        question_text="Observe the given graph and analyze it.", has_figure=False,
+    ))
+    upload(client, SCAN.read_bytes(), name="scan.pdf")
+    stored = db_service.get_question_paper(EXAM)
+    assert stored["questions"][1]["has_figure"] is True
+    assert [item["question"] for item in stored["review_items"]] == ["Q2"]
+
+
+def test_saved_text_is_exactly_what_the_model_returned(client, monkeypatch):
+    text = "Observe the graph (Tamil Nadu 44.5, Punjab 19.8) and analyze it."
+    model_returns(monkeypatch, figure_reply(question_text=text, has_figure=True))
+    upload(client, SCAN.read_bytes(), name="scan.pdf")
+    assert db_service.get_question_paper(EXAM)["questions"][1]["question_text"] == text
+
+
+def test_identical_wording_is_listed_for_review(client, monkeypatch):
+    model_returns(monkeypatch, figure_reply(question_text="First?"))
+    body = upload(client, SCAN.read_bytes(), name="scan.pdf").json()
+    assert body["saved"] is True
+    items = db_service.get_question_paper(EXAM)["review_items"]
+    assert [item["question"] for item in items] == ["Q1, Q2"]
+
+
+def test_dataset_paper_has_nothing_to_review(client, paper_bytes):
+    body = upload(client, paper_bytes).json()
+    assert body["rubric"]["review_items"] == []
+    assert not any(q["has_figure"] for q in body["rubric"]["questions"])
+
+
+# ---------------------------------------------------------
+# Whole flow: Food Security scan with the real local model
+# ---------------------------------------------------------
+
+@pytest.mark.skipif(os.getenv("RUN_CLEAN_SCAN") != "1", reason="Set RUN_CLEAN_SCAN=1 to run.")
+def test_food_security_scan_whole_flow(client, firestore_client, monkeypatch, capsys):
+    """A real two-page scan. Its wording is reported for a person to check, not asserted."""
+    monkeypatch.undo()
+    assert FOOD_SECURITY_SCAN.is_file(), f"Missing {FOOD_SECURITY_SCAN}"
+    data = FOOD_SECURITY_SCAN.read_bytes()
+
+    first = upload(client, data, name="clean_question_paper.pdf")
+    assert first.status_code == 200, first.text
+    body = first.json()
+    rubric = body["rubric"]
+    report = {
+        "model_setting": config.OLLAMA_PAPER_READER_MODEL,
+        "saved": body["saved"],
+        "problems": body["problems"],
+        "warnings": rubric["extraction_warnings"],
+        "review_items": rubric["review_items"],
+        "page_readers": rubric.get("page_readers"),
+        "questions": rubric["questions"],
+    }
+    out = os.getenv("CLEAN_SCAN_REPORT")
+    if out:
+        Path(out).write_text(json.dumps(report, indent=1, ensure_ascii=False), encoding="utf-8")
+
+    # Printed on the paper: MAX.MARKS 20, Q1-8, 9A/9B and 10A/10B.
+    read = [f"{q['question_number']}{q.get('sub_part', '')}" for q in rubric["questions"]]
+    assert read == [str(n) for n in range(1, 9)] + ["9A", "9B", "10A", "10B"]
+    assert [q["max_marks"] for q in rubric["questions"]] == [1] * 4 + [2] * 4 + [4] * 4
+    assert rubric["total_marks"] == 20.0 and rubric["declared_maximum_marks"] == 20.0
+    assert [q.get("choice_group") for q in rubric["questions"][8:]] == ["Q9", "Q9", "Q10", "Q10"]
+    assert not any("Duplicate question number" in w for w in rubric["extraction_warnings"])
+    assert body["saved"] is True
+
+    stored = db_service.get_question_paper(EXAM)
+    assert stored["verification_status"] == "UNVERIFIED"
+    assert stored["questions"][11]["has_figure"] is True
+
+    before = all_documents(firestore_client)
+    assert upload(client, data, name="clean_question_paper.pdf").json()["duplicate"] is True
+    assert all_documents(firestore_client) == before
+
+    approval = {
+        "exam_id": EXAM,
+        "rubric": rubric["questions"],
+        "total_marks": rubric["total_marks"],
+        "doc_fingerprint": body["doc_fingerprint"],
+        "gen_fingerprint": body["gen_fingerprint"],
+    }
+    assert client.post("/exam/rubric/approve", json=approval).status_code == 422
+    confirmed = client.post("/exam/rubric/approve", json={**approval, "teacher_confirmed": True})
+    assert confirmed.status_code == 200, confirmed.text
+    assert db_service.get_question_paper(EXAM)["verification_status"] == "TEACHER_CONFIRMED"
+    approved = client.get(f"/exam/{EXAM}/rubric").json()
+    assert approved["total_marks"] == 20.0 and len(approved["questions"]) == 12

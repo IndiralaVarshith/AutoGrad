@@ -41,6 +41,10 @@ AI_PROVIDER: str = os.getenv("AI_PROVIDER", "ollama").strip().lower()
 OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_SIMPLE_MODEL: str = os.getenv("OLLAMA_SIMPLE_MODEL", "qwen3.5:4b").strip()
 OLLAMA_COMPLEX_MODEL: str = os.getenv("OLLAMA_COMPLEX_MODEL", "gemma4:e4b").strip()
+# The one setting for which local model reads question paper scans.
+OLLAMA_PAPER_READER_MODEL: str = (
+    os.getenv("OLLAMA_PAPER_READER_MODEL", "").strip() or OLLAMA_COMPLEX_MODEL
+)
 OLLAMA_MAX_CONCURRENT_REQUESTS: int = int(os.getenv("OLLAMA_MAX_CONCURRENT_REQUESTS", "1"))
 GEMINI_ENABLED: bool = os.getenv("GEMINI_ENABLED", "false").strip().lower() == "true"
 GEMINI_FALLBACK_ENABLED: bool = os.getenv("GEMINI_FALLBACK_ENABLED", "false").strip().lower() == "true"

@@ -25,7 +25,14 @@ load_dotenv()
 
 # Import route modules
 from routes import exam, upload, results, review, export
-from config import GEMINI_MODEL, get_firestore, AI_PROVIDER, OLLAMA_SIMPLE_MODEL, OLLAMA_COMPLEX_MODEL
+from config import (
+    GEMINI_MODEL,
+    get_firestore,
+    AI_PROVIDER,
+    OLLAMA_SIMPLE_MODEL,
+    OLLAMA_COMPLEX_MODEL,
+    OLLAMA_PAPER_READER_MODEL,
+)
 from services.router import model_router
 
 
@@ -168,7 +175,7 @@ Return JSON in this format:
             prompt=prompt,
             images=paper_images,
             format_json=True,
-            is_rubric_from_scanned_paper=True,
+            force_model=OLLAMA_PAPER_READER_MODEL,
         )
 
         rubric_data = res.parsed_json

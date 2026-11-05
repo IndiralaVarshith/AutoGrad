@@ -124,7 +124,12 @@ class DatabaseService:
         Save an exam's parsed paper and exam record in one transaction, so a
         failure can never leave a partial paper. Each exam has one paper.
 
-        Returns {"outcome": created | replaced | duplicate | conflict, "paper": dict}.
+        Writing a different file also cancels, in the same transaction, any
+        approved rubric made from another file. Old versions stay readable for
+        results already graded with them, but can no longer be used for new grading.
+
+        Returns {"outcome": created | replaced | duplicate | conflict, "paper": dict,
+        "invalidated_rubric_ids": list[str]}.
         """
         client = self.db
         if not client:
@@ -132,6 +137,13 @@ class DatabaseService:
 
         exam_ref = client.collection("exams").document(exam_id)
         paper_ref = self._question_paper_ref(client, exam_id)
+        approved_ref = exam_ref.collection("rubric").document("approved")
+        approved_versions = (
+            client.collection("rubrics")
+            .where("exam_id", "==", exam_id)
+            .where("approval_status", "==", "APPROVED")
+        )
+        new_fingerprint = paper.get("doc_fingerprint", "")
 
         @firestore.transactional
         def _write(transaction) -> dict[str, Any]:
@@ -142,9 +154,49 @@ class DatabaseService:
             same_file = bool(current) and current.get("doc_fingerprint") == paper.get("doc_fingerprint")
 
             if current and not replace:
-                return {"outcome": "duplicate" if same_file else "conflict", "paper": current}
+                return {
+                    "outcome": "duplicate" if same_file else "conflict",
+                    "paper": current,
+                    "invalidated_rubric_ids": [],
+                }
+
+            # Firestore requires every read before the first write.
+            stale_versions, active_rubric_kept = [], False
+            approved_doc = None
+            if not same_file:
+                approved_doc = approved_ref.get(transaction=transaction)
+                for version in approved_versions.get(transaction=transaction):
+                    if version.to_dict().get("doc_fingerprint", "") == new_fingerprint:
+                        active_rubric_kept = True
+                    else:
+                        stale_versions.append(version)
 
             now = time.time()
+
+            pointer_is_stale = bool(
+                approved_doc
+                and approved_doc.exists
+                and approved_doc.to_dict().get("approval_status", "APPROVED") == "APPROVED"
+                and approved_doc.to_dict().get("doc_fingerprint", "") != new_fingerprint
+            )
+            for version in stale_versions:
+                transaction.set(version.reference, {
+                    "approval_status": "SUPERSEDED",
+                    "superseded_at": now,
+                }, merge=True)
+            if pointer_is_stale:
+                transaction.set(approved_ref, {
+                    "approval_status": "INVALIDATED",
+                    "approved": False,
+                    "invalidated_at": now,
+                    "invalidated_reason": "The question paper was replaced.",
+                }, merge=True)
+            invalidated = sorted(version.id for version in stale_versions)
+            if pointer_is_stale and not invalidated:
+                invalidated = [approved_doc.to_dict().get("rubric_id", f"{exam_id}_v1")]
+            rubric_cancelled = bool(invalidated)
+            keep_status = same_file or (active_rubric_kept and not rubric_cancelled)
+
             saved = {
                 **paper,
                 "exam_id": exam_id,
@@ -152,7 +204,7 @@ class DatabaseService:
                 "updated_at": now,
             }
             transaction.set(paper_ref, saved)
-            transaction.set(exam_ref, {
+            exam_update = {
                 "exam_id": exam_id,
                 "subject": exam_data.get("subject", exam_id),
                 "exam_name": exam_data.get("exam_name", exam_id),
@@ -161,12 +213,34 @@ class DatabaseService:
                 "updated_at": now,
                 "total_marks": paper.get("total_marks", 0.0),
                 # The same file again must not undo an approval.
-                "status": exam_data.get("status", "PROPOSED") if same_file else "PROPOSED",
-                "question_paper_fingerprint": paper.get("doc_fingerprint", ""),
-            }, merge=True)
-            return {"outcome": "replaced" if current else "created", "paper": saved}
+                "status": exam_data.get("status", "PROPOSED") if keep_status else "PROPOSED",
+                "question_paper_fingerprint": new_fingerprint,
+            }
+            if rubric_cancelled:
+                exam_update["approved_rubric_id"] = None
+                exam_update["rubric_version"] = None
+            transaction.set(exam_ref, exam_update, merge=True)
+            return {
+                "outcome": "replaced" if current else "created",
+                "paper": saved,
+                "invalidated_rubric_ids": invalidated,
+            }
 
         return _write(client.transaction())
+
+    def _matching_paper_ref(self, client: Client, exam_id: str, doc_fingerprint: str):
+        """Return the saved paper's reference if the rubric was made from that same file."""
+        if not doc_fingerprint:
+            return None
+        ref = self._question_paper_ref(client, exam_id)
+        doc = ref.get()
+        if doc.exists and doc.to_dict().get("doc_fingerprint") == doc_fingerprint:
+            return ref
+        return None
+
+    @staticmethod
+    def _confirmation_fields() -> dict[str, Any]:
+        return {"verification_status": "TEACHER_CONFIRMED", "teacher_confirmed_at": time.time()}
 
     # =========================================================
     # RUBRIC OPERATIONS
@@ -180,6 +254,7 @@ class DatabaseService:
         doc_fingerprint: str = "",
         gen_fingerprint: str = "",
         total_marks: float | None = None,
+        teacher_confirmed: bool = False,
     ) -> dict[str, Any]:
         """
         Persist a teacher-approved grading rubric.
@@ -228,15 +303,22 @@ class DatabaseService:
         existing_versions = list(
             rubrics_coll.where("exam_id", "==", exam_id).stream()
         )
-        # Approving the same rubric again keeps the existing version.
+        confirmed_paper_ref = self._matching_paper_ref(client, exam_id, doc_fingerprint)
+
+        # Approving the same rubric again keeps the existing version, unless that
+        # version was cancelled: a cancelled rubric needs a fresh approval.
         versions = [doc.to_dict() for doc in existing_versions]
         latest = max(versions, key=lambda doc: doc.get("version", 0), default=None)
         if (
             latest
+            and latest.get("approval_status") == "APPROVED"
+            and bool(latest.get("teacher_confirmed")) == teacher_confirmed
             and latest.get("questions") == serialized_questions
             and latest.get("total_marks") == total_exam_marks
             and latest.get("doc_fingerprint", "") == doc_fingerprint
         ):
+            if teacher_confirmed and confirmed_paper_ref:
+                confirmed_paper_ref.set(self._confirmation_fields(), merge=True)
             return latest
 
         version = len(existing_versions) + 1
@@ -257,10 +339,13 @@ class DatabaseService:
             "created_at": now,
             "doc_fingerprint": doc_fingerprint,
             "gen_fingerprint": gen_fingerprint,
+            "teacher_confirmed": teacher_confirmed,
         }
 
-        # All three writes succeed or fail together.
+        # All writes succeed or fail together.
         batch = client.batch()
+        if teacher_confirmed and confirmed_paper_ref:
+            batch.set(confirmed_paper_ref, self._confirmation_fields(), merge=True)
 
         # 1. Save top-level versioned rubric document
         batch.set(client.collection("rubrics").document(rubric_id), rubric_data)
@@ -280,6 +365,7 @@ class DatabaseService:
             "total_marks": total_exam_marks,
             "doc_fingerprint": doc_fingerprint,
             "gen_fingerprint": gen_fingerprint,
+            "teacher_confirmed": teacher_confirmed,
         }
         batch.set(exam_ref.collection("rubric").document("approved"), sub_data)
 
@@ -323,8 +409,12 @@ class DatabaseService:
         )
         if approved_doc.exists:
             data = approved_doc.to_dict()
-            # Validate it actually belongs to this exam and has questions
-            if data.get("exam_id") == exam_id and data.get("questions"):
+            # Validate it belongs to this exam, has questions, and was not cancelled
+            if (
+                data.get("exam_id") == exam_id
+                and data.get("questions")
+                and data.get("approval_status", "APPROVED") == "APPROVED"
+            ):
                 # Backfill missing fields for legacy documents
                 if not data.get("rubric_id"):
                     data["rubric_id"] = f"{exam_id}_v1"

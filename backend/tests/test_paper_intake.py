@@ -10,8 +10,10 @@ from PIL import Image, ImageFilter
 
 from services import paper_intake
 from services.marks_validator import validate_and_reconcile_exam_structure
+from services.rubric_cache import validate_rubric_structure
 from services.paper_intake import (
     MIN_SHARPNESS,
+    apply_review_items,
     check_image_quality,
     parse_question_paper_text,
     questions_from_model_reply,
@@ -241,3 +243,55 @@ def test_blank_pages_are_ignored_unless_every_page_is_blank():
     blank = _png(Image.new("RGB", (1400, 2000), "white"))
     assert check_image_quality([blank, blank]) == ["Every page looks blank."]
     assert check_image_quality([_png(_scan_page()), blank]) == []
+
+
+def _q(number, text, sub_part="", **fields):
+    return {"question_number": number, "sub_part": sub_part, "question_text": text, **fields}
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Observe the graph.", "Read the CHARTS below.", "Label the diagram.", "Use the map.",
+     "Complete the table.", "See figure 3."],
+)
+def test_figure_words_are_detected(text):
+    question = _q(1, text)
+    assert len(apply_review_items([question])) == 1
+    assert question["has_figure"] is True
+
+
+@pytest.mark.parametrize("text", ["Explain paragraphs.", "Describe a stable market.", "Define Regression."])
+def test_similar_words_are_not_figures(text):
+    question = _q(1, text)
+    assert apply_review_items([question]) == []
+    assert question["has_figure"] is False
+
+
+@pytest.mark.parametrize("page, expected", [(2, 2), ("2", 2), (0, None), (-1, None), ("x", None), (True, None), (None, None)])
+def test_figure_page_is_only_kept_when_valid(page, expected):
+    question = _q(1, "Plain words.", has_figure=True, figure_page=page)
+    apply_review_items([question])
+    assert question["figure_page"] == expected
+
+
+def test_review_items_do_not_change_the_wording():
+    text = "Observe the graph (Tamil Nadu 44.5)."
+    question = _q(1, text)
+    apply_review_items([question])
+    assert question["question_text"] == text
+
+
+def test_sub_parts_are_not_reported_as_duplicates():
+    rubric = {"questions": [
+        {"question_number": 9, "sub_part": "A", "max_marks": 4, "criteria": [{"description": "c", "max_marks": 4}]},
+        {"question_number": 9, "sub_part": "B", "max_marks": 4, "criteria": [{"description": "c", "max_marks": 4}]},
+    ]}
+    assert validate_rubric_structure(rubric) == []
+
+
+def test_real_duplicates_are_still_reported():
+    rubric = {"questions": [
+        {"question_number": 9, "max_marks": 4, "criteria": [{"description": "c", "max_marks": 4}]},
+        {"question_number": 9, "max_marks": 4, "criteria": [{"description": "c", "max_marks": 4}]},
+    ]}
+    assert validate_rubric_structure(rubric) == ["Duplicate question number: 9."]

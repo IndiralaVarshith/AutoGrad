@@ -16,6 +16,7 @@ export default function Setup({ onExamApproved, onExamIdChange, initialExamId = 
   const [genFingerprint, setGenFingerprint] = useState('');
   const [docFingerprint, setDocFingerprint] = useState('');
   const [hasUnsavedEdits, setHasUnsavedEdits] = useState(false);
+  const [questionsChecked, setQuestionsChecked] = useState(false);
 
   // Sync initialExamId from parent
   useEffect(() => {
@@ -154,6 +155,7 @@ export default function Setup({ onExamApproved, onExamIdChange, initialExamId = 
         reconciliation_notes: res.rubric?.reconciliation_notes || [],
         sections: res.rubric?.sections || [],
         warnings: res.rubric?.extraction_warnings || [],
+        review_items: res.rubric?.review_items || [],
         from_cache: res.from_cache || false,
         questions_count: questions.length,
         schema_version: res.rubric?.schema_version || '',
@@ -161,6 +163,7 @@ export default function Setup({ onExamApproved, onExamIdChange, initialExamId = 
       });
 
       setHasUnsavedEdits(false);
+      setQuestionsChecked(false);
       setStep(2);
     } catch (err) {
       console.error('Setup error:', err);
@@ -211,7 +214,7 @@ export default function Setup({ onExamApproved, onExamIdChange, initialExamId = 
 
   // Step 2: Approve & Save Rubric to Firestore
   const handleApproveRubric = async () => {
-    if (saving) return; // prevent duplicate clicks
+    if (saving || !questionsChecked) return; // prevent duplicate clicks and unconfirmed approval
     try {
       setSaving(true);
       setError('');
@@ -223,7 +226,8 @@ export default function Setup({ onExamApproved, onExamIdChange, initialExamId = 
         rubricQuestions,
         docFingerprint,
         genFingerprint,
-        targetTotal
+        targetTotal,
+        questionsChecked
       );
 
       if (res.warnings && res.warnings.length > 0) {
@@ -266,6 +270,7 @@ export default function Setup({ onExamApproved, onExamIdChange, initialExamId = 
     setTextbookFile(null);
     setRubricQuestions([]);
     setExtractedSummary(null);
+    setQuestionsChecked(false);
     setGenFingerprint('');
     setDocFingerprint('');
     setHasUnsavedEdits(false);
@@ -524,8 +529,31 @@ export default function Setup({ onExamApproved, onExamIdChange, initialExamId = 
                   ))}
                 </div>
               )}
+
+              {/* Questions the teacher should check first */}
+              {extractedSummary.review_items && extractedSummary.review_items.length > 0 && (
+                <div className="mt-2 space-y-1">
+                  <div className="text-[10px] font-mono uppercase text-[#f59e0b]">Check these first</div>
+                  {extractedSummary.review_items.map((item, i) => (
+                    <div key={i} className="text-[10px] font-mono text-[#f59e0b] flex gap-1 items-start">
+                      <span>{item.question}:</span>
+                      <span>{item.reason}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
+
+          {/* Teacher confirmation */}
+          <label className="flex items-center gap-2 bg-[#121316] p-3 rounded border border-[#22242a] text-xs text-[#ededed] cursor-pointer">
+            <input
+              type="checkbox"
+              checked={questionsChecked}
+              onChange={(e) => setQuestionsChecked(e.target.checked)}
+            />
+            <span>I checked every question and mark against the paper</span>
+          </label>
 
           {/* Action Bar */}
           <div className="flex items-center justify-between bg-[#121316] p-3.5 rounded border border-[#22242a]">
@@ -560,7 +588,7 @@ export default function Setup({ onExamApproved, onExamIdChange, initialExamId = 
               <button
                 type="button"
                 onClick={handleApproveRubric}
-                disabled={saving}
+                disabled={saving || !questionsChecked}
                 className="bg-[#15803d] hover:bg-[#166534] text-white font-medium px-4 py-1.5 rounded text-xs font-mono transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
               >
                 {saving ? 'Saving to Firestore...' : '✓ Approve & Lock Rubric'}

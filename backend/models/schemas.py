@@ -35,6 +35,8 @@ class QuestionRubric(BaseModel):
     attempt_instruction: str = ""
     question_format: str = ""  # MCQ | SHORT_ANSWER | "" when not known
     options: list[dict[str, str]] = Field(default_factory=list)  # [{"label", "text"}]
+    has_figure: bool = False
+    figure_page: int | None = None
 
 
 # =========================================================
@@ -150,6 +152,7 @@ class ExamSetupRequest(BaseModel):
 class RubricApproveRequest(BaseModel):
     """Request body for POST /exam/rubric/approve."""
     exam_id: str
+    teacher_confirmed: bool = False
     rubric: list[QuestionRubric]
     doc_fingerprint: str = ""
     gen_fingerprint: str = ""

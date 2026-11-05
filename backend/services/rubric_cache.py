@@ -17,7 +17,7 @@ from typing import Any
 
 # SCHEMA / PROMPT version — bump when rubric schema or prompts change
 RUBRIC_SCHEMA_VERSION = "v2"
-RUBRIC_PROMPT_VERSION = "v3"
+RUBRIC_PROMPT_VERSION = "v4"
 
 
 def compute_doc_fingerprint(file_bytes: bytes) -> str:
@@ -99,16 +99,18 @@ def validate_rubric_structure(
         warnings.append("No questions were extracted from the question paper.")
         return warnings
 
-    seen_ids: set[int] = set()
+    seen_ids: set[tuple[Any, str]] = set()
     rubric_total = 0.0
 
     for idx, q in enumerate(questions):
         q_num = q.get("question_number", idx + 1)
 
         # Unique question IDs
-        if q_num in seen_ids:
-            warnings.append(f"Duplicate question number: {q_num}.")
-        seen_ids.add(q_num)
+        # 9A and 9B are different questions; only the same number and part is a duplicate.
+        sub_part = str(q.get("sub_part") or "").strip().upper()
+        if (q_num, sub_part) in seen_ids:
+            warnings.append(f"Duplicate question number: {q_num}{sub_part}.")
+        seen_ids.add((q_num, sub_part))
 
         q_max = float(q.get("max_marks", 0.0))
         rubric_total += q_max

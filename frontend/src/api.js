@@ -47,13 +47,14 @@ export const api = {
   },
 
   // Rubric Approval
-  approveRubric: async (examId, rubric, docFingerprint = '', genFingerprint = '', totalMarks = null) => {
+  approveRubric: async (examId, rubric, docFingerprint = '', genFingerprint = '', totalMarks = null, teacherConfirmed = false) => {
     const res = await client.post('/exam/rubric/approve', {
       exam_id: examId,
       rubric: rubric,
       doc_fingerprint: docFingerprint,
       gen_fingerprint: genFingerprint,
       total_marks: totalMarks !== null ? Number(totalMarks) : null,
+      teacher_confirmed: teacherConfirmed,
     });
     return res.data;
   },

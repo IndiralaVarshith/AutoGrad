@@ -535,6 +535,10 @@ def normalize_rubric_questions_with_structure(
             entry["question_format"] = str(q.get("question_format"))
         if q.get("options"):
             entry["options"] = q.get("options")
+        if q.get("has_figure"):
+            entry["has_figure"] = q.get("has_figure")
+        if q.get("figure_page"):
+            entry["figure_page"] = q.get("figure_page")
 
         validated.append(entry)
 
