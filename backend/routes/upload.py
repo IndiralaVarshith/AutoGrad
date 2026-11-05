@@ -27,6 +27,7 @@ from services.gemini_client import DailyLimitReached, GeminiCallFailed, RunBudge
 from services.gemini_paper import rubric_total_problems
 from services.gemini_sheet import grade_sheet
 from models.schemas import PaperResult, QuestionRubric
+from services.upload_limits import read_limited
 from services.queue_manager import queue_manager, QueueJob
 from services import sheet_store
 from services.db import db_service
@@ -104,7 +105,7 @@ async def upload_answer_sheets(
             "pdf_upload_validation",
             detail=f"Reading and validating {file.filename}",
         ):
-            file_bytes = await file.read()
+            file_bytes = await read_limited(file)
             if not file_bytes:
                 raise HTTPException(400, f"Answer-sheet file '{file.filename}' is empty.")
             _validate_answer_sheet_bytes(file_bytes, ext)
@@ -343,7 +344,7 @@ async def evaluate_single_student(
         raise HTTPException(400, "Exam ID and hall ticket are required.")
 
     upload_started_at = time.perf_counter()
-    file_bytes = await file.read()
+    file_bytes = await read_limited(file)
     if not file_bytes:
         raise HTTPException(400, "Uploaded answer sheet file is empty.")
     page_count = _validate_answer_sheet_bytes(file_bytes, ext)

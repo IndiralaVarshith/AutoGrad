@@ -9,6 +9,8 @@ import fitz
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.conftest import signed_in_client
+
 import config
 import main
 from routes import upload as upload_route
@@ -236,7 +238,7 @@ def test_cap_covers_the_whole_batch_and_resume_starts_a_new_one(manager, gemini,
     assert len(gemini) == 1
 
     monkeypatch.setattr(manager, "start_worker", lambda worker: None)
-    client = TestClient(main.app)
+    client = signed_in_client()
     assert client.post(f"/queue/{exam}/resume").status_code == 200
     upload_route._execute_grading_job(second)
     assert len(gemini) == 2
@@ -256,7 +258,7 @@ def test_bulk_upload_names_sheets_by_file_and_never_overwrites(manager, gemini, 
         upload_route, "_load_rubric_bundle",
         lambda exam: ([upload_route.QuestionRubric(**RUBRIC)], 2.0, "1", "print"),
     )
-    client = TestClient(main.app)
+    client = signed_in_client()
     exam = f"q-{time.time_ns()}"
     body = upload_many(client, exam, ["Student_7.pdf", "Student_8.pdf"]).json()
     assert body["queued"] == 2 and body["conflicts"] == []

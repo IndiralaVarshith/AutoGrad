@@ -10,10 +10,26 @@ const BASE_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
 
 const client = axios.create({
   baseURL: BASE_URL,
+  withCredentials: true,
   timeout: 300000, // Legacy setup operations; sheet grading uses a background job.
 });
 
 export const api = {
+  authStatus: async () => {
+    const res = await client.get('/auth/status');
+    return res.data;
+  },
+
+  login: async (password) => {
+    const res = await client.post('/auth/login', { password });
+    return res.data;
+  },
+
+  logout: async () => {
+    const res = await client.post('/auth/logout');
+    return res.data;
+  },
+
   // Check backend health
   checkHealth: async () => {
     const res = await client.get('/');

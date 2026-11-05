@@ -77,6 +77,10 @@ GEMINI_MIN_CONFIDENCE: float = float(os.getenv("GEMINI_MIN_CONFIDENCE", "0.8"))
 GEMINI_HIGH_VALUE_MARKS: float = float(os.getenv("GEMINI_HIGH_VALUE_MARKS", "5"))
 # Second opinions from the stronger model. Off by default; they use its small daily allowance.
 GEMINI_REVIEW_ENABLED: bool = os.getenv("GEMINI_REVIEW_ENABLED", "false").strip().lower() == "true"
+# Largest single file. Gemini refuses inline requests over about 20 MB.
+MAX_UPLOAD_MB: float = float(os.getenv("MAX_UPLOAD_MB", "18"))
+# Largest whole request, for many sheets uploaded together.
+MAX_REQUEST_MB: float = float(os.getenv("MAX_REQUEST_MB", "500"))
 # Queue state and sheets kept for review. Not the system temp folder, which can be wiped.
 QUEUE_DATA_DIR: str = os.getenv("QUEUE_DATA_DIR", str(_BACKEND_DIR / "queue_data"))
 # How long the whole queue waits when Gemini says it is overloaded.

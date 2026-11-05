@@ -1,6 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import { collection, onSnapshot } from 'firebase/firestore';
-import { db } from '../firebase';
 import api from '../api';
 import ConfidenceBadge from '../components/ConfidenceBadge';
 import EvidenceTable from '../components/EvidenceTable';
@@ -19,9 +17,6 @@ export default function Dashboard({ examId = 'EXAM_2026_01', onGoToReview }) {
   }, [examId]);
 
   useEffect(() => {
-    let unsubscribe = null;
-    let pollInterval = null;
-
     const fetchViaApi = async () => {
       try {
         const data = await api.getExamResults(currentExamId);
@@ -35,36 +30,9 @@ export default function Dashboard({ examId = 'EXAM_2026_01', onGoToReview }) {
       }
     };
 
-    try {
-      const resultsRef = collection(db, 'exams', currentExamId, 'results');
-      unsubscribe = onSnapshot(
-        resultsRef,
-        (snapshot) => {
-          const list = [];
-          snapshot.forEach((doc) => {
-            list.push(doc.data());
-          });
-          if (list.length > 0) {
-            setResults(list);
-            setLoading(false);
-          } else {
-            fetchViaApi();
-          }
-        },
-        () => {
-          fetchViaApi();
-          pollInterval = setInterval(fetchViaApi, 5000);
-        }
-      );
-    } catch (e) {
-      fetchViaApi();
-      pollInterval = setInterval(fetchViaApi, 5000);
-    }
-
-    return () => {
-      if (unsubscribe) unsubscribe();
-      if (pollInterval) clearInterval(pollInterval);
-    };
+    fetchViaApi();
+    const pollInterval = setInterval(fetchViaApi, 5000);
+    return () => clearInterval(pollInterval);
   }, [currentExamId]);
 
   const filteredResults = results.filter((r) => {

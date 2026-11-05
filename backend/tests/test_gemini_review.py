@@ -6,9 +6,9 @@ import time
 import fitz
 import openpyxl
 import pytest
-from fastapi.testclient import TestClient
 
-import main
+from tests.conftest import signed_in_client
+
 from config import get_firestore
 from models.schemas import PaperResult, QuestionGrade
 from services import sheet_store
@@ -41,7 +41,7 @@ def sheet():
     return exam
 
 
-client = TestClient(main.app)
+client = signed_in_client()
 
 
 def stored(exam):

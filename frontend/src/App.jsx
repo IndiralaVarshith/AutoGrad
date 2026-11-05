@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { auth } from './firebase';
+import api from './api';
 import Login from './pages/Login';
 import Setup from './pages/Setup';
 import Upload from './pages/Upload';
@@ -8,23 +7,20 @@ import Dashboard from './pages/Dashboard';
 import Review from './pages/Review';
 
 export default function App() {
-  const [user, setUser] = useState(null);
+  const [signedIn, setSignedIn] = useState(null);
   const [currentPage, setCurrentPage] = useState(() => {
     return sessionStorage.getItem('autograde_current_page') || 'setup';
   });
   const [currentExamId, setCurrentExamId] = useState(() => {
-    return sessionStorage.getItem('autograde_current_exam_id') || 'varshith';
+    return sessionStorage.getItem('autograde_current_exam_id') || '';
   });
   const [selectedHallTicket, setSelectedHallTicket] = useState(null);
 
-  // Monitor Firebase Auth
+  // The server decides who is signed in, from its session cookie.
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
-      if (firebaseUser) {
-        setUser(firebaseUser);
-      }
-    });
-    return () => unsubscribe();
+    api.authStatus()
+      .then((status) => setSignedIn(status.signed_in))
+      .catch(() => setSignedIn(false));
   }, []);
 
   const handlePageChange = (page) => {
@@ -50,25 +46,15 @@ export default function App() {
 
   const handleLogout = async () => {
     try {
-      await signOut(auth);
+      await api.logout();
     } catch (e) {
       console.warn('Sign out notice:', e);
     }
-    setUser(null);
-    handlePageChange('login');
+    setSignedIn(false);
   };
 
-  // If not logged in, show Login
-  if (!user && currentPage !== 'login') {
-    return (
-      <Login
-        onLoginSuccess={(loggedInUser) => {
-          setUser(loggedInUser);
-          handlePageChange('setup');
-        }}
-      />
-    );
-  }
+  if (signedIn === null) return null;
+  if (!signedIn) return <Login onLoginSuccess={() => setSignedIn(true)} />;
 
   return (
     <div className="min-h-screen bg-[#0c0d0e] text-[#ededed] flex flex-col font-sans">
@@ -148,7 +134,7 @@ export default function App() {
           {/* User Account Info */}
           <div className="flex items-center gap-3">
             <div className="hidden sm:block text-right font-mono text-[11px] text-[#717680]">
-              {user?.email || user?.displayName || 'Faculty'}
+              Teacher
             </div>
 
             <button

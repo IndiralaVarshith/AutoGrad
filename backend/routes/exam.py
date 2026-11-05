@@ -28,6 +28,7 @@ from services.criteria_draft import (
     parse_answer_key,
 )
 from services.db import db_service
+from services.upload_limits import read_limited
 from services.rubric_cache import (
     compute_doc_fingerprint,
     compute_generation_fingerprint,
@@ -88,7 +89,7 @@ async def exam_setup(
         if not ALLOWED_MIME.get(ext):
             raise HTTPException(400, "Question paper must be PDF, JPG, PNG, or TXT.")
 
-        q_bytes = await question_paper.read()
+        q_bytes = await read_limited(question_paper)
         if not q_bytes:
             raise HTTPException(400, "Question paper file is empty.")
 
@@ -103,7 +104,7 @@ async def exam_setup(
                 raise HTTPException(409, _DIFFERENT_PAPER_MESSAGE.format(exam_id=exam_id))
             return _paper_response(exam_id, existing, saved=True, duplicate=True, notices=notices)
 
-        key_bytes = await answer_key.read() if answer_key and answer_key.filename else b""
+        key_bytes = await read_limited(answer_key) if answer_key and answer_key.filename else b""
         key_ext = Path(answer_key.filename).suffix.lower() if key_bytes else ""
         return _gemini_paper(
             exam_id, q_bytes, ext, doc_fingerprint, key_bytes, key_ext, should_force, notices

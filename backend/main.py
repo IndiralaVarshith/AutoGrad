@@ -13,14 +13,18 @@ from __future__ import annotations
 
 import os
 from fastapi import FastAPI
+from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
 
 # Import route modules
-from routes import exam, upload, results, review, export
+from routes import auth, exam, upload, results, review, export
+from services import teacher_auth
+import config
 from config import (
     GEMINI_MODEL,
     get_firestore,
@@ -45,19 +49,42 @@ def resume_queue_after_restart() -> None:
 # CORS MIDDLEWARE
 # =========================================================
 
+# Only pages served from this machine may call the API.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins for local dev & Firebase hosting
+    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
+# These run inside the CORS layer, so a refusal still reaches the page with its reason.
+_OPEN_PATHS = {"/", "/health", "/auth/login", "/auth/logout", "/auth/status"}
+
+
+@app.middleware("http")
+async def limit_and_require_teacher(request: Request, call_next):
+    if request.method == "OPTIONS":
+        return await call_next(request)
+    length = request.headers.get("content-length", "")
+    if length.isdigit() and int(length) > config.MAX_REQUEST_MB * 1024 * 1024:
+        return JSONResponse(
+            status_code=413,
+            content={"detail": f"This upload is over the {config.MAX_REQUEST_MB:g} MB limit. Send fewer sheets at once."},
+        )
+    if request.url.path not in _OPEN_PATHS and not teacher_auth.session_is_valid(
+        request.cookies.get(teacher_auth.COOKIE_NAME)
+    ):
+        return JSONResponse(status_code=401, content={"detail": "Please sign in."})
+    return await call_next(request)
+
+
 # =========================================================
 # REGISTER ROUTERS
 # =========================================================
 
+app.include_router(auth.router)
 app.include_router(exam.router)
 app.include_router(upload.router)
 app.include_router(results.router)
