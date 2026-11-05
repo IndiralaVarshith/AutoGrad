@@ -174,6 +174,19 @@ def test_mcq_suggestion_never_becomes_the_key_by_itself():
     assert record["correct_option"] == "" and record["suggested_option"] == "B"
 
 
+def test_mcq_without_drafted_points_can_still_be_approved():
+    mcq = question(
+        1, marks=1.0, question_format="MCQ", draft_criteria=[], suggested_option="A",
+        options=[{"label": "A", "text": "x"}, {"label": "B", "text": "y"}],
+    )
+    paper = paper_from_extraction(extraction([mcq]))
+    assert not paper["problems"]
+    assert paper["questions"][0]["criteria"] == [
+        {"description": "Selects the correct option", "max_marks": 1.0}
+    ]
+    assert rubric_total_problems(paper["questions"], None)[1] == []
+
+
 def test_mcq_problems():
     no_options = question(1, question_format="MCQ", options=[])
     bad_pick = question(

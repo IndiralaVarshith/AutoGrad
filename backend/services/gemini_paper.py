@@ -253,6 +253,13 @@ def calculate_paper_total(
 def _question_record(question: PaperQuestion, section: dict[str, Any]) -> dict[str, Any]:
     is_mcq = question.question_format == QuestionFormat.MCQ
     marks = question.printed_marks if (question.printed_marks or 0) > 0 else None
+    criteria = [
+        {"description": c.description.strip(), "max_marks": float(c.max_marks)}
+        for c in question.draft_criteria
+    ]
+    if is_mcq and marks:
+        # Code marks MCQs from the chosen letter, so the only point is the whole mark.
+        criteria = [{"description": "Selects the correct option", "max_marks": float(marks)}]
     return {
         "question_number": question.question_number,
         "sub_part": question.sub_part.strip(),
@@ -272,10 +279,7 @@ def _question_record(question: PaperQuestion, section: dict[str, Any]) -> dict[s
         "is_or_choice": bool(question.choice_group.strip()),
         "has_figure": question.has_figure,
         "figure_page": question.figure_page,
-        "criteria": [
-            {"description": c.description.strip(), "max_marks": float(c.max_marks)}
-            for c in question.draft_criteria
-        ],
+        "criteria": criteria,
         "correct_option": "",
         # A suggestion only. The teacher's approved rubric holds the real key.
         "suggested_option": question.suggested_option.strip().upper() if is_mcq else "",

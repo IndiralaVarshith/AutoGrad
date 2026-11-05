@@ -114,6 +114,7 @@ GEMINI_USAGE_DIR: str = os.getenv("GEMINI_USAGE_DIR", str(_BACKEND_DIR / "gemini
 # Paid-tier prices, for the notional cost only. A model missing here reports cost unknown.
 GEMINI_PRICES_USD_PER_MILLION: dict[str, dict[str, float]] = {
     "gemini-3.5-flash-lite": {"input": 0.30, "output": 2.50},
+    "gemini-3.1-flash-lite": {"input": 0.25, "output": 1.50},
     "gemini-3.8-flash": {"input": 0.75, "output": 3.75},
 }
 GEMINI_PRICES_AS_OF: str = "Gemini API pricing page, read 2026-11-06"
