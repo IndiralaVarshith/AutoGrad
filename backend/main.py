@@ -31,6 +31,7 @@ from config import (
     AI_PROVIDER,
     OLLAMA_SIMPLE_MODEL,
     OLLAMA_COMPLEX_MODEL,
+    OLLAMA_SHEET_READER_MODEL,
     OLLAMA_PAPER_READER_MODEL,
 )
 from services.router import model_router
@@ -85,6 +86,7 @@ def root():
             "online": ollama_health.get("online", False),
             "simple_model": OLLAMA_SIMPLE_MODEL,
             "complex_model": OLLAMA_COMPLEX_MODEL,
+            "sheet_reader_model": OLLAMA_SHEET_READER_MODEL,
             "installed_models": ollama_health.get("models", []),
         },
         "gemini_model": GEMINI_MODEL,

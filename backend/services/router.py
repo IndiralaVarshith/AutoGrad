@@ -17,6 +17,9 @@ Features:
 
 from __future__ import annotations
 
+from contextlib import ContextDecorator, contextmanager
+from contextvars import ContextVar
+
 import base64
 import hashlib
 import io
@@ -149,6 +152,37 @@ ai_config = AIConfiguration()
 # =========================================================
 # DATA CLASSES
 # =========================================================
+
+_LOCAL_ONLY: ContextVar[bool] = ContextVar("autograd_local_only", default=False)
+
+
+@contextmanager
+def _local_only_scope():
+    token = _LOCAL_ONLY.set(True)
+    try:
+        yield
+    finally:
+        _LOCAL_ONLY.reset(token)
+
+
+class _LocalOnly(ContextDecorator):
+    """Inside this scope, generate() never escalates to Gemini by itself.
+
+    Student work may only reach Gemini through generate_gemini_verification,
+    which sends crops of flagged answers and is capped per run.
+    """
+
+    def __enter__(self):
+        self._scope = _local_only_scope()
+        self._scope.__enter__()
+        return self
+
+    def __exit__(self, *exc):
+        return self._scope.__exit__(*exc)
+
+
+local_only = _LocalOnly
+
 
 @dataclass
 class RouterResponse:
@@ -1538,7 +1572,7 @@ class ModelRouter:
             local_error: Exception = NoSuitableModelError(
                 "Ollama is unavailable; no local model can serve this task. Teacher validation is required."
             )
-            if self._gemini_allowed_for_fallback() and not gemini_attempted:
+            if self._gemini_auto_fallback_allowed() and not gemini_attempted:
                 return self._generate_gemini(
                     task_id=task_id,
                     start_time=start_time,
@@ -1582,7 +1616,7 @@ class ModelRouter:
                     "selected a local model only after capability checks."
                 )
         except NoSuitableModelError:
-            if self._gemini_allowed_for_fallback() and not gemini_attempted:
+            if self._gemini_auto_fallback_allowed() and not gemini_attempted:
                 return self._generate_gemini(
                     task_id=task_id,
                     start_time=start_time,
@@ -1772,7 +1806,7 @@ class ModelRouter:
                         escalation_reason="single_capability_matched_local_fallback",
                     )
 
-            if self._gemini_allowed_for_fallback() and not gemini_attempted:
+            if self._gemini_auto_fallback_allowed() and not gemini_attempted:
                 return self._generate_gemini(
                     task_id=task_id,
                     start_time=start_time,
@@ -1796,6 +1830,9 @@ class ModelRouter:
 
     def _gemini_allowed_for_fallback(self) -> bool:
         return self.config.gemini_enabled or self.config.gemini_fallback_enabled
+
+    def _gemini_auto_fallback_allowed(self) -> bool:
+        return self._gemini_allowed_for_fallback() and not _LOCAL_ONLY.get()
 
     def _generate_gemini(
         self,

@@ -47,7 +47,7 @@ from services.math_agent import expected_expression_from_rubric, verify_math
 from services.db import db_service
 from config import get_firestore
 from services.timing import log_timing, timed_stage
-from services.router import model_router
+from services.router import local_only, model_router
 
 
 _logger = logging.getLogger(__name__)
@@ -206,6 +206,7 @@ def _independent_verification_prompt(
     )
 
 
+@local_only()
 def regrade_question_text(
     rubric: QuestionRubric,
     answer_text: str,
@@ -365,6 +366,7 @@ def regrade_question_text(
 # MAIN PIPELINE
 # =========================================================
 
+@local_only()
 def process_paper(
     exam_id: str,
     hall_ticket: str,
@@ -438,6 +440,7 @@ def process_paper(
         )
 
     print("[Pipeline] Step 1: OCR extraction...")
+    page_readers: list[dict] = []
     with timed_stage(
         "handwriting_ocr",
         job_id=job_id,
@@ -451,6 +454,7 @@ def process_paper(
             job_id=job_id,
             on_stage=on_stage,
             page_regions=ocr_pages,
+            page_readers=page_readers,
         )
 
     unresolved_candidates: dict[int, list[dict]] = defaultdict(list)
@@ -1035,8 +1039,29 @@ def process_paper(
         else 0.0
     )
 
+    rubric_numbers = {r.question_number for r in rubric_list}
+    unmapped_answers = [
+        {
+            "detected_question_number": answer.get("detected_question_number", key[0]),
+            "candidate_question_number": answer.get("candidate_question_number"),
+            "sub_part": answer.get("sub_part", key[1]),
+            "extracted_text": answer.get("extracted_text", ""),
+            "illegible_regions": answer.get("illegible_regions", []),
+            "mapping_status": (
+                "NOT_ON_PAPER" if key[0] > 0 and key[0] not in rubric_numbers
+                else answer.get("mapping_status", "UNRESOLVED")
+            ),
+            "page_references": answer.get("page_references", []),
+        }
+        for key, answer in ocr_results.items()
+        if key[0] == 0
+        or key[0] not in rubric_numbers
+        or answer.get("mapping_status", "MAPPED") != "MAPPED"
+    ]
+    unreadable_pages = [r["page"] for r in page_readers if r.get("status") == "UNREADABLE"]
+
     status = "COMPLETE"
-    if flagged_count > 0:
+    if flagged_count > 0 or unmapped_answers or unreadable_pages:
         status = "NEEDS_REVIEW"
 
     paper_result = PaperResult(
@@ -1053,19 +1078,8 @@ def process_paper(
         source_file_reference=source_file_reference,
         rubric_version=str(approved_rubric_version),
         ocr_pages=ocr_pages,
-        unmapped_answers=[
-            {
-                "detected_question_number": answer.get("detected_question_number", key[0]),
-                "candidate_question_number": answer.get("candidate_question_number"),
-                "sub_part": answer.get("sub_part", key[1]),
-                "extracted_text": answer.get("extracted_text", ""),
-                "illegible_regions": answer.get("illegible_regions", []),
-                "mapping_status": answer.get("mapping_status", "UNRESOLVED"),
-                "page_references": answer.get("page_references", []),
-            }
-            for key, answer in ocr_results.items()
-            if key[0] == 0 or answer.get("mapping_status", "MAPPED") != "MAPPED"
-        ],
+        unmapped_answers=unmapped_answers,
+        page_readers=page_readers,
     )
 
     # -------------------------------------------------

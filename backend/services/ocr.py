@@ -22,7 +22,7 @@ import time
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-from config import gemini_generate_with_retry
+from config import OLLAMA_SHEET_READER_MODEL, gemini_generate_with_retry
 from models.schemas import OCRPageResult, OCRRegion
 from services.marks_validator import parse_question_number_and_part
 from services.timing import log_timing
@@ -101,6 +101,17 @@ For each question the student has answered, return:
 Important:
 - Do NOT grade the answers or assign marks.
 - Do NOT summarise or rephrase the student's writing.
+- Copy each word exactly as written. Keep spelling and grammar mistakes. Do NOT
+  correct, complete or improve anything.
+- Leave out words the student crossed out or struck through.
+- For a multiple-choice answer such as "1. B", return only the chosen letter as
+  extracted_text. If the choice is overwritten, or more than one letter is given,
+  describe that in illegible_regions.
+- Ignore the page header (name, ID, date) and page numbers, and any ticks or marks
+  that are not part of the student's answer.
+- Faint mirror-image writing showing through from the back of the page is not an
+  answer. Do not transcribe it.
+- Leave sub_part empty unless a sub-part label such as (a) is written on the page.
 - Preserve mathematical expressions as accurately as possible.
 - If a question number is ambiguous, use 0 and describe the mapping uncertainty
   in illegible_regions. Never assign an answer to a question by guesswork.
@@ -120,6 +131,7 @@ def extract_text(
     job_id: str = "",
     on_stage=None,
     page_regions: list[OCRPageResult] | None = None,
+    page_readers: list[dict] | None = None,
 ) -> tuple[dict[tuple[int, str], dict], float]:
     """
     Run OCR on answer-sheet images through the local-first Model Router.
@@ -138,7 +150,11 @@ def extract_text(
     c_ocr : float
         Calibrated OCR confidence; currently zero because verified handwriting
         ground truth is not yet available.
+
+    page_readers : list | None
+        If given, filled with one record per page saying which model read it.
     """
+    readers: list[dict] = []
 
     cache_path = _ocr_cache_path(source_hash) if source_hash else None
     if cache_path is not None:
@@ -148,6 +164,8 @@ def extract_text(
                 "evaluation_cache_hit %s",
                 json.dumps({"kind": "ocr", "job_id": job_id}, sort_keys=True),
             )
+            if page_readers is not None:
+                page_readers.extend(_load_cached_readers(cache_path))
             return cached
 
     if on_stage is not None:
@@ -170,7 +188,15 @@ def extract_text(
         page_hash = hashlib.sha256(image_bytes).hexdigest()
         prompt = _page_ocr_prompt(page_number, len(image_parts), previous_page_tail)
         page_started = time.perf_counter()
+        reader = {"page": page_number, "model": OLLAMA_SHEET_READER_MODEL, "status": "READ"}
+        readers.append(reader)
+        if _is_blank_or_show_through(image_bytes):
+            # Models invent text from these pages. Any answer that goes missing still flags.
+            reader.update(model="", status="BLANK")
+            print(f"[Sheet] page={page_number}/{len(image_parts)} skipped: no dark ink")
+            continue
         try:
+            # A timeout or missing model is not an unreadable page: let it fail loudly.
             response = gemini_generate_with_retry(
                 contents=[prompt, image_part],
                 config={
@@ -178,6 +204,7 @@ def extract_text(
                     "response_json_schema": OCR_RESPONSE_SCHEMA,
                     "temperature": 0.1,
                 },
+                local_model=OLLAMA_SHEET_READER_MODEL,
             )
         finally:
             log_timing(
@@ -187,15 +214,22 @@ def extract_text(
                 page_number=page_number,
                 page_count=len(image_parts),
             )
-        if not getattr(response, "text", ""):
-            raise RuntimeError(f"OCR returned empty output for answer-sheet page {page_number}.")
+        reader["model"] = getattr(response, "model_used", "") or OLLAMA_SHEET_READER_MODEL
         try:
-            data = json.loads(response.text)
-        except (TypeError, json.JSONDecodeError) as exc:
-            raise ValueError(f"OCR returned invalid JSON for answer-sheet page {page_number}.") from exc
-        answers = data.get("answers") if isinstance(data, dict) else None
-        if not isinstance(answers, list):
-            raise ValueError(f"OCR response for answer-sheet page {page_number} has no answers list.")
+            answers = _page_answers(response, page_number)
+        except (RuntimeError, ValueError) as error:
+            reader.update(status="UNREADABLE", error=str(error))
+            if previous_page_tail in results:
+                results[previous_page_tail]["illegible_regions"].append(
+                    f"Page {page_number} could not be read, so this answer may continue there."
+                )
+                total_illegible += 1
+            continue
+        finally:
+            print(
+                f"[Sheet] page={page_number}/{len(image_parts)} read_by={reader['model']} "
+                f"status={reader['status']}"
+            )
 
         page_max_question = highest_question_seen
         page_tail = None
@@ -208,7 +242,7 @@ def extract_text(
                 q_num, parsed_part = 0, ""
             else:
                 q_num, parsed_part = parse_question_number_and_part(raw_question, default_idx=0)
-            sub_part = str(item.get("sub_part", "") or parsed_part).strip().upper()
+            sub_part = _clean_sub_part(item.get("sub_part", "") or parsed_part)
             raw_regions = item.get("illegible_regions", [])
             if not isinstance(raw_regions, list):
                 raw_regions = [str(raw_regions)] if raw_regions else []
@@ -235,6 +269,7 @@ def extract_text(
                     "the page mapping requires teacher validation."
                 )
 
+            tail_before_this_item = page_tail
             if q_num > 0:
                 page_max_question = max(page_max_question, q_num)
                 if mapping_status == "MAPPED":
@@ -260,6 +295,14 @@ def extract_text(
             key = (q_num, sub_part)
             if q_num == 0:
                 key = (0, f"{sub_part or 'UNSPECIFIED'}@P{page_number}:{item_index}")
+            elif key in results and key == tail_before_this_item and mapping_status == "MAPPED" \
+                    and results[key]["mapping_status"] == "MAPPED":
+                # The reader split one answer into consecutive pieces on the same page.
+                kept = results[key]
+                kept["extracted_text"] = f"{kept['extracted_text']}\n{extracted_text}".strip()
+                kept["illegible_regions"].extend(regions)
+                kept["page_fragments"][-1]["extracted_text"] = kept["extracted_text"]
+                continue
             elif key in results:
                 results[key]["mapping_status"] = "AMBIGUOUS_DUPLICATE"
                 results[key]["illegible_regions"].append(
@@ -279,6 +322,14 @@ def extract_text(
             previous_page_tail = page_tail
         highest_question_seen = max(highest_question_seen, page_max_question)
 
+    if page_readers is not None:
+        page_readers.extend(readers)
+    failed = [reader for reader in readers if reader["status"] == "UNREADABLE"]
+    if failed and not any(reader["status"] == "READ" for reader in readers):
+        raise RuntimeError(
+            f"None of the {len(readers)} answer-sheet pages could be read: {failed[0]['error']}"
+        )
+
     c_ocr = _compute_c_ocr(None, total_illegible, len(results))
     log_timing(
         "question_answer_extraction",
@@ -290,9 +341,50 @@ def extract_text(
 
     print(f"[OCR] Extracted {len(results)} answers, c_ocr={c_ocr:.4f}")
 
-    if cache_path is not None:
-        _store_ocr_cache(cache_path, results, c_ocr)
+    # A partly read sheet is never cached, so a retry can read the missing page.
+    if cache_path is not None and not failed:
+        _store_ocr_cache(cache_path, results, c_ocr, readers)
     return results, c_ocr
+
+
+_SUB_PART_RE = re.compile(r"^(?:[A-Z]|[IVX]{1,4}|\d)$")
+# Share of dark pixels inside the margins. Set from the tuning sheets: pages below it
+# hold only show-through from the other side, or nothing.
+_MIN_DARK_INK_SHARE = 0.0003
+
+
+def _clean_sub_part(value) -> str:
+    """Models sometimes put a label or the answer itself here. Keep real sub-parts only."""
+    text = str(value or "").strip().strip("().").upper()
+    return text if _SUB_PART_RE.match(text) else ""
+
+
+def _is_blank_or_show_through(image_bytes: bytes) -> bool:
+    import numpy as np
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            gray = np.asarray(image.convert("L"))
+    except (UnidentifiedImageError, OSError, ValueError):
+        return False
+    height, width = gray.shape[:2]
+    # Skip the printed margin lines at the top and left of the sheet.
+    inner = gray[int(height * 0.05):int(height * 0.97), int(width * 0.06):int(width * 0.97)]
+    return inner.size > 0 and float((inner < 110).mean()) < _MIN_DARK_INK_SHARE
+
+
+def _page_answers(response, page_number: int) -> list:
+    if not getattr(response, "text", ""):
+        raise RuntimeError(f"OCR returned empty output for answer-sheet page {page_number}.")
+    try:
+        data = json.loads(response.text)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"OCR returned invalid JSON for answer-sheet page {page_number}.") from exc
+    answers = data.get("answers") if isinstance(data, dict) else None
+    if not isinstance(answers, list):
+        raise ValueError(f"OCR response for answer-sheet page {page_number} has no answers list.")
+    return answers
 
 
 def _ocr_cache_path(source_hash: str) -> Path:
@@ -303,6 +395,7 @@ def _ocr_cache_path(source_hash: str) -> Path:
         "version": _OCR_CACHE_VERSION,
         "prompt": hashlib.sha256(OCR_PROMPT.encode()).hexdigest(),
         "routing_policy": model_router.routing_policy_fingerprint(),
+        "sheet_reader": OLLAMA_SHEET_READER_MODEL,
     }
     key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
     return _OCR_CACHE_DIR / f"{key}.json"
@@ -331,10 +424,19 @@ def _load_ocr_cache(path: Path) -> tuple[dict[tuple[int, str], dict], float] | N
             return None
 
 
+def _load_cached_readers(path: Path) -> list[dict]:
+    with _OCR_CACHE_LOCK:
+        try:
+            return list(json.loads(path.read_text(encoding="utf-8")).get("page_readers", []))
+        except (OSError, ValueError, TypeError):
+            return []
+
+
 def _store_ocr_cache(
     path: Path,
     results: dict[tuple[int, str], dict],
     confidence: float,
+    readers: list[dict] | None = None,
 ) -> None:
     try:
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -348,6 +450,7 @@ def _store_ocr_cache(
                 for (question_number, sub_part), answer in results.items()
             ],
             "c_ocr": confidence,
+            "page_readers": readers or [],
         }
         with _OCR_CACHE_LOCK:
             with tempfile.NamedTemporaryFile(

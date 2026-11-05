@@ -45,6 +45,10 @@ OLLAMA_COMPLEX_MODEL: str = os.getenv("OLLAMA_COMPLEX_MODEL", "gemma4:e4b").stri
 OLLAMA_PAPER_READER_MODEL: str = (
     os.getenv("OLLAMA_PAPER_READER_MODEL", "").strip() or OLLAMA_COMPLEX_MODEL
 )
+# The one setting for which local model reads student answer sheets.
+OLLAMA_SHEET_READER_MODEL: str = (
+    os.getenv("OLLAMA_SHEET_READER_MODEL", "").strip() or OLLAMA_COMPLEX_MODEL
+)
 OLLAMA_MAX_CONCURRENT_REQUESTS: int = int(os.getenv("OLLAMA_MAX_CONCURRENT_REQUESTS", "1"))
 GEMINI_ENABLED: bool = os.getenv("GEMINI_ENABLED", "false").strip().lower() == "true"
 GEMINI_FALLBACK_ENABLED: bool = os.getenv("GEMINI_FALLBACK_ENABLED", "false").strip().lower() == "true"
@@ -307,6 +311,7 @@ def gemini_generate_with_retry(
     avoid_model: str | None = None,
     avoid_models: list[str] | set[str] | None = None,
     task_id: str | None = None,
+    local_model: str | None = None,
 ) -> object:
     """Route existing OCR/agent calls through the shared capability router."""
     from services.router import model_router
@@ -401,7 +406,7 @@ def gemini_generate_with_retry(
         avoid_models=avoid_models,
         task_id=task_id,
         response_json_schema=response_schema,
-        force_model=model if AI_PROVIDER == "gemini" else None,
+        force_model=model if AI_PROVIDER == "gemini" else local_model,
     )
     return _ModelOutputWrapper(
         text=response.text,

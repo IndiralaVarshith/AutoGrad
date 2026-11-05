@@ -620,6 +620,11 @@ export default function Upload({ examId = 'varshith', onExamIdChange, onGoToDash
               <p className="text-xs font-mono text-[#8c9099]">
                 Exam: {singleResult.exam_id}
               </p>
+              {singleResult.page_readers?.length > 0 && (
+                <p className="text-[11px] font-mono text-[#717680]">
+                  Read by: {singleResult.page_readers.map((r) => `p${r.page} ${r.model}${r.status === 'READ' ? '' : ` (${r.status})`}`).join(', ')}
+                </p>
+              )}
             </div>
 
             <div className="flex items-center gap-4">

@@ -138,6 +138,7 @@ class PaperResult(BaseModel):
     rubric_version: str = ""
     ocr_pages: list[OCRPageResult] = Field(default_factory=list)
     unmapped_answers: list[dict] = Field(default_factory=list)
+    page_readers: list[dict] = Field(default_factory=list)  # which model read each page
 
 
 # =========================================================

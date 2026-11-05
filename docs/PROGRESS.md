@@ -31,7 +31,7 @@ Branch `wip`. Update after every step so a new session can resume.
 ## Checklist
 - [x] Baseline: 195 passed, 2 failed (test_e2e D, E), 2 skipped. Cause: resolver excludes both models, so one critic REJECT crashes the sheet. Fix in A3.
 - [x] A1 Marking criteria: `services/criteria_draft.py`, `POST /exam/{id}/rubric/draft-criteria`, Setup page key upload and correct-option picker; approval blocks empty or blank criteria and MCQs without a valid option.
-- [ ] A2 Read an answer sheet
+- [x] A2 Read an answer sheet: `OLLAMA_SHEET_READER_MODEL` (also shown at `GET /` and on the Upload result), `PaperResult.page_readers`, unmatched numbers saved as `NOT_ON_PAPER`, unreadable pages flag, faint pages skipped, `local_only` scope blocks automatic Gemini escalation.
 - [ ] A3 Grade each answer
 - [ ] A4 Evaluation script
 - [ ] A5 Tune on 10 sheets, compare two models
@@ -41,3 +41,7 @@ Branch `wip`. Update after every step so a new session can resume.
 - `c_ocr` is fixed at 0, which caps confidence at 0.80 under the 0.85 auto-accept line, so every answer flags today. A3 must replace this.
 - MCQs have no deterministic path in `process_paper`. A3 must add one.
 - Both models silently fix spelling and copy struck-out text. A2 prompt must address this.
+- Real `.env` has all Gemini flags on. `pipeline.process_paper` and `regrade_question_text` run in `local_only()`. A3 must cap `generate_gemini_verification` at 20 per run and send crops only.
+- `Student_Pdf` red ink audit (pixel count, no content read): 1 of 200 raw pages has teacher ink, Student_4 page 3, a tuning sheet. No report sheet affected. `Corrected_Pdf`: 173 of 200.
+- Struck-out text still partly leaks into transcripts (Student_4 Q21 "have has", Q25 "Self-driving car"). Known reader limit; compare models in A5.
+- Student number written with nothing after it comes back as empty text (Student_4 Q30, 33, 35), which is correct.
