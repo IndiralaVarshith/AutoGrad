@@ -156,7 +156,7 @@ def page_image(ink=False):
     draw.line((0, 30, 1000, 30), fill=0, width=6)
     if ink:
         for x in range(200, 800, 40):  # short strokes, like handwriting
-            draw.rectangle((x, 200, x + 20, 300), fill=20)
+            draw.rectangle((x, 200, x + 8, 300), fill=20)
     out = io.BytesIO()
     image.save(out, "JPEG")
     return out.getvalue()
