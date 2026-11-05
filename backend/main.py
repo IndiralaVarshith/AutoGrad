@@ -107,7 +107,11 @@ def root():
 @app.get("/health")
 def health_check():
     """Health check for local dev and load balancers."""
-    return {"status": "healthy", "provider": AI_PROVIDER}
+    return {
+        "status": "healthy",
+        "provider": AI_PROVIDER,
+        "firestore_emulator": bool(os.getenv("FIRESTORE_EMULATOR_HOST", "").strip()),
+    }
 
 
 # =========================================================

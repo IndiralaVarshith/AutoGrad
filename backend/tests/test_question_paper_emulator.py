@@ -823,3 +823,9 @@ def test_food_security_scan_whole_flow(client, firestore_client, monkeypatch, ca
     assert db_service.get_question_paper(EXAM)["verification_status"] == "TEACHER_CONFIRMED"
     approved = client.get(f"/exam/{EXAM}/rubric").json()
     assert approved["total_marks"] == 20.0 and len(approved["questions"]) == 12
+
+
+def test_health_reports_emulator_mode():
+    from main import health_check
+
+    assert health_check()["firestore_emulator"] is True

@@ -6,8 +6,8 @@
  */
 
 import { initializeApp, getApps } from "firebase/app";
-import { getAuth } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
+import { connectAuthEmulator, getAuth } from "firebase/auth";
+import { connectFirestoreEmulator, getFirestore } from "firebase/firestore";
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyDummyKeyForDevelopmentMode00",
@@ -18,10 +18,31 @@ const firebaseConfig = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID || "1:1234567890:web:abcdef123456",
 };
 
+// Emulator mode (npm run dev:emulator): a "demo-" project cannot reach real Firebase,
+// so no real project settings are used at all.
+const firestoreEmulatorHost = import.meta.env.VITE_FIRESTORE_EMULATOR_HOST;
+const authEmulatorUrl = import.meta.env.VITE_AUTH_EMULATOR_URL;
+const useEmulators = Boolean(firestoreEmulatorHost && authEmulatorUrl);
+const emulatorConfig = {
+  apiKey: "demo-key",
+  authDomain: "demo-autograd.firebaseapp.com",
+  projectId: "demo-autograd",
+  appId: "demo-app",
+};
+
 // Initialize Firebase once
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
+const isFirstInit = getApps().length === 0;
+const app = isFirstInit
+  ? initializeApp(useEmulators ? emulatorConfig : firebaseConfig)
+  : getApps()[0];
 
 export const auth = getAuth(app);
 export const db = getFirestore(app);
+
+if (useEmulators && isFirstInit) {
+  const [host, port] = firestoreEmulatorHost.split(":");
+  connectFirestoreEmulator(db, host, Number(port));
+  connectAuthEmulator(auth, authEmulatorUrl, { disableWarnings: true });
+}
 
 export default app;

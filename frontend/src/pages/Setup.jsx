@@ -154,7 +154,7 @@ export default function Setup({ onExamApproved, onExamIdChange, initialExamId = 
         validation_status: res.rubric?.validation_status || 'VALID',
         reconciliation_notes: res.rubric?.reconciliation_notes || [],
         sections: res.rubric?.sections || [],
-        warnings: res.rubric?.extraction_warnings || [],
+        warnings: [...(res.problems || []), ...(res.rubric?.extraction_warnings || [])],
         review_items: res.rubric?.review_items || [],
         from_cache: res.from_cache || false,
         questions_count: questions.length,
@@ -376,11 +376,11 @@ export default function Setup({ onExamApproved, onExamIdChange, initialExamId = 
               <div className="border border-[#25282f] bg-[#0c0d0e] rounded p-4 text-left">
                 <div className="text-xs font-medium text-[#ededed]">Question Paper <span className="text-[#ef4444]">*</span></div>
                 <div className="text-[11px] text-[#555963] mt-0.5 mb-3 font-mono">
-                  PDF, JPG, or PNG — questions, attempt rules, and marks are auto-extracted
+                  PDF, JPG, PNG, or TXT — questions, attempt rules, and marks are auto-extracted
                 </div>
                 <input
                   type="file"
-                  accept=".pdf,.jpg,.jpeg,.png"
+                  accept=".pdf,.jpg,.jpeg,.png,.txt"
                   onChange={(e) => setQuestionFile(e.target.files[0])}
                   className="text-xs text-[#717680] file:mr-2 file:py-1 file:px-2.5 file:rounded file:border file:border-[#2e323b] file:bg-[#1a1c21] file:text-[#b0b4be] file:text-xs file:font-mono hover:file:bg-[#22252c] cursor-pointer"
                   required
