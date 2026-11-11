@@ -72,10 +72,12 @@ class QuestionGrade(BaseModel):
     regrade_required: bool = False
     grader_score: float = 0.0
     critic_score: float = 0.0
-    final_score: float = 0.0  # counts toward the total; stays 0 until accepted or confirmed
+    final_score: float = 0.0  # counts toward the total; a flagged answer's is its suggestion
     suggested_score: float | None = None  # draft shown to the teacher when flagged
     selected_option: str = ""  # MCQ only: the letter read from the sheet
-    second_opinion: dict | None = None  # stronger model's view, for the teacher; changes nothing
+    second_opinion: dict | None = None  # the second pass's reading and mark, for the teacher
+    blank: bool = False  # no answer was found on the sheet, so 0
+    extra: bool = False  # answered beyond what the paper asks; a better answer counts instead
     flag_reason: str = ""  # why this answer needs review
     local_routing: str = ""  # routing before any Gemini check
     criteria: list[CriterionResult] = Field(default_factory=list)
@@ -148,6 +150,7 @@ class PaperResult(BaseModel):
     unmapped_answers: list[dict] = Field(default_factory=list)
     page_readers: list[dict] = Field(default_factory=list)  # which model read each page
     sheet_problems: list[str] = Field(default_factory=list)
+    double_checked: bool = False  # a second, independent pass marked the sheet too
     source_sha256: str = ""  # which file these marks came from
     page_count: int = 0
     teacher_approved: bool = False  # only a teacher's approval makes a sheet final
@@ -172,6 +175,8 @@ class RubricApproveRequest(BaseModel):
     doc_fingerprint: str = ""
     gen_fingerprint: str = ""
     total_marks: float | None = None
+    marking_style: str = ""  # GENEROUS | BALANCED | STRICT; empty uses the configured default
+    marking_notes: str = ""  # the teacher's own marking rules, in plain words
 
 
 class StudentMeta(BaseModel):

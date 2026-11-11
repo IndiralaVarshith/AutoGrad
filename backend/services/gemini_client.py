@@ -246,9 +246,10 @@ class GeminiClient:
         review: bool = False,
         estimated_tokens: int = 0,
         max_output_tokens: int | None = None,
+        model: str | None = None,
     ) -> GeminiResult:
         """One logical request. Retries only when no answer came back."""
-        model = config.GEMINI_REVIEW_MODEL if review else config.GEMINI_MODEL
+        model = model or (config.GEMINI_REVIEW_MODEL if review else config.GEMINI_MODEL)
         if review and not model:
             raise RunCapReached("No stronger review model is configured.")
         generation_config = self._generation_config(

@@ -1,18 +1,23 @@
 import React, { useState, useEffect } from 'react';
+import { ArrowRight, Check, CheckCircle2, ChevronDown, FileText, Layers, Loader2, RotateCcw, Sparkles, X, Zap } from 'lucide-react';
 import api from '../api';
 import QueueStatus from '../components/QueueStatus';
 import ConfidenceBadge from '../components/ConfidenceBadge';
 import EvidenceTable from '../components/EvidenceTable';
+import {
+  Button, Callout, CountUp, Dropzone, Expand, PageHeader, Pill, ProgressBar, Skeleton, cx, errorText, formatBytes,
+} from '../components/ui';
+import { useFeedback } from '../components/feedback';
 
 const evaluationStages = [
-  { id: 'uploading', label: 'Uploading answer sheet' },
-  { id: 'extracting_pages', label: 'Extracting PDF pages' },
-  { id: 'reading_handwriting', label: 'Reading handwritten answers' },
-  { id: 'identifying_answers', label: 'Identifying question-wise responses' },
-  { id: 'rubric_matching_and_grading', label: 'Evaluating against the approved rubric' },
-  { id: 'verifying', label: 'Verifying evidence and calculations' },
-  { id: 'calculating', label: 'Calculating final marks' },
-  { id: 'completed', label: 'Evaluation completed' },
+  { id: 'uploading', label: 'Uploading the sheet' },
+  { id: 'extracting_pages', label: 'Preparing the pages' },
+  { id: 'reading_handwriting', label: 'Reading the handwriting' },
+  { id: 'identifying_answers', label: 'Finding each answer' },
+  { id: 'rubric_matching_and_grading', label: 'Marking against the approved marks' },
+  { id: 'verifying', label: 'Checking evidence and sums' },
+  { id: 'calculating', label: 'Adding up the marks' },
+  { id: 'completed', label: 'Finished' },
 ];
 
 const terminalJobStatuses = new Set(['COMPLETE', 'NEEDS_REVIEW', 'FAILED', 'TIMED_OUT', 'CANCELLED']);
@@ -29,9 +34,44 @@ const evaluationStageIndex = (stage) => {
   return 0;
 };
 
-export default function Upload({ examId = 'varshith', onExamIdChange, onGoToDashboard, active = true }) {
-  const [selectedExamId, setSelectedExamId] = useState(examId);
-  const [availableExams, setAvailableExams] = useState([]);
+function QuestionReport({ q }) {
+  const [open, setOpen] = useState(false);
+  const flagged = q.routing !== 'AUTO_ACCEPT';
+  return (
+    <div className="lazy-card overflow-hidden rounded-xl border border-line">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        className="flex w-full flex-wrap items-center gap-2 px-4 py-3 text-left transition-colors hover:bg-sunken"
+      >
+        <ChevronDown size={16} aria-hidden="true" className={cx('text-muted transition-transform duration-300', open ? 'rotate-0' : '-rotate-90')} />
+        <span className="font-semibold">Q{q.question_number}{q.sub_part ? `(${q.sub_part})` : ''}</span>
+        {q.question_type && <Pill>{q.question_type}</Pill>}
+        {flagged
+          ? <ConfidenceBadge routing={q.routing === 'MANUAL' ? 'MANUAL' : 'FLAGGED'} score={q.c_final} />
+          : <ConfidenceBadge routing="AUTO_ACCEPT" score={q.c_final} />}
+        <span className="ml-auto text-sm font-semibold tabular-nums">{q.final_score} of {q.max_marks}</span>
+      </button>
+      <Expand open={open}>
+        <div className="space-y-3 border-t border-line p-4">
+          <div>
+            <div className="mb-1 text-[13px] font-semibold text-muted">What the student wrote, as read by AutoGrade</div>
+            <p className="rounded-lg bg-sunken p-3 text-sm whitespace-pre-wrap">{q.extracted_text || 'No answer text found for this question.'}</p>
+          </div>
+          {q.criteria?.length > 0 && <EvidenceTable criteria={q.criteria} />}
+          <p className="text-[13px] text-muted tabular-nums">
+            Confidence {(q.c_final * 100).toFixed(0)}% · reading {(q.c_ocr * 100).toFixed(0)}% · agreement {(q.c_agree * 100).toFixed(0)}% · evidence {(q.c_evid * 100).toFixed(0)}%
+            {q.model_used ? ` · ${q.model_used}` : ''}
+          </p>
+        </div>
+      </Expand>
+    </div>
+  );
+}
+
+export default function Upload({ examId = '', onGoToDashboard, onGoToReview, onGoToSetup, active = true }) {
+  const selectedExamId = examId;
   const [files, setFiles] = useState([]);
   const [studentMeta, setStudentMeta] = useState([]);
   const [uploading, setUploading] = useState(false);
@@ -39,8 +79,9 @@ export default function Upload({ examId = 'varshith', onExamIdChange, onGoToDash
   const [statusMsg, setStatusMsg] = useState('');
   const [error, setError] = useState('');
   const [queue, setQueue] = useState(null);
+  const { toast } = useFeedback();
 
-  // Approved rubric state from Firestore
+  // Approved rubric state
   const [rubricInfo, setRubricInfo] = useState(null);
   const [rubricLoading, setRubricLoading] = useState(false);
 
@@ -51,12 +92,6 @@ export default function Upload({ examId = 'varshith', onExamIdChange, onGoToDash
   const [uploadTransferPercent, setUploadTransferPercent] = useState(null);
   const [pollGeneration, setPollGeneration] = useState(0);
 
-  useEffect(() => {
-    if (examId && examId !== selectedExamId) {
-      setSelectedExamId(examId);
-    }
-  }, [examId, selectedExamId]);
-
   // Live queue progress. It survives a page reload or a backend restart.
   useEffect(() => {
     const id = selectedExamId.trim();
@@ -64,6 +99,7 @@ export default function Upload({ examId = 'varshith', onExamIdChange, onGoToDash
       setQueue(null);
       return undefined;
     }
+    if (!active) return undefined;
     let stopped = false;
     const refresh = async () => {
       try {
@@ -79,35 +115,13 @@ export default function Upload({ examId = 'varshith', onExamIdChange, onGoToDash
       stopped = true;
       clearInterval(timer);
     };
-  }, [selectedExamId]);
+  }, [selectedExamId, active]);
 
-  // Fetch list of exams from Firestore on mount
-  useEffect(() => {
-    const fetchExams = async () => {
-      try {
-        const res = await api.getExams();
-        if (res && res.exams) {
-          setAvailableExams(res.exams);
-        }
-      } catch {
-        // ignore
-      }
-    };
-    fetchExams();
-  }, []);
-
-  const handleExamIdChange = (newId) => {
-    setSelectedExamId(newId);
-    if (onExamIdChange) {
-      onExamIdChange(newId);
-    }
-  };
-
-  // Check approved rubric status in Firestore whenever exam ID changes
+  // Check for an approved rubric whenever the exam changes.
   useEffect(() => {
     if (!selectedExamId.trim()) {
       setRubricInfo(null);
-      return;
+      return undefined;
     }
 
     let isMounted = true;
@@ -122,10 +136,8 @@ export default function Upload({ examId = 'varshith', onExamIdChange, onGoToDash
       } catch (err) {
         if (isMounted) {
           setRubricInfo(null);
-          setError(
-            err.response?.data?.detail
-            || 'Could not verify the approved rubric with the backend.',
-          );
+          // "None yet" has its own friendly banner. Only a real failure is an error.
+          setError(err.response?.status === 404 ? '' : errorText(err, 'Could not check for approved marks.'));
         }
       } finally {
         if (isMounted) setRubricLoading(false);
@@ -140,28 +152,28 @@ export default function Upload({ examId = 'varshith', onExamIdChange, onGoToDash
 
   useEffect(() => {
     if (!evaluationJobId) return undefined;
-    let active = true;
+    let polling = true;
     let timer;
 
     const poll = async () => {
       try {
         const job = await api.getEvaluationJob(evaluationJobId);
-        if (!active) return;
+        if (!polling) return;
         setEvaluationJob(job);
 
         if (terminalJobStatuses.has(job.status)) {
           setEvaluatingSingle(false);
           if (job.status === 'COMPLETE' || job.status === 'NEEDS_REVIEW') {
             if (!job.result) {
-              setStatusMsg('Teacher validation required. No marks were generated because no compatible model could complete this task.');
-              setError(job.error || job.stage_detail || 'The answer sheet is pending teacher validation.');
+              setStatusMsg('');
+              setError(job.error || job.stage_detail || 'A teacher needs to check this sheet. No marks were given, because no model could finish the work.');
               return;
             }
             setSingleResult(job.result);
             setStatusMsg(
               job.status === 'NEEDS_REVIEW'
-                ? `Evaluation completed with ${job.score}/${job.max_score}; teacher review is required.`
-                : `Evaluation completed with ${job.score}/${job.max_score}.`,
+                ? `Draft marks: ${job.score} of ${job.max_score}. ${job.result.flagged_count > 0 ? `${job.result.flagged_count} ${job.result.flagged_count === 1 ? 'answer needs' : 'answers need'} a teacher's check; the rest are marked.` : 'A teacher needs to check this sheet.'}`
+                : `Draft marks: ${job.score} of ${job.max_score}.`,
             );
             setError('');
           } else {
@@ -177,25 +189,20 @@ export default function Upload({ examId = 'varshith', onExamIdChange, onGoToDash
 
         timer = setTimeout(poll, 1200);
       } catch (pollError) {
-        if (!active) return;
+        if (!polling) return;
         setEvaluatingSingle(false);
-        setError(
-          pollError.response?.data?.detail
-          || pollError.message
-          || 'Could not retrieve evaluation status from the backend.',
-        );
+        setError(errorText(pollError, 'Could not get the progress of this sheet.'));
       }
     };
 
     poll();
     return () => {
-      active = false;
+      polling = false;
       clearTimeout(timer);
     };
   }, [evaluationJobId, pollGeneration]);
 
-  const handleFileSelection = (e) => {
-    const fileList = Array.from(e.target.files);
+  const handleFileSelection = (fileList) => {
     if (fileList.length === 0) return;
 
     setFiles(fileList);
@@ -203,51 +210,36 @@ export default function Upload({ examId = 'varshith', onExamIdChange, onGoToDash
     setEvaluationJobId('');
     setEvaluationJob(null);
     setUploadTransferPercent(null);
+    setStatusMsg('');
 
     // The whole file name: splitting it would give Student_4 and Student_5 the same ticket.
-    const generatedMeta = fileList.map((f) => ({
+    setStudentMeta(fileList.map((f) => ({
       hall_ticket: f.name.replace(/\.[^/.]+$/, '').trim(),
       name: '',
       filename: f.name,
-    }));
-
-    setStudentMeta(generatedMeta);
+    })));
   };
 
   const handleMetaChange = (index, field, value) => {
-    const updated = [...studentMeta];
-    updated[index][field] = value;
-    setStudentMeta(updated);
+    setStudentMeta((list) => list.map((m, i) => (i === index ? { ...m, [field]: value } : m)));
   };
 
   const handleRemoveFile = (index) => {
     const updatedFiles = files.filter((_, i) => i !== index);
-    const updatedMeta = studentMeta.filter((_, i) => i !== index);
     setFiles(updatedFiles);
-    setStudentMeta(updatedMeta);
+    setStudentMeta(studentMeta.filter((_, i) => i !== index));
     if (updatedFiles.length === 0) setSingleResult(null);
   };
 
   // Submit one student and poll the persistent background evaluation job.
   const handleSingleStudentEvaluation = async () => {
-    if (files.length === 0) {
-      setError('Please select one student answer sheet file.');
-      return;
-    }
-    if (!selectedExamId.trim()) {
-      setError('Please provide an Exam ID.');
-      return;
-    }
-    if (!rubricInfo) {
-      setError(`Cannot evaluate: No approved rubric exists in Firestore for exam '${selectedExamId}'. Please approve a rubric first.`);
-      return;
-    }
+    if (files.length === 0 || !selectedExamId.trim() || !rubricInfo) return;
 
     let accepted = false;
     try {
       setEvaluatingSingle(true);
       setError('');
-      setStatusMsg('Uploading answer sheet...');
+      setStatusMsg('');
       setEvaluationJob(null);
       setEvaluationJobId('');
       setUploadTransferPercent(0);
@@ -267,16 +259,15 @@ export default function Upload({ examId = 'varshith', onExamIdChange, onGoToDash
         }
       });
       if (!res.job_id) {
-        throw new Error('Backend accepted the upload without returning an evaluation job ID.');
+        throw new Error('The server accepted the upload but returned no job to track.');
       }
       accepted = true;
       setEvaluationJobId(res.job_id);
       setEvaluationJob(res);
       setPollGeneration((value) => value + 1);
-      setStatusMsg('Answer sheet accepted. Tracking the evaluation job returned by the backend.');
     } catch (err) {
       console.error('Single evaluation error:', err);
-      setError(err.response?.data?.detail || err.message || 'Evaluation failed.');
+      setError(errorText(err, 'Evaluation failed.'));
     } finally {
       if (!accepted) setEvaluatingSingle(false);
     }
@@ -286,14 +277,14 @@ export default function Upload({ examId = 'varshith', onExamIdChange, onGoToDash
     if (!evaluationJobId) return;
     try {
       setError('');
-      setStatusMsg('Retrying the failed evaluation using its retained preprocessing and OCR cache...');
+      setStatusMsg('');
       setSingleResult(null);
       const job = await api.retryEvaluationJob(evaluationJobId);
       setEvaluationJob(job);
       setEvaluatingSingle(true);
       setPollGeneration((value) => value + 1);
     } catch (err) {
-      setError(err.response?.data?.detail || err.message || 'Could not retry the evaluation.');
+      setError(errorText(err, 'Could not retry the evaluation.'));
     }
   };
 
@@ -302,23 +293,16 @@ export default function Upload({ examId = 'varshith', onExamIdChange, onGoToDash
     try {
       const job = await api.cancelEvaluationJob(evaluationJobId);
       setEvaluationJob((current) => ({ ...current, ...job }));
-      setStatusMsg('Cancellation requested. It will take effect at the next safe stage boundary.');
+      toast.info('Cancelling. It stops at the next safe point.');
     } catch (err) {
-      setError(err.response?.data?.detail || err.message || 'Could not cancel the evaluation.');
+      setError(errorText(err, 'Could not cancel the evaluation.'));
     }
   };
 
   // Bulk or Queue Upload
   const handleUpload = async (e) => {
     e.preventDefault();
-    if (files.length === 0) {
-      setError('Please select at least one answer sheet file.');
-      return;
-    }
-    if (!selectedExamId.trim()) {
-      setError('Please provide an Exam ID.');
-      return;
-    }
+    if (files.length === 0 || !selectedExamId.trim()) return;
 
     try {
       setUploading(true);
@@ -332,99 +316,103 @@ export default function Upload({ examId = 'varshith', onExamIdChange, onGoToDash
         formData.append('files', f);
       });
 
-      const metaPayload = studentMeta.map((m) => ({
+      formData.append('student_meta', JSON.stringify(studentMeta.map((m) => ({
         hall_ticket: m.hall_ticket,
         name: m.name,
-      }));
-      formData.append('student_meta', JSON.stringify(metaPayload));
+      }))));
 
       const res = await api.uploadAnswerSheets(formData);
 
-      setStatusMsg(res.message || `Queued ${res.queued ?? files.length} answer sheets.`);
-      
+      toast.success(res.message || `Queued ${res.queued ?? files.length} answer sheets.`);
+      // Cleared so the same sheets cannot be sent twice by a second press.
+      setFiles([]);
+      setStudentMeta([]);
+      setQueue(await api.getQueueStatus(selectedExamId.trim()).catch(() => queue));
     } catch (err) {
       console.error('Upload error:', err);
-      setError(err.response?.data?.detail || err.message || 'Bulk upload failed.');
+      setError(errorText(err, 'The upload failed.'));
     } finally {
       setUploading(false);
     }
   };
 
+  const activeIndex = evaluationStageIndex(evaluationJob?.current_stage || (evaluationJobId ? 'queued' : 'uploading'));
+  const totalSize = files.reduce((sum, file) => sum + file.size, 0);
+
   return (
-    <div className="max-w-5xl mx-auto py-6 px-4 sm:px-6 space-y-5">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-[#22242a] pb-4">
-        <div>
-          <h1 className="text-lg font-bold text-[#ededed] tracking-tight">
-            Answer Sheet Ingestion & Evaluation
-          </h1>
-          <p className="text-xs text-[#717680] mt-0.5 font-mono">
-            Evaluate student handwritten sheets against the teacher-approved Firestore rubric
-          </p>
-        </div>
-
-        {onGoToDashboard && (
-          <button
-            onClick={onGoToDashboard}
-            className="px-3 py-1.5 rounded text-xs font-mono bg-[#16181d] hover:bg-[#202227] text-[#c4c7cf] border border-[#26282f] transition-colors"
-          >
-            View Dashboard →
-          </button>
+    <div className="mx-auto max-w-4xl space-y-5 px-4 py-8 sm:px-6">
+      <PageHeader
+        eyebrow="Step 2 of 4"
+        title="Add the answer sheets"
+        subtitle="Drop in the students' handwritten sheets. AutoGrade reads them one at a time and drafts marks for you to check."
+        actions={onGoToDashboard && (
+          <Button variant="ghost" onClick={onGoToDashboard}>
+            See results
+            <ArrowRight size={16} aria-hidden="true" />
+          </Button>
         )}
-      </div>
+      />
 
-      {error && (
-        <div className="p-3 rounded bg-[#241212] border border-[#441d1d] text-[#ef4444] text-xs font-mono">
-          {error}
+      {error && <Callout tone="bad" onDismiss={() => setError('')}>{error}</Callout>}
+      {statusMsg && <Callout tone="good" onDismiss={() => setStatusMsg('')}>{statusMsg}</Callout>}
+
+      {!selectedExamId.trim() ? (
+        <Callout tone="info" title="Choose an exam first" action={<Button size="sm" onClick={onGoToSetup}>Go to Setup</Button>}>
+          Use the Exam ID menu at the top of the page, or set up a new exam.
+        </Callout>
+      ) : rubricLoading && !rubricInfo ? (
+        <Skeleton className="h-16 rounded-xl" />
+      ) : rubricInfo ? (
+        <div className="fade flex flex-wrap items-center gap-3 rounded-xl bg-good-soft px-4 py-3 text-sm">
+          <CheckCircle2 size={18} className="shrink-0 text-good" aria-hidden="true" />
+          <span>
+            <strong>{selectedExamId}</strong> is ready: {rubricInfo.questions?.length || 0} questions, {rubricInfo.total_marks || 0} marks approved.
+          </span>
         </div>
+      ) : (
+        <Callout
+          tone="warn"
+          title={`No approved marks for “${selectedExamId}” yet`}
+          action={<Button size="sm" onClick={onGoToSetup}>Go to Setup</Button>}
+        >
+          Sheets cannot be marked until a teacher approves the marks.
+        </Callout>
       )}
 
-      {statusMsg && (
-        <div className="p-3 rounded bg-[#112217] border border-[#1b3825] text-[#4ade80] text-xs font-mono">
-          {statusMsg}
-        </div>
-      )}
-
-      {/* Queue Status Widget */}
       {queue?.total_jobs > 0 && (
         <QueueStatus
           queue={queue}
-          onResume={async () => setQueue(await api.resumeQueue(selectedExamId.trim()))}
+          onGoToReview={onGoToReview}
+          onResume={async () => {
+            try {
+              setQueue(await api.resumeQueue(selectedExamId.trim()));
+            } catch (err) {
+              toast.error(errorText(err, 'Could not resume the queue.'));
+            }
+          }}
         />
       )}
 
       {(evaluatingSingle || evaluationJob) && (
-        <section className="rounded border border-[#22242a] bg-[#121316] p-4 space-y-3" aria-live="polite">
+        <section className="card rise space-y-4 p-5" aria-live="polite" aria-label="Sheet progress">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h2 className="text-xs font-mono uppercase tracking-wider text-[#c4c7cf]">
-                Answer-sheet evaluation
-              </h2>
-              <p className="mt-1 text-[11px] font-mono text-[#8c9099]">
-                {evaluationJob?.job_id
-                  ? `Job ${evaluationJob.job_id} · ${evaluationJob.status || 'PENDING'}`
-                  : uploadTransferPercent === null
-                    ? 'Preparing upload'
-                    : `Uploading answer sheet · ${uploadTransferPercent}% transferred`}
+              <h2 className="text-lg">Marking one sheet</h2>
+              <p className="mt-0.5 text-sm text-muted">
+                {evaluationJob?.stage_detail
+                  || (evaluationJobId ? 'Waiting for news from the server' : `Uploading: ${uploadTransferPercent ?? 0}%`)}
               </p>
             </div>
             {evaluationJobId && evaluationJob && !terminalJobStatuses.has(evaluationJob.status) && (
-              <button
-                type="button"
-                onClick={handleCancelEvaluation}
-                className="text-[11px] font-mono text-[#f59e0b] hover:text-[#fbbf24]"
-              >
-                Cancel evaluation
-              </button>
+              <Button variant="ghost" size="sm" onClick={handleCancelEvaluation}>Cancel</Button>
             )}
           </div>
 
-          <ol className="grid gap-2 sm:grid-cols-2">
+          {!evaluationJobId && <ProgressBar value={uploadTransferPercent ?? 0} label="Upload progress" />}
+
+          <ol className="grid gap-x-6 gap-y-2 sm:grid-cols-2">
             {evaluationStages.map((stage, index) => {
               const isPending = evaluationJob?.status === 'PENDING';
-              const activeIndex = evaluationStageIndex(
-                evaluationJob?.current_stage || (evaluationJobId ? 'queued' : 'uploading'),
-              );
               const isActive = !isPending && index === activeIndex && (evaluatingSingle || !evaluationJobId);
               const isDone = (evaluationJobId && index === 0) || index < activeIndex || (
                 index === evaluationStages.length - 1
@@ -432,301 +420,143 @@ export default function Upload({ examId = 'varshith', onExamIdChange, onGoToDash
                   || (evaluationJob?.status === 'NEEDS_REVIEW' && evaluationJob?.result))
               );
               return (
-                <li
-                  key={stage.id}
-                  className={`flex items-center gap-2 text-[11px] font-mono ${
-                    isActive ? 'text-[#38bdf8]' : isDone ? 'text-[#4ade80]' : 'text-[#555963]'
-                  }`}
-                >
-                  <span aria-hidden="true">{isDone ? '✓' : isActive ? '●' : '○'}</span>
-                  <span>{stage.label}</span>
+                <li key={stage.id} className={cx('flex items-center gap-2.5 text-sm transition-colors duration-300', isActive ? 'font-semibold text-ink' : isDone ? 'text-ink' : 'text-muted')}>
+                  <span
+                    className={cx(
+                      'grid size-5 shrink-0 place-items-center rounded-full transition-colors duration-300',
+                      isDone ? 'bg-primary text-on-primary' : isActive ? 'bg-primary-soft text-primary' : 'bg-sunken',
+                    )}
+                    aria-hidden="true"
+                  >
+                    {isDone ? <Check size={12} strokeWidth={3} className="pop" /> : isActive ? <Loader2 size={12} className="spin" /> : null}
+                  </span>
+                  {stage.label}
+                  {isDone && <span className="sr-only">(done)</span>}
+                  {isActive && <span className="sr-only">(in progress)</span>}
                 </li>
               );
             })}
           </ol>
-          <p className="text-[11px] font-mono text-[#8c9099]">
-            {evaluationJob?.stage_detail
-              || (evaluationJobId ? 'Waiting for backend stage details...' : 'Upload transfer progress is shown above.')}
-          </p>
 
           {evaluationJob && ['FAILED', 'TIMED_OUT'].includes(evaluationJob.status) && (
-            <button
-              type="button"
-              onClick={handleRetryEvaluation}
-              className="rounded bg-[#b45309] px-3 py-1.5 text-[11px] font-mono text-white hover:bg-[#92400e]"
-            >
-              Retry evaluation
-            </button>
+            <Button variant="primary" icon={RotateCcw} onClick={handleRetryEvaluation}>Try this sheet again</Button>
           )}
         </section>
       )}
 
-      {/* Upload Form */}
-      <div className="space-y-5">
-        <div className="bg-[#121316] border border-[#22242a] rounded p-5 space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div className="text-xs font-mono uppercase tracking-wider text-[#8c9099] font-medium">
-              Target Examination
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-[11px] font-mono text-[#717680]">Exam ID:</span>
-              <input
-                type="text"
-                value={selectedExamId}
-                onChange={(e) => handleExamIdChange(e.target.value)}
-                placeholder="varshith"
-                className="bg-[#0c0d0e] border border-[#25282f] rounded px-2.5 py-1 text-xs text-[#ededed] font-mono focus:outline-none focus:border-[#404552]"
-                required
-              />
-            </div>
-          </div>
+      <div className="card space-y-4 p-5 sm:p-6">
+        <Dropzone
+          multiple
+          title="Drop answer sheets here, or click to choose"
+          hint="PDF, JPG or PNG. You can add many at once."
+          accept=".pdf,.jpg,.jpeg,.png"
+          disabled={evaluatingSingle}
+          files={files}
+          onFiles={handleFileSelection}
+          onReject={toast.error}
+        />
 
-          {/* Quick Exam Selectors */}
-          {availableExams.length > 0 && (
-            <div className="flex items-center gap-1.5 flex-wrap pt-1 border-t border-[#1a1c21]">
-              <span className="text-[10px] font-mono text-[#717680]">Configured Exams:</span>
-              {availableExams.map((ex) => (
-                <button
-                  key={ex.exam_id}
-                  type="button"
-                  onClick={() => handleExamIdChange(ex.exam_id)}
-                  className={`text-[10px] font-mono px-2 py-0.5 rounded border transition-colors cursor-pointer ${
-                    selectedExamId === ex.exam_id
-                      ? 'bg-[#1e2533] text-[#38bdf8] border-[#294263]'
-                      : 'bg-[#0e1013] text-[#8c9099] border-[#20232a] hover:bg-[#16181f]'
-                  }`}
-                >
-                  {ex.exam_id} {ex.total_marks ? `(${ex.total_marks}M)` : ''}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {/* Firestore Rubric Verification Banner */}
-          <div className="p-3 rounded border text-xs font-mono">
-            {rubricLoading ? (
-              <span className="text-[#8c9099]">Checking Firestore for approved rubric...</span>
-            ) : rubricInfo ? (
-              <div className="text-[#4ade80] flex items-center justify-between">
-                <span>
-                  ✓ Approved Rubric (Version {rubricInfo.version || 1}) loaded from Firestore: {rubricInfo.questions?.length || 0} questions, {rubricInfo.total_marks || 0} marks.
-                </span>
-                <span className="text-[10px] text-[#717680]">Ready for evaluation</span>
-              </div>
-            ) : (
-              <div className="text-[#f59e0b]">
-                ⚠️ No approved rubric found in Firestore for exam '{selectedExamId}'. Go to the "Setup Exam" tab to generate and approve a rubric first.
-              </div>
-            )}
-          </div>
-
-          {/* Flat Drop Area */}
-          <div className="border border-[#25282f] bg-[#0c0d0e] rounded p-6 text-center">
-            <div className="text-xs font-medium text-[#ededed]">
-              Select Handwritten Answer Sheet (PDF or Image)
-            </div>
-            <p className="text-[11px] text-[#555963] mt-0.5 mb-3 font-mono">
-              Upload one student's handwritten paper to run end-to-end evaluation
-            </p>
-            <input
-              type="file"
-              multiple
-              accept=".pdf,.jpg,.jpeg,.png"
-              disabled={evaluatingSingle}
-              onChange={handleFileSelection}
-              className="text-xs text-[#717680] file:mr-2 file:py-1.5 file:px-3 file:rounded file:border file:border-[#2e323b] file:bg-[#1a1c21] file:text-[#b0b4be] file:text-xs file:font-mono hover:file:bg-[#22252c] cursor-pointer"
-            />
-          </div>
-
-          {/* Student Metadata Table */}
-          {files.length > 0 && (
-            <div className="space-y-2 pt-2">
-              <div className="flex items-center justify-between text-[11px] font-mono text-[#717680]">
-                <span>Student Paper Details ({files.length} paper{files.length > 1 ? 's' : ''})</span>
-                <span>Confirm Roll No / Name</span>
-              </div>
-
-              <div className="overflow-x-auto rounded border border-[#22242a] bg-[#0c0d0e]">
-                <table className="w-full text-left text-xs border-collapse">
-                  <thead>
-                    <tr className="border-b border-[#22242a] text-[#8c9099] font-mono text-[11px] bg-[#14161a]">
-                      <th className="py-2 px-3 font-medium">File</th>
-                      <th className="py-2 px-3 font-medium">Hall Ticket / Roll No.</th>
-                      <th className="py-2 px-3 font-medium">Student Name</th>
-                      <th className="py-2 px-3 text-center w-12 font-medium"></th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#1a1c21]">
-                    {studentMeta.map((m, idx) => (
-                      <tr key={idx} className="hover:bg-[#121316]">
-                        <td className="py-1.5 px-3 text-[#717680] font-mono text-[11px] truncate max-w-[200px]">
-                          {m.filename}
-                        </td>
-                        <td className="py-1.5 px-3">
-                          <input
-                            type="text"
-                            value={m.hall_ticket}
-                            disabled={evaluatingSingle}
-                            onChange={(e) => handleMetaChange(idx, 'hall_ticket', e.target.value)}
-                            className="w-full bg-[#121316] border border-[#22242a] rounded px-2 py-0.5 text-xs text-[#ededed] font-mono focus:outline-none"
-                          />
-                        </td>
-                        <td className="py-1.5 px-3">
-                          <input
-                            type="text"
-                            value={m.name}
-                            disabled={evaluatingSingle}
-                            onChange={(e) => handleMetaChange(idx, 'name', e.target.value)}
-                            className="w-full bg-[#121316] border border-[#22242a] rounded px-2 py-0.5 text-xs text-[#ededed] focus:outline-none"
-                          />
-                        </td>
-                        <td className="py-1.5 px-3 text-center">
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveFile(idx)}
-                            disabled={evaluatingSingle}
-                            className="text-[#555963] hover:text-[#ef4444] text-xs"
-                          >
-                            ×
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Action Buttons */}
         {files.length > 0 && (
-          <div className="flex items-center justify-end gap-3">
-            {files.length === 1 && (
-              <button
-                type="button"
-                onClick={handleSingleStudentEvaluation}
-                disabled={evaluatingSingle || !rubricInfo}
-                className="bg-[#10b981] hover:bg-[#059669] text-white font-medium py-2 px-5 rounded text-xs font-mono transition-colors cursor-pointer disabled:opacity-50"
-              >
-                {evaluatingSingle ? 'Evaluation in progress...' : '⚡ Evaluate One Answer Sheet'}
-              </button>
-            )}
+          <div className="rise space-y-3">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <h2 className="text-lg">
+                {files.length} {files.length === 1 ? 'sheet' : 'sheets'}
+                <span className="ml-2 font-sans text-sm font-normal text-muted">{formatBytes(totalSize)}</span>
+              </h2>
+              <p className="text-[13px] text-muted">Check each roll number. The student's name is optional.</p>
+            </div>
 
-            <button
-              type="button"
-              onClick={handleUpload}
-              disabled={uploading || !rubricInfo}
-              className="bg-[#2563eb] hover:bg-[#1d4ed8] text-white font-medium py-2 px-5 rounded text-xs font-mono transition-colors cursor-pointer disabled:opacity-50"
-            >
-              {uploading ? 'Dispatching...' : `Submit to Queue (${files.length} Papers)`}
-            </button>
+            <ul className="divide-y divide-line rounded-xl border border-line">
+              {studentMeta.map((m, idx) => (
+                <li key={m.filename} className="rise grid gap-2 p-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-center" style={{ '--i': Math.min(idx, 8) }}>
+                  <span className="flex min-w-0 items-center gap-2 text-sm">
+                    <FileText size={16} className="shrink-0 text-muted" aria-hidden="true" />
+                    <span className="truncate" title={m.filename}>{m.filename}</span>
+                  </span>
+                  <input
+                    value={m.hall_ticket}
+                    disabled={evaluatingSingle}
+                    aria-label={`Roll number for ${m.filename}`}
+                    placeholder="Roll number"
+                    onChange={(e) => handleMetaChange(idx, 'hall_ticket', e.target.value)}
+                    className="input min-h-9 py-1.5 text-sm"
+                  />
+                  <input
+                    value={m.name}
+                    disabled={evaluatingSingle}
+                    aria-label={`Student name for ${m.filename}`}
+                    placeholder="Student name (optional)"
+                    onChange={(e) => handleMetaChange(idx, 'name', e.target.value)}
+                    className="input min-h-9 py-1.5 text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveFile(idx)}
+                    disabled={evaluatingSingle}
+                    aria-label={`Remove ${m.filename}`}
+                    className="icon-btn justify-self-end hover:text-bad!"
+                  >
+                    <X size={16} aria-hidden="true" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+
+            <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+              {files.length === 1 && (
+                <Button icon={Zap} loading={evaluatingSingle} disabled={!rubricInfo} onClick={handleSingleStudentEvaluation}>
+                  {evaluatingSingle ? 'Marking' : 'Mark this one now'}
+                </Button>
+              )}
+              <Button variant="primary" size="lg" icon={Layers} loading={uploading} disabled={!rubricInfo || evaluatingSingle} onClick={handleUpload}>
+                {uploading ? 'Sending' : `Submit to Queue (${files.length})`}
+              </Button>
+            </div>
           </div>
         )}
       </div>
 
-      {/* Immediate Evaluation Result Report (Phase 8) */}
       {singleResult && (
-        <div className="mt-8 bg-[#121316] border border-[#26282f] rounded p-6 space-y-6">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-[#22242a] gap-2">
-            <div>
-              <div className="text-[11px] font-mono text-[#717680] uppercase">
-                Official Evaluation Report
+        <section className="card rise space-y-5 p-5 sm:p-6" aria-label="Draft marks for this sheet">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 text-[13px] font-semibold text-primary">
+                <Sparkles size={14} aria-hidden="true" />
+                Draft marks, not final
               </div>
-              <h2 className="text-base font-bold text-[#ededed] mt-0.5">
-                {singleResult.student_name} ({singleResult.hall_ticket})
-              </h2>
-              <p className="text-xs font-mono text-[#8c9099]">
-                Exam: {singleResult.exam_id}
-              </p>
+              <h2 className="mt-1 text-xl">{singleResult.student_name || singleResult.hall_ticket}</h2>
+              {singleResult.student_name && <p className="text-sm text-muted">{singleResult.hall_ticket}</p>}
               {singleResult.page_readers?.length > 0 && (
-                <p className="text-[11px] font-mono text-[#717680]">
-                  Read by: {singleResult.page_readers.map((r) => `p${r.page} ${r.model}${r.status === 'READ' ? '' : ` (${r.status})`}`).join(', ')}
+                <p className="mt-1 text-[13px] text-muted">
+                  Read by: {singleResult.page_readers.map((r) => `page ${r.page} ${r.model}${r.status === 'READ' ? '' : ` (${r.status})`}`).join(', ')}
                 </p>
               )}
             </div>
-
-            <div className="flex items-center gap-4">
-              <div className="text-right">
-                <div className="text-2xl font-bold font-mono text-[#ededed]">
-                  {singleResult.total_score} <span className="text-sm font-normal text-[#717680]">/ {singleResult.max_total}</span>
-                </div>
-                <div className="text-[11px] font-mono text-[#8c9099]">
-                  {((singleResult.total_score / (singleResult.max_total || 1)) * 100).toFixed(1)}% Marks
-                </div>
+            <div className="text-right">
+              <div className="font-display text-4xl font-semibold">
+                <CountUp value={Number(singleResult.total_score) || 0} decimals={Number.isInteger(Number(singleResult.total_score)) ? 0 : 1} />
+                <span className="ml-1 font-sans text-base font-normal text-muted">of {singleResult.max_total}</span>
               </div>
-
-              <div>
-                <ConfidenceBadge status={singleResult.status} confidence={singleResult.avg_confidence} />
+              <div className="mt-1">
+                <ConfidenceBadge
+                  routing={singleResult.status === 'NEEDS_REVIEW' || singleResult.flagged_count > 0 ? 'FLAGGED' : 'AUTO_ACCEPT'}
+                  score={singleResult.avg_confidence}
+                />
               </div>
             </div>
           </div>
 
-          {/* Question-wise Breakdown */}
-          <div className="space-y-4">
-            <h3 className="text-xs font-mono uppercase tracking-wider text-[#8c9099] font-medium">
-              Question-wise Detailed Breakdown
-            </h3>
-
-            {singleResult.questions?.map((q, idx) => (
-              <div key={idx} className="bg-[#0c0d0e] border border-[#22242a] rounded p-4 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono font-bold text-xs text-[#ededed]">
-                      Q{q.question_number}{q.sub_part ? `(${q.sub_part})` : ''}
-                    </span>
-                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#181a1f] text-[#8c9099] border border-[#26282f]">
-                      {q.question_type}
-                    </span>
-                    {q.model_used && (
-                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#141d26] text-[#38bdf8] border border-[#1e2e3e]">
-                        {q.model_used}
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="text-xs font-mono font-bold text-[#ededed]">
-                    {q.final_score} / {q.max_marks} marks
-                  </div>
-                </div>
-
-                {/* Extracted student text */}
-                <div>
-                  <div className="text-[11px] font-mono text-[#717680] mb-1">Student's Extracted Answer:</div>
-                  <div className="bg-[#121316] border border-[#1e2026] rounded p-2.5 text-xs text-[#c4c7cf] font-mono whitespace-pre-wrap leading-relaxed">
-                    {q.extracted_text || '(No answer text extracted for this question)'}
-                  </div>
-                </div>
-
-                {/* Evidence & Criteria Table */}
-                {q.criteria && q.criteria.length > 0 && (
-                  <div className="pt-2">
-                    <EvidenceTable criteria={q.criteria} />
-                  </div>
-                )}
-
-                {/* Confidence & Routing Warning */}
-                <div className="flex items-center justify-between pt-2 border-t border-[#181a1f] text-[11px] font-mono">
-                  <span className="text-[#717680]">
-                    Confidence: {(q.c_final * 100).toFixed(0)}% (OCR: {(q.c_ocr * 100).toFixed(0)}%, Agree: {(q.c_agree * 100).toFixed(0)}%, Evid: {(q.c_evid * 100).toFixed(0)}%)
-                  </span>
-                  <span className={q.routing === 'AUTO_ACCEPT' ? 'text-[#4ade80]' : 'text-[#f59e0b]'}>
-                    {q.routing === 'AUTO_ACCEPT' ? '✓ Auto-Accepted' : '⚠️ Flagged for Teacher Review'}
-                  </span>
-                </div>
-              </div>
-            ))}
+          <div className="space-y-2">
+            {singleResult.questions?.map((q, idx) => <QuestionReport key={idx} q={q} />)}
           </div>
 
-          <div className="pt-2 text-right">
-            <button
-              onClick={onGoToDashboard}
-              className="px-4 py-2 rounded text-xs font-mono bg-[#2563eb] hover:bg-[#1d4ed8] text-white transition-colors"
-            >
-              Open in Evaluation Dashboard →
-            </button>
+          <div className="flex justify-end">
+            <Button variant="primary" onClick={onGoToReview}>
+              Go to Review
+              <ArrowRight size={16} aria-hidden="true" />
+            </Button>
           </div>
-        </div>
+        </section>
       )}
     </div>
   );

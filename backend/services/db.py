@@ -212,6 +212,8 @@ class DatabaseService:
                 "created_at": exam_data.get("created_at", now),
                 "updated_at": now,
                 "total_marks": paper.get("total_marks", 0.0),
+                "question_count": len(paper.get("questions") or []),
+                "paper_filename": paper.get("source_filename", exam_data.get("paper_filename", "")),
                 # The same file again must not undo an approval.
                 "status": exam_data.get("status", "PROPOSED") if keep_status else "PROPOSED",
                 "question_paper_fingerprint": new_fingerprint,
@@ -256,6 +258,8 @@ class DatabaseService:
         total_marks: float | None = None,
         teacher_confirmed: bool = False,
         checked_total: float | None = None,
+        marking_style: str = "",
+        marking_notes: str = "",
     ) -> dict[str, Any]:
         """
         Persist a teacher-approved grading rubric.
@@ -322,6 +326,8 @@ class DatabaseService:
             and latest.get("questions") == serialized_questions
             and latest.get("total_marks") == total_exam_marks
             and latest.get("doc_fingerprint", "") == doc_fingerprint
+            and latest.get("marking_style", "") == marking_style
+            and latest.get("marking_notes", "") == marking_notes
         ):
             if teacher_confirmed and confirmed_paper_ref:
                 confirmed_paper_ref.set(self._confirmation_fields(), merge=True)
@@ -346,6 +352,8 @@ class DatabaseService:
             "doc_fingerprint": doc_fingerprint,
             "gen_fingerprint": gen_fingerprint,
             "teacher_confirmed": teacher_confirmed,
+            "marking_style": marking_style,
+            "marking_notes": marking_notes,
         }
 
         # All writes succeed or fail together.
@@ -372,6 +380,8 @@ class DatabaseService:
             "doc_fingerprint": doc_fingerprint,
             "gen_fingerprint": gen_fingerprint,
             "teacher_confirmed": teacher_confirmed,
+            "marking_style": marking_style,
+            "marking_notes": marking_notes,
         }
         batch.set(exam_ref.collection("rubric").document("approved"), sub_data)
 
@@ -459,6 +469,57 @@ class DatabaseService:
             print(f"[DB] Rubric query fallback error for exam '{exam_id}': {e}")
 
         return None
+
+    # =========================================================
+    # DELETING
+    # =========================================================
+
+    def _delete_tree(self, doc_ref) -> int:
+        """Delete a document and everything under it. Returns how many documents went."""
+        count = 0
+        for collection in doc_ref.collections():
+            for child in collection.stream():
+                count += self._delete_tree(child.reference)
+        doc_ref.delete()
+        return count + 1
+
+    def _delete_where(self, client: Client, collection: str, field: str, value: str) -> int:
+        count = 0
+        for doc in client.collection(collection).where(field, "==", value).stream():
+            doc.reference.delete()
+            count += 1
+        return count
+
+    def delete_exam(self, exam_id: str) -> dict[str, Any]:
+        """Delete an exam: its paper, every rubric version, every graded sheet and its logs."""
+        client = self.db
+        if not client:
+            raise RuntimeError("Firestore is unavailable.")
+        exam_ref = client.collection("exams").document(exam_id)
+        hall_tickets = [doc.id for doc in exam_ref.collection("results").stream()]
+        documents = self._delete_tree(exam_ref)
+        for collection in ("rubrics", "grading_results", "submissions"):
+            documents += self._delete_where(client, collection, "exam_id", exam_id)
+        print(f"[DB] Deleted exam {exam_id}: {len(hall_tickets)} graded sheets, {documents} documents")
+        return {"hall_tickets": hall_tickets, "documents": documents}
+
+    def delete_result(self, exam_id: str, hall_ticket: str) -> bool:
+        """Delete one graded sheet and its review log. Returns whether there was one."""
+        client = self.db
+        if not client:
+            raise RuntimeError("Firestore is unavailable.")
+        exam_ref = client.collection("exams").document(exam_id)
+        result_ref = exam_ref.collection("results").document(hall_ticket)
+        existed = result_ref.get().exists
+        self._delete_tree(result_ref)
+        self._delete_tree(exam_ref.collection("queue").document(hall_ticket))
+        for doc in exam_ref.collection("review_logs").where("hall_ticket", "==", hall_ticket).stream():
+            doc.reference.delete()
+        record_id = f"{exam_id}_{hall_ticket}"
+        client.collection("grading_results").document(record_id).delete()
+        client.collection("submissions").document(record_id).delete()
+        print(f"[DB] Deleted graded sheet {record_id}")
+        return existed
 
     # =========================================================
     # SUBMISSION OPERATIONS

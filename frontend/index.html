@@ -3,12 +3,20 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>AutoGrade — Examination Evaluation System</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <meta name="description" content="AutoGrade drafts marks for handwritten exam sheets. The teacher checks and decides." />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>AutoGrade</title>
+    <script>
+      // Set the theme before the first paint, so the page never flashes the wrong one.
+      (function () {
+        var saved = null;
+        try { saved = localStorage.getItem('autograde_theme'); } catch (e) { /* private window */ }
+        var dark = saved ? saved === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+        document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+      })();
+    </script>
   </head>
-  <body class="bg-[#0c0d0e] text-[#e1e4ea] antialiased">
+  <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>

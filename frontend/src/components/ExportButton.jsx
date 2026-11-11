@@ -1,5 +1,8 @@
 import React, { useState } from 'react';
+import { Download } from 'lucide-react';
 import api from '../api';
+import { Button } from './ui';
+import { useFeedback } from './feedback';
 
 function saveFile(response, fallbackName) {
   const disposition = response.headers['content-disposition'] || '';
@@ -16,6 +19,7 @@ function saveFile(response, fallbackName) {
 
 export default function ExportButton({ examId, disabled = false }) {
   const [downloading, setDownloading] = useState(false);
+  const { toast, confirm } = useFeedback();
 
   const handleExport = async () => {
     if (!examId || disabled) return;
@@ -24,32 +28,31 @@ export default function ExportButton({ examId, disabled = false }) {
       setDownloading(true);
       try {
         saveFile(await api.downloadExport(examId), fallback);
+        toast.success('Final spreadsheet downloaded.');
       } catch (err) {
         if (err.response?.status !== 409) throw err;
         const detail = JSON.parse(await err.response.data.text()).detail;
-        if (window.confirm(`${detail.message}\n\nDownload the copy marked NOT FINAL?`)) {
+        const wantsDraft = await confirm({
+          title: 'Not all sheets are final',
+          body: `${detail.message} Its file name, sheet title and a column all say so.`,
+          confirmLabel: 'Download NOT FINAL copy',
+        });
+        if (wantsDraft) {
           saveFile(await api.downloadExport(examId, true), fallback);
+          toast.info('Downloaded the copy marked NOT FINAL.');
         }
       }
     } catch (err) {
       console.error('Export download error:', err);
-      alert('Failed to download export. Ensure results exist for this exam.');
+      toast.error('Could not download the spreadsheet. Check that this exam has results.');
     } finally {
       setDownloading(false);
     }
   };
 
   return (
-    <button
-      onClick={handleExport}
-      disabled={disabled || downloading || !examId}
-      className={`inline-flex items-center gap-2 px-3 py-1.5 rounded text-xs font-mono font-medium transition-colors ${
-        disabled || !examId
-          ? 'bg-[#151619] text-[#4d515a] border border-[#202227] cursor-not-allowed'
-          : 'bg-[#1c1e23] hover:bg-[#24272e] text-[#d6d9e0] border border-[#2e323b] cursor-pointer'
-      }`}
-    >
-      <span>{downloading ? 'Exporting...' : 'Export Spreadsheet (.xlsx)'}</span>
-    </button>
+    <Button variant="primary" icon={Download} loading={downloading} disabled={disabled || !examId} onClick={handleExport}>
+      Export
+    </Button>
   );
 }

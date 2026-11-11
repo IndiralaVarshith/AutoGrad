@@ -1,20 +1,150 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { BarChart3, Check, ClipboardCheck, FileUp, GraduationCap, LogOut, Moon, NotebookPen, Sun } from 'lucide-react';
 import api from './api';
 import Login from './pages/Login';
 import Setup from './pages/Setup';
 import Upload from './pages/Upload';
 import Dashboard from './pages/Dashboard';
 import Review from './pages/Review';
+import ExamSwitcher from './components/ExamSwitcher';
+import { Tip, cx, useSlidingThumb } from './components/ui';
+
+const STEPS = [
+  { id: 'setup', label: 'Setup', hint: 'Add the exam paper and approve the marks', icon: NotebookPen },
+  { id: 'upload', label: 'Upload', hint: "Add the students' answer sheets", icon: FileUp },
+  { id: 'review', label: 'Review', hint: 'Check the answers that need a teacher', icon: ClipboardCheck },
+  { id: 'dashboard', label: 'Results', hint: 'See the scores and export the spreadsheet', icon: BarChart3 },
+];
+
+const LOGO = (
+  <span className="grid size-8 shrink-0 place-items-center rounded-[0.6rem] bg-primary text-on-primary">
+    <GraduationCap size={18} aria-hidden="true" />
+  </span>
+);
+
+function storedPage() {
+  try {
+    const saved = sessionStorage.getItem('autograde_current_page');
+    return STEPS.some((step) => step.id === saved) ? saved : 'setup';
+  } catch {
+    return 'setup';
+  }
+}
+
+function storedExam() {
+  try {
+    return sessionStorage.getItem('autograde_current_exam_id') || '';
+  } catch {
+    return '';
+  }
+}
+
+function ThemeToggle() {
+  const [theme, setTheme] = useState(() => document.documentElement.dataset.theme || 'light');
+
+  const toggle = () => {
+    const next = theme === 'dark' ? 'light' : 'dark';
+    setTheme(next);
+    document.documentElement.dataset.theme = next;
+    try {
+      localStorage.setItem('autograde_theme', next);
+    } catch {
+      // Private window: it just will not be remembered.
+    }
+  };
+
+  return (
+    <Tip text={theme === 'dark' ? 'Switch to light' : 'Switch to dark'} className="tip-down tip-end">
+      <button type="button" onClick={toggle} className="icon-btn" aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}>
+        <span key={theme} className="pop grid place-items-center">
+          {theme === 'dark' ? <Sun size={18} aria-hidden="true" /> : <Moon size={18} aria-hidden="true" />}
+        </span>
+      </button>
+    </Tip>
+  );
+}
+
+function StepNav({ currentPage, onChange, status }) {
+  const { container, style } = useSlidingThumb(currentPage);
+
+  return (
+    <nav ref={container} aria-label="Steps" className="relative hidden items-center rounded-xl bg-sunken p-1 md:flex">
+      <span className="thumb rounded-[0.6rem] bg-surface shadow-soft" style={style} aria-hidden="true" />
+      {STEPS.map((step, index) => {
+        const active = currentPage === step.id;
+        const done = status[step.id]?.done;
+        const count = status[step.id]?.count;
+        return (
+          <Tip key={step.id} text={step.hint} className="tip-down">
+            <button
+              type="button"
+              data-active={active}
+              aria-current={active ? 'step' : undefined}
+              onClick={() => onChange(step.id)}
+              className={cx(
+                'relative flex items-center gap-2 rounded-[0.6rem] px-3 py-1.5 text-sm font-semibold transition-colors duration-200',
+                active ? 'text-ink' : 'text-muted hover:text-ink',
+              )}
+            >
+              <span
+                className={cx(
+                  'grid size-5 place-items-center rounded-full text-[11px] font-bold transition-colors duration-300',
+                  done ? 'bg-primary text-on-primary' : active ? 'bg-ink text-paper' : 'bg-line text-muted',
+                )}
+              >
+                {done ? <Check size={12} strokeWidth={3} aria-label="Done" /> : index + 1}
+              </span>
+              {step.label}
+              {count > 0 && (
+                <span className="rounded-full bg-warn-soft px-1.5 text-xs font-bold text-warn tabular-nums" aria-label={`${count} sheets need review`}>
+                  {count}
+                </span>
+              )}
+            </button>
+          </Tip>
+        );
+      })}
+    </nav>
+  );
+}
+
+function MobileNav({ currentPage, onChange, status }) {
+  return (
+    <nav aria-label="Steps" className="fixed inset-x-0 bottom-0 z-50 grid grid-cols-4 border-t border-line bg-surface pb-[env(safe-area-inset-bottom)] md:hidden">
+      {STEPS.map((step) => {
+        const Icon = step.icon;
+        const active = currentPage === step.id;
+        const count = status[step.id]?.count;
+        return (
+          <button
+            key={step.id}
+            type="button"
+            onClick={() => onChange(step.id)}
+            aria-current={active ? 'step' : undefined}
+            className={cx(
+              'relative flex flex-col items-center gap-0.5 py-2.5 text-xs font-semibold transition-colors',
+              active ? 'text-primary' : 'text-muted',
+            )}
+          >
+            <Icon size={20} aria-hidden="true" />
+            {step.label}
+            {count > 0 && (
+              <span className="absolute top-1.5 left-[calc(50%+6px)] rounded-full bg-warn-soft px-1.5 text-[11px] font-bold text-warn">{count}</span>
+            )}
+          </button>
+        );
+      })}
+    </nav>
+  );
+}
 
 export default function App() {
   const [signedIn, setSignedIn] = useState(null);
-  const [currentPage, setCurrentPage] = useState(() => {
-    return sessionStorage.getItem('autograde_current_page') || 'setup';
-  });
-  const [currentExamId, setCurrentExamId] = useState(() => {
-    return sessionStorage.getItem('autograde_current_exam_id') || '';
-  });
-  const [selectedHallTicket, setSelectedHallTicket] = useState(null);
+  const [currentPage, setCurrentPage] = useState(storedPage);
+  const [currentExamId, setCurrentExamId] = useState(storedExam);
+  const [openRequest, setOpenRequest] = useState(null);
+  const [progress, setProgress] = useState({ rubric: false, sheets: 0, flagged: 0, final: 0 });
+  const [examListVersion, setExamListVersion] = useState(0);
 
   // The server decides who is signed in, from its session cookie.
   useEffect(() => {
@@ -23,26 +153,57 @@ export default function App() {
       .catch(() => setSignedIn(false));
   }, []);
 
-  const handlePageChange = (page) => {
+  const handlePageChange = useCallback((page) => {
     setCurrentPage(page);
+    window.scrollTo({ top: 0 });
     try {
       sessionStorage.setItem('autograde_current_page', page);
-    } catch (e) {
+    } catch {
       // ignore
     }
-  };
+  }, []);
 
-  const handleExamIdChange = (newExamId) => {
-    if (newExamId && typeof newExamId === 'string') {
-      const trimmed = newExamId.trim();
-      setCurrentExamId(trimmed);
-      try {
-        sessionStorage.setItem('autograde_current_exam_id', trimmed);
-      } catch (e) {
-        // ignore
-      }
+  const handleExamIdChange = useCallback((newExamId) => {
+    const trimmed = (newExamId || '').trim();
+    setCurrentExamId(trimmed);
+    try {
+      sessionStorage.setItem('autograde_current_exam_id', trimmed);
+    } catch {
+      // ignore
     }
-  };
+  }, []);
+
+  // Review and Results already hold fresh sheets, so the step counts follow them with no extra request.
+  const handleResults = useCallback((papers) => {
+    setProgress((now) => ({
+      ...now,
+      sheets: papers.length,
+      flagged: papers.filter((paper) => paper.flagged_count > 0 && paper.finality_status !== 'FINAL').length,
+      final: papers.filter((paper) => paper.finality_status === 'FINAL').length,
+    }));
+  }, []);
+
+  // Shows where this exam has got to, as ticks and counts on the steps.
+  useEffect(() => {
+    if (!signedIn || !currentExamId) {
+      setProgress({ rubric: false, sheets: 0, flagged: 0, final: 0 });
+      return undefined;
+    }
+    let stopped = false;
+    Promise.allSettled([api.getExamRubric(currentExamId), api.getExamResults(currentExamId)]).then(([rubric, results]) => {
+      if (stopped) return;
+      const papers = results.status === 'fulfilled' ? results.value?.results || [] : [];
+      setProgress({
+        rubric: rubric.status === 'fulfilled',
+        sheets: papers.length,
+        flagged: papers.filter((paper) => paper.flagged_count > 0 && paper.finality_status !== 'FINAL').length,
+        final: papers.filter((paper) => paper.finality_status === 'FINAL').length,
+      });
+    });
+    return () => {
+      stopped = true;
+    };
+  }, [signedIn, currentExamId, currentPage]);
 
   const handleLogout = async () => {
     try {
@@ -53,147 +214,101 @@ export default function App() {
     setSignedIn(false);
   };
 
-  if (signedIn === null) return null;
+  if (signedIn === null) {
+    return (
+      <div className="grid min-h-dvh place-items-center" aria-label="Loading">
+        <span className="pulse-dot">{LOGO}</span>
+      </div>
+    );
+  }
   if (!signedIn) return <Login onLoginSuccess={() => setSignedIn(true)} />;
 
+  const status = {
+    setup: { done: progress.rubric },
+    upload: { done: progress.sheets > 0 },
+    review: { done: progress.sheets > 0 && progress.final === progress.sheets, count: progress.flagged },
+    dashboard: {},
+  };
+
+  const page = (id, content) => (
+    <div hidden={currentPage !== id} className={currentPage === id ? 'page-enter' : undefined}>
+      {content}
+    </div>
+  );
+
   return (
-    <div className="min-h-screen bg-[#0c0d0e] text-[#ededed] flex flex-col font-sans">
-      {/* Top Header */}
-      <header className="sticky top-0 z-50 bg-[#111215] border-b border-[#212329]">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-13 flex items-center justify-between">
-          {/* Plain Text Title */}
-          <div className="flex items-center gap-3">
-            <span className="text-sm font-semibold tracking-tight text-[#f0f2f5]">
-              AutoGrade
-            </span>
-            <span className="hidden sm:inline-block text-[#383c44]">|</span>
-            <span className="hidden sm:inline-block font-mono text-[11px] text-[#717680] uppercase tracking-wider">
-              Evaluation Workbench
-            </span>
-            {currentExamId && (
-              <span className="hidden md:inline-block font-mono text-[11px] text-[#3b82f6] bg-[#0f172a] border border-[#1e293b] px-2 py-0.5 rounded">
-                Exam: {currentExamId}
-              </span>
-            )}
+    <div className="flex min-h-dvh flex-col">
+      <header className="sticky top-0 z-50 border-b border-line bg-surface/90 backdrop-blur-md">
+        <div className="mx-auto flex h-16 max-w-[90rem] items-center gap-3 px-4 sm:px-6">
+          <div className="flex items-center gap-2.5">
+            {LOGO}
+            <span className="hidden font-display text-lg font-semibold tracking-tight lg:inline">AutoGrade</span>
           </div>
 
-          {/* Clean Flat Navigation Tabs */}
-          <nav className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={() => handlePageChange('setup')}
-              className={`px-3 py-1.5 rounded text-xs font-mono tracking-wide transition-colors cursor-pointer ${
-                currentPage === 'setup'
-                  ? 'bg-[#1e2026] text-[#ffffff] font-medium border border-[#30333c]'
-                  : 'text-[#858a94] hover:text-[#d1d5db] hover:bg-[#16171b]'
-              }`}
-            >
-              Setup
-            </button>
+          <ExamSwitcher value={currentExamId} onChange={handleExamIdChange} refreshKey={`${currentPage}:${examListVersion}`} />
 
-            <button
-              type="button"
-              onClick={() => handlePageChange('upload')}
-              className={`px-3 py-1.5 rounded text-xs font-mono tracking-wide transition-colors cursor-pointer ${
-                currentPage === 'upload'
-                  ? 'bg-[#1e2026] text-[#ffffff] font-medium border border-[#30333c]'
-                  : 'text-[#858a94] hover:text-[#d1d5db] hover:bg-[#16171b]'
-              }`}
-            >
-              Upload
-            </button>
+          <div className="flex-1" />
+          <StepNav currentPage={currentPage} onChange={handlePageChange} status={status} />
+          <div className="flex-1" />
 
-            <button
-              type="button"
-              onClick={() => handlePageChange('dashboard')}
-              className={`px-3 py-1.5 rounded text-xs font-mono tracking-wide transition-colors cursor-pointer ${
-                currentPage === 'dashboard'
-                  ? 'bg-[#1e2026] text-[#ffffff] font-medium border border-[#30333c]'
-                  : 'text-[#858a94] hover:text-[#d1d5db] hover:bg-[#16171b]'
-              }`}
-            >
-              Results
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setSelectedHallTicket(null);
-                handlePageChange('review');
-              }}
-              className={`px-3 py-1.5 rounded text-xs font-mono tracking-wide transition-colors cursor-pointer ${
-                currentPage === 'review'
-                  ? 'bg-[#1e2026] text-[#f59e0b] font-medium border border-[#3c2a17]'
-                  : 'text-[#858a94] hover:text-[#d1d5db] hover:bg-[#16171b]'
-              }`}
-            >
-              Review
-            </button>
-          </nav>
-
-          {/* User Account Info */}
-          <div className="flex items-center gap-3">
-            <div className="hidden sm:block text-right font-mono text-[11px] text-[#717680]">
-              Teacher
-            </div>
-
-            <button
-              type="button"
-              onClick={handleLogout}
-              className="px-2.5 py-1 rounded bg-[#16171b] hover:bg-[#202227] text-[#858a94] hover:text-[#c4c7cf] border border-[#23262c] text-xs font-mono transition-colors cursor-pointer"
-            >
-              Sign Out
-            </button>
+          <div className="flex items-center gap-1">
+            <ThemeToggle />
+            <Tip text="Sign out" className="tip-down tip-end">
+              <button type="button" onClick={handleLogout} className="icon-btn" aria-label="Sign out">
+                <LogOut size={18} aria-hidden="true" />
+              </button>
+            </Tip>
           </div>
         </div>
       </header>
 
-      {/* Main Content Area — Persistent mounting with CSS display control */}
-      <main className="flex-1 pb-10">
-        <div style={{ display: currentPage === 'setup' ? 'block' : 'none' }}>
+      {/* Every page stays mounted, so half-finished work survives moving between steps. */}
+      <main className="flex-1 pb-24 md:pb-12">
+        {page('setup', (
           <Setup
-            initialExamId={currentExamId}
+            examId={currentExamId}
             onExamIdChange={handleExamIdChange}
             onExamApproved={(approvedExamId) => {
               handleExamIdChange(approvedExamId);
+              setExamListVersion((version) => version + 1);
               handlePageChange('upload');
             }}
           />
-        </div>
-
-        <div style={{ display: currentPage === 'upload' ? 'block' : 'none' }}>
+        ))}
+        {page('upload', (
           <Upload
             active={currentPage === 'upload'}
             examId={currentExamId}
-            onExamIdChange={handleExamIdChange}
             onGoToDashboard={() => handlePageChange('dashboard')}
+            onGoToReview={() => handlePageChange('review')}
+            onGoToSetup={() => handlePageChange('setup')}
           />
-        </div>
-
-        <div style={{ display: currentPage === 'dashboard' ? 'block' : 'none' }}>
+        ))}
+        {page('review', (
+          <Review
+            examId={currentExamId}
+            openRequest={openRequest}
+            onResults={handleResults}
+            active={currentPage === 'review'}
+            onBackToDashboard={() => handlePageChange('dashboard')}
+            onGoToUpload={() => handlePageChange('upload')}
+          />
+        ))}
+        {page('dashboard', (
           <Dashboard
             examId={currentExamId}
+            active={currentPage === 'dashboard'}
+            onResults={handleResults}
+            onGoToUpload={() => handlePageChange('upload')}
             onGoToReview={(hallTicket) => {
-              setSelectedHallTicket(hallTicket);
+              setOpenRequest({ ticket: hallTicket });
               handlePageChange('review');
             }}
           />
-        </div>
-
-        <div style={{ display: currentPage === 'review' ? 'block' : 'none' }}>
-          <Review
-            examId={currentExamId}
-            initialHallTicket={selectedHallTicket}
-            active={currentPage === 'review'}
-            onBackToDashboard={() => handlePageChange('dashboard')}
-          />
-        </div>
+        ))}
       </main>
 
-      {/* Minimalist Flat Footer */}
-      <footer className="border-t border-[#1a1c20] bg-[#0c0d0e] py-3 text-center text-[11px] text-[#555963] font-mono">
-        AutoGrade • Examination Assessment Engine
-      </footer>
+      <MobileNav currentPage={currentPage} onChange={handlePageChange} status={status} />
     </div>
   );
 }

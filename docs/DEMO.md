@@ -56,12 +56,12 @@ Restart the emulator so the screens are clean, start all three servers, and run 
 | Step | Do | Say | Time |
 |---|---|---|---|
 | 1. Sign in | Enter the password | One shared teacher password | 10 s |
-| 2. Paper | Setup: exam ID `demo-live`, upload `Question.txt` and `answerkey.txt`, press Analyze | One request reads the paper and key. Marks come only from what is printed. | 15 s |
+| 2. Paper | Setup: exam ID `demo-live`, add `Question.txt` and `answerkey.txt`, press Analyze the paper | One request reads the paper and key. Marks come only from what is printed. | 15 s |
 | 3. Rubric | Show "Not printed" for the total, the marking points, then tick the box and press Approve | This paper prints no total, so 50 is calculated and the teacher confirms it. Nothing is marked until a teacher approves this. | 1 min |
 | 4. Sheets | Upload: choose the 5 PDFs, press Submit to Queue | One at a time, about 10 s each, with live progress | 1 min |
 | 5. Restart (optional) | Press Ctrl+C on the backend mid-queue and start it again | The queue carries on by itself. | 30 s |
 | 6. Review | Review: open Student_4 | Flagged answers first, page beside the text. Marks not decided yet do not count toward the total. | 2 min |
-| 7. Correct | Fix a mark and some text, press Save. Press Accept on another. | The teacher decides. Every override is logged. | 1 min |
+| 7. Correct | Fix a mark and some text, press Save my marks. The next flagged answer opens at once. Press Accept on another. | The teacher decides. Every override is logged. | 1 min |
 | 8. Blanks | Press "I checked: N blanks get 0" | A blank is never silently marked 0. | 15 s |
 | 9. Student_6 | Open it | About 30 flags: the student's answers are out of order, and Gemini says it worked out numbers it could not read. Flags like this are the design working. | 30 s |
 | 10. Export | Results: press Export | Refused until sheets are approved. The copy you can still get says NOT FINAL in its name, sheet title and a column. | 30 s |
@@ -79,7 +79,7 @@ and their page images, with no Gemini call:
 cd backend && FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 ../.venv/bin/python scripts/demo_backup.py restore --exam demo-5
 ```
 
-Then, in the app: Upload, type `demo-5` in **Exam ID**, then Review. Carry on from step 6, and say plainly
+Then, in the app: choose `demo-5` from the **Exam ID** menu at the top of the page, then Review. Carry on from step 6, and say plainly
 that these are saved results from an earlier run.
 
 | What you see | What it means | What to do |
@@ -89,7 +89,7 @@ that these are saved results from an earlier run.
 | Queue asks to Resume | The call cap for the batch was reached. | Press Resume. |
 | Setup shows 429 or 503 | Gemini refused the paper, and nothing was saved. | Try once, then use the backup. |
 | "Please sign in" after signing in | Opened with `127.0.0.1`, or the password changed. | Use `localhost:5173`, and sign in again. |
-| "No approved rubric" | Exam ID is wrong. | Check the Exam ID box. |
+| "No approved marks" | Exam ID is wrong. | Check the Exam ID menu at the top of the page. |
 
 ## Be straight about accuracy
 

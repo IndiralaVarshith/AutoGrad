@@ -1,51 +1,38 @@
 import React from 'react';
+import { CheckCircle2, XCircle } from 'lucide-react';
+import { Pill } from './ui';
 
-export default function EvidenceTable({ criteria = [], questionNumber, onOpenRegion }) {
+export default function EvidenceTable({ criteria = [], onOpenRegion }) {
   if (!criteria || criteria.length === 0) {
-    return (
-      <div className="text-xs text-[#6e737d] italic py-2">
-        No evaluation criteria defined for this question.
-      </div>
-    );
+    return <p className="py-1 text-sm text-muted">No marking points recorded for this question.</p>;
   }
 
   return (
-    <div className="overflow-x-auto border border-[#22242a] bg-[#111215] rounded">
-      <table className="w-full text-left text-xs border-collapse">
+    <div className="overflow-x-auto rounded-xl border border-line">
+      <table className="w-full min-w-[40rem] border-collapse text-left text-[13px]">
         <thead>
-          <tr className="border-b border-[#22242a] bg-[#15171b] text-[#8c9099] font-mono text-[11px] uppercase tracking-wider">
-            <th className="py-2.5 px-3 w-1/4 font-medium">Criterion</th>
-            <th className="py-2.5 px-3 w-2/5 font-medium">Student Answer Quote</th>
-            <th className="py-2.5 px-3 font-medium">Page Evidence</th>
-            <th className="py-2.5 px-3 text-center w-28 font-medium">Verification</th>
-            <th className="py-2.5 px-3 text-right w-20 font-medium">Score</th>
-            <th className="py-2.5 px-3 font-medium">Grader Notes</th>
+          <tr className="border-b border-line bg-sunken text-muted">
+            <th scope="col" className="w-1/4 px-3 py-2 font-semibold">Marking point</th>
+            <th scope="col" className="w-2/5 px-3 py-2 font-semibold">Quote from the answer</th>
+            <th scope="col" className="px-3 py-2 font-semibold">On the page</th>
+            <th scope="col" className="px-3 py-2 font-semibold">Quote check</th>
+            <th scope="col" className="px-3 py-2 text-right font-semibold">Marks</th>
+            <th scope="col" className="px-3 py-2 font-semibold">Notes</th>
           </tr>
         </thead>
-        <tbody className="divide-y divide-[#1c1e24]">
+        <tbody className="divide-y divide-line">
           {criteria.map((item, idx) => {
-            const isVerified = item.quote_verified;
             const hasQuote = Boolean(item.verbatim_quote && item.verbatim_quote.trim());
-
+            const takenOff = (item.marks_awarded ?? 0) < 0;
             return (
-              <tr key={idx} className="hover:bg-[#16171b] transition-colors">
-                {/* Criterion */}
-                <td className="py-2.5 px-3 text-[#d1d4db] font-normal align-top leading-relaxed">
-                  {item.criterion || `Criterion #${idx + 1}`}
+              <tr key={idx} className={`align-top transition-colors hover:bg-sunken/60${takenOff ? ' bg-bad-soft/40' : ''}`}>
+                <td className="px-3 py-2.5">{item.criterion || `Point ${idx + 1}`}</td>
+                <td className="px-3 py-2.5">
+                  {hasQuote
+                    ? <blockquote className="border-l-2 border-line-strong pl-2 text-ink">{item.verbatim_quote}</blockquote>
+                    : <span className="text-muted">No quote found</span>}
                 </td>
-
-                {/* Verbatim Quote */}
-                <td className="py-2.5 px-3 align-top font-mono text-[11px] leading-relaxed">
-                  {hasQuote ? (
-                    <div className="text-[#c4c7cf] bg-[#16181d] border border-[#242730] rounded px-2 py-1">
-                      "{item.verbatim_quote}"
-                    </div>
-                  ) : (
-                    <span className="text-[#595d66] italic">No direct citation found</span>
-                  )}
-                </td>
-
-                <td className="py-2.5 px-3 align-top font-mono text-[10px]">
+                <td className="px-3 py-2.5">
                   {item.evidence_region_ids?.length ? (
                     <div className="flex flex-wrap gap-1">
                       {item.evidence_region_ids.map((regionId) => (
@@ -53,44 +40,24 @@ export default function EvidenceTable({ criteria = [], questionNumber, onOpenReg
                           key={regionId}
                           type="button"
                           onClick={() => onOpenRegion?.(regionId)}
-                          className="px-1.5 py-0.5 rounded border border-[#3b3440] text-[#c4b5fd] hover:bg-[#211d29]"
-                          title="Open the matching original handwriting region"
+                          className="rounded-md bg-info-soft px-1.5 py-0.5 text-xs font-medium text-info"
+                          title="Open the matching handwriting"
                         >
                           {regionId}
                         </button>
                       ))}
                     </div>
-                  ) : (
-                    <span className="text-[#8a6d45]">No high-confidence region match</span>
-                  )}
+                  ) : <span className="text-muted">No clear match</span>}
                 </td>
-
-                {/* Verification Status */}
-                <td className="py-2.5 px-3 text-center align-top font-mono text-[10px]">
-                  {isVerified ? (
-                    <span className="inline-block px-1.5 py-0.5 rounded bg-[#112217] text-[#4ade80] border border-[#1b3825]">
-                      VERIFIED
-                    </span>
-                  ) : hasQuote ? (
-                    <span className="inline-block px-1.5 py-0.5 rounded bg-[#261212] text-[#ef4444] border border-[#441d1d]">
-                      UNVERIFIED
-                    </span>
-                  ) : (
-                    <span className="text-[#595d66]">—</span>
-                  )}
+                <td className="px-3 py-2.5">
+                  {item.quote_verified
+                    ? <Pill tone="good" icon={CheckCircle2}>Verified</Pill>
+                    : hasQuote
+                      ? <Pill tone="bad" icon={XCircle}>Not verified</Pill>
+                      : <span className="text-muted">None</span>}
                 </td>
-
-                {/* Marks Awarded */}
-                <td className="py-2.5 px-3 text-right font-mono font-medium text-[#e1e4ea] align-top">
-                  <span className={item.marks_awarded > 0 ? 'text-[#e1e4ea]' : 'text-[#6e737d]'}>
-                    {item.marks_awarded ?? 0}
-                  </span>
-                </td>
-
-                {/* Rationale */}
-                <td className="py-2.5 px-3 text-[#7e828d] align-top leading-relaxed text-[11px]">
-                  {item.rationale || '—'}
-                </td>
+                <td className={`px-3 py-2.5 text-right font-semibold tabular-nums${takenOff ? ' text-bad' : ''}`}>{item.marks_awarded ?? 0}</td>
+                <td className="px-3 py-2.5 text-muted">{item.rationale || 'None'}</td>
               </tr>
             );
           })}

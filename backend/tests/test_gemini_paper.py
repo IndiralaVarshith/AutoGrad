@@ -494,3 +494,145 @@ def test_figure_question_is_listed_for_review_with_its_wording_unchanged():
     paper = paper_from_extraction(extraction([figure]))
     assert paper["questions"][0]["question_text"] == "Study the graph on page 2."
     assert any("page 2" in item["reason"] for item in paper["review_items"])
+
+
+# ------------------------------------------------ the kind of paper, and how strict to mark
+
+def test_paper_type_is_tidied_and_checked_against_the_paper():
+    assert [gemini_paper.normal_paper_type(v) for v in ("mcq", " Written ", "", "other")] == ["MCQ", "WRITTEN", "MIXED", "MIXED"]
+    questions = [{"question_number": 1, "question_format": "MCQ"}, {"question_number": 2, "question_format": "SHORT_ANSWER"}]
+    assert gemini_paper.paper_type_mismatch("MIXED", questions) == ""
+    assert "Q2" in gemini_paper.paper_type_mismatch("MCQ", questions)
+    assert "Q1" in gemini_paper.paper_type_mismatch("WRITTEN", questions)
+
+
+def test_ticking_the_wrong_kind_of_paper_is_said_and_nothing_is_saved(app_client):
+    client, _, _ = app_client
+    files = {"question_paper": ("paper.txt", PAPER_TEXT, "text/plain")}
+    body = client.post("/exam/setup", data={"exam_id": "kind-1", "paper_type": "WRITTEN"}, files=files).json()
+    assert body["needs_teacher_review"] and not body["saved"]
+    assert any("handwritten paper" in problem and "Q1" in problem for problem in body["rubric"]["problems"])
+    mixed = client.post("/exam/setup", data={"exam_id": "kind-2", "paper_type": "MIXED"}, files=files).json()
+    assert mixed["saved"] and not mixed["needs_teacher_review"]
+
+
+def test_the_teachers_marking_style_is_saved_with_the_approved_marks(app_client):
+    client, _, _ = app_client
+    rubric = upload(client, "style-1").json()["rubric"]
+    rubric["questions"][0]["correct_option"] = "B"
+    payload = {
+        "exam_id": "style-1", "rubric": rubric["questions"], "teacher_confirmed": True,
+        "total_marks": rubric["total_marks"], "doc_fingerprint": rubric["doc_fingerprint"],
+        "marking_style": "strict", "marking_notes": "  Cut half a mark\nfor spelling. ",
+    }
+    first = client.post("/exam/rubric/approve", json=payload)
+    assert first.status_code == 200, first.text
+    saved = db_service.get_approved_rubric("style-1")
+    assert saved["marking_style"] == "STRICT" and saved["marking_notes"] == "Cut half a mark for spelling."
+    # Changing only the strictness is a new version, so sheets are marked again under it.
+    second = client.post("/exam/rubric/approve", json={**payload, "marking_style": "BALANCED"})
+    assert second.json()["version"] == first.json()["version"] + 1
+
+
+# ------------------------------- internal choices misread (TS X Social, Toppers DPT-6, 20 marks)
+
+def toppers_paper(any_k=None, groups=("Q9", "Q10"), section_marks=8):
+    """Section I 4 x 1, Section II 4 x 2, Section III 2 x 4 with 9(A) or 9(B), 10(A) or 10(B)."""
+    one = [question(n, marks=1.0, evidence="4 x 1 =4m", section_id="I") for n in (1, 2, 3, 4)]
+    two = [question(n, marks=2.0, evidence="4 x 2 =8m", section_id="II") for n in (5, 6, 7, 8)]
+    three = [
+        question(n, part, marks=4.0, evidence="2 x 4=8m", section_id="III", choice_group=group)
+        for n, group in zip((9, 10), groups) for part in ("A", "B")
+    ]
+    sections = [
+        {"section_id": "I", "printed_section_marks": 4},
+        {"section_id": "II", "printed_section_marks": 8},
+        {"section_id": "III", "printed_section_marks": section_marks, "answer_any_k": any_k},
+    ]
+    return extraction(one + two + three, total=20, sections=sections)
+
+
+def test_internal_choice_read_correctly_totals_twenty():
+    paper = paper_from_extraction(toppers_paper())
+    assert paper["total_marks"] == 20 and not paper["needs_teacher_review"]
+    assert not any("read again" in note for note in paper["reconciliation_notes"])
+
+
+@pytest.mark.parametrize("misread", [
+    {"any_k": 1},                                   # "answer any one alternative" taken as any 1 question
+    {"groups": ("III", "III")},                     # Q9 and Q10 put in one OR choice together
+    {"any_k": 1, "groups": ("III", "III")},
+])
+def test_a_misread_internal_choice_is_repaired_from_the_printed_marks(misread):
+    paper = paper_from_extraction(toppers_paper(**misread))
+    assert paper["total_marks"] == 20 and not paper["needs_teacher_review"], paper["problems"]
+    assert any("Section III" in note and "read again" in note for note in paper["reconciliation_notes"])
+    nine, ten = ([q for q in paper["questions"] if q["question_number"] == n] for n in (9, 10))
+    assert all(q["section_attempt_count"] is None for q in nine + ten)
+    assert nine[0]["choice_group"] == nine[1]["choice_group"] != ten[0]["choice_group"] == ten[1]["choice_group"]
+    assert [q["max_marks"] for q in paper["questions"]] == [1] * 4 + [2] * 4 + [4] * 4
+
+
+def test_no_repair_is_made_up_when_the_printed_marks_do_not_support_it():
+    # The section really is 'answer any one': printed as 1 x 4 = 4, and the paper total is 16.
+    paper = paper_from_extraction(toppers_paper(any_k=1, section_marks=4))
+    assert paper["total_marks"] == 16
+    assert not any("read again" in note for note in paper["reconciliation_notes"])
+    # A wrong total with nothing to repair stays a problem for the teacher.
+    wrong = paper_from_extraction(extraction([question(1), question(2)], total=10))
+    assert wrong["total_marks"] == 4 and wrong["needs_teacher_review"]
+
+
+def test_a_draft_read_before_the_fix_is_repaired_at_approval(app_client):
+    client, _, replies = app_client
+    replies["next"] = json.loads(toppers_paper().model_dump_json())
+    body = upload(client, "toppers").json()
+    rubric = body["rubric"]
+    for q in rubric["questions"]:  # As an old draft in the browser would have it.
+        if q["section"] == "III":
+            q["section_attempt_count"] = 1
+    response = approve(client, "toppers", rubric, 20)
+    assert response.status_code == 200, response.text
+    assert response.json()["total_marks"] == 20
+    assert any("Section III" in w for w in response.json()["warnings"])
+    saved = db_service.get_approved_rubric("toppers")
+    assert all(q["section_attempt_count"] is None for q in saved["questions"] if q["section"] == "III")
+
+
+# ------------------------------------------- marks printed once for a whole section ("4 x 2 =8m")
+
+def section_paper(q7_parts=0, instruction="II. Answer the following questions 4 x 2 =8m", unsure=()):
+    rows = [question(n, marks=2.0, evidence="4 x 2 =8m", section_id="II") for n in (5, 6, 8)]
+    if q7_parts:
+        rows += [question(7, str(i), marks=None, evidence="", section_id="II", draft_criteria=[]) for i in range(1, q7_parts + 1)]
+    else:
+        rows.append(question(7, marks=None, evidence="", section_id="II", draft_criteria=[]))
+    sections = [{"section_id": "II", "instruction_text": instruction, "printed_section_marks": 8}]
+    return extraction(rows, total=8, sections=sections, unclear=unsure)
+
+
+def test_a_question_with_no_printed_marks_takes_them_from_the_section_formula():
+    paper = paper_from_extraction(section_paper(unsure=[
+        "Question 7 marks are not explicitly printed per sub-part, but the section total is 8m.",
+    ]))
+    q7 = next(q for q in paper["questions"] if q["question_number"] == 7)
+    assert q7["max_marks"] == 2 and q7["marks_evidence"] == "4 x 2 =8m"
+    assert q7["criteria"] == [{"description": "Correct and complete answer", "max_marks": 2}]
+    assert paper["total_marks"] == 8 and not paper["needs_teacher_review"], paper["problems"]
+    assert any("Q7: worth 2" in note for note in paper["reconciliation_notes"])
+
+
+def test_map_parts_share_the_question_marks_in_half_steps():
+    paper = paper_from_extraction(section_paper(q7_parts=4))
+    parts = [q for q in paper["questions"] if q["question_number"] == 7]
+    assert [p["max_marks"] for p in parts] == [0.5] * 4 and paper["total_marks"] == 8
+    assert any("4 parts were given 0.5 each" in note for note in paper["reconciliation_notes"])
+
+
+def test_no_marks_are_invented_without_a_formula_that_adds_up():
+    for instruction in ("II. Answer the following questions", "II. 4 x 2 = 9m"):
+        paper = paper_from_extraction(section_paper(instruction=instruction))
+        q7 = next(q for q in paper["questions"] if q["question_number"] == 7)
+        assert q7["max_marks"] == 0 and paper["needs_teacher_review"]
+    paper = paper_from_extraction(section_paper(q7_parts=3))  # 2 / 3 is not a half-mark step.
+    assert all(q["max_marks"] == 0 for q in paper["questions"] if q["question_number"] == 7)

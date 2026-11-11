@@ -17,7 +17,7 @@ import config
 from services.gemini_client import GeminiClient, RunBudget, get_client
 from services.paper_intake import apply_review_items
 
-PAPER_PROMPT_VERSION = "gemini-paper-v1"
+PAPER_PROMPT_VERSION = "gemini-paper-v3"
 
 
 class QuestionFormat(str, Enum):
@@ -110,11 +110,17 @@ Return every question in the order printed. Copy question text and options word 
 Structure:
 - A question with printed sub-parts is one entry per sub-part, with the same question_number.
 - "Answer any K of N" sets answer_any_k on the section. Do not drop any questions.
+- A printed formula such as "2 x 4 = 8" means 2 answers of 4 marks each count in that section.
 - For an OR choice, return every alternative as its own entry with the same choice_group.
   If an alternative has several parts, also give those parts the same choice_alternative.
+- An internal choice, such as 9(A) OR 9(B) and 10(A) OR 10(B), is one OR choice per question
+  number: give 9(A) and 9(B) one choice_group, and 10(A) and 10(B) another. "Answer any one
+  alternative" of each question is not "answer any one question": leave answer_any_k null.
 
 Marks:
 - Use only marks the paper prints. Never estimate or divide up a total.
+- Marks printed once for a section as "N x M = T" are M marks for each question in it: give
+  every such question printed_marks M, with the formula as marks_evidence.
 - If no marks are printed for a question, printed_marks is null. Say so in unclear_items.
 - marks_evidence is the printed text copied exactly.
 
@@ -125,6 +131,43 @@ Draft rubric:
 - These are drafts. A teacher approves them later.
 
 If something is unclear, say so in unclear_items rather than guessing."""
+
+
+PAPER_TYPES = ("MCQ", "WRITTEN", "MIXED")
+
+_PAPER_TYPE_HINT = {
+    "MCQ": (
+        "\n\nThe teacher says every question on this paper is multiple choice. Give each one the"
+        " MCQ format and its options. Draft no marking points beyond the option."
+    ),
+    "WRITTEN": (
+        "\n\nThe teacher says this paper has no multiple-choice questions: every answer is written"
+        " or drawn. Do not give any question the MCQ format unless it prints lettered options."
+    ),
+}
+
+
+def normal_paper_type(value: str | None) -> str:
+    """MCQ, WRITTEN or MIXED. Anything else, or nothing, is MIXED: read whatever is printed."""
+    kind = str(value or "").strip().upper()
+    return kind if kind in PAPER_TYPES else "MIXED"
+
+
+def paper_type_mismatch(paper_type: str, questions: list[dict[str, Any]]) -> str:
+    """Say so when the paper does not match what the teacher ticked. Empty when it does."""
+    mcq = [_label(q) for q in questions if q.get("question_format") == "MCQ"]
+    written = [_label(q) for q in questions if q.get("question_format") != "MCQ"]
+    if paper_type == "MCQ" and written:
+        return (
+            "You chose a multiple-choice paper, but these look like written questions: "
+            f"{', '.join(written[:8])}. Check them, or choose Mixed."
+        )
+    if paper_type == "WRITTEN" and mcq:
+        return (
+            "You chose a handwritten paper, but these look like multiple-choice questions: "
+            f"{', '.join(mcq[:8])}. Check them, or choose Mixed."
+        )
+    return ""
 
 
 def _label(question: dict[str, Any]) -> str:
@@ -250,6 +293,165 @@ def calculate_paper_total(
     return total, problems, notes
 
 
+_FORMULA = re.compile(
+    r"(\d+)\s*[xX*×]\s*(\d+(?:\.\d+)?)\s*=\s*(\d+(?:\.\d+)?)(?:\s*(?:marks|mark|m)\b)?",
+    re.IGNORECASE,
+)
+
+
+def fill_marks_from_section_formula(
+    records: list[dict[str, Any]], sections: list[dict[str, Any]], paper_text: str = ""
+) -> list[str]:
+    """Give a question its marks from its section's printed "N x M = T" when none are printed.
+
+    Papers often print marks once per section, such as "4 x 2 = 8m": every question there is
+    worth 2. Only a whole question with no marks at all is filled. Sub-parts share the marks
+    equally only when that gives half-mark steps, and the teacher is told. Returns notes.
+    """
+    notes: list[str] = []
+    for section in sections:
+        section_id = str(section.get("section_id") or "").strip()
+        match = _FORMULA.search(str(section.get("instruction_text") or ""))
+        if not match:
+            continue
+        count, each, total = int(match.group(1)), float(match.group(2)), float(match.group(3))
+        if count <= 0 or abs(count * each - total) > 0.01:
+            continue  # A formula that does not add up proves nothing.
+        evidence = match.group(0)
+        if paper_text and _squeeze(evidence) not in _squeeze(paper_text):
+            continue
+        by_number: dict[int, list[dict[str, Any]]] = {}
+        for record in records:
+            if str(record.get("section") or "") == section_id:
+                by_number.setdefault(int(record["question_number"]), []).append(record)
+        for number, parts in by_number.items():
+            if any(float(part.get("max_marks") or 0) > 0 for part in parts):
+                continue
+            alternatives = _sum_alternatives(parts) if parts[0].get("choice_group") else None
+            if alternatives is not None and len(alternatives) == len(parts):
+                shares = {id(part): each for part in parts}  # Each OR alternative is worth M.
+            elif len(parts) == 1:
+                shares = {id(parts[0]): each}
+            else:
+                share = each / len(parts)
+                if abs(share * 2 - round(share * 2)) > 1e-6:
+                    continue
+                shares = {id(part): share for part in parts}
+                notes.append(
+                    f"Q{number}: the section prints {evidence}, so Q{number} is worth {each:g}. "
+                    f"Its {len(parts)} parts were given {share:g} each. Please check."
+                )
+            for part in parts:
+                marks = shares[id(part)]
+                part["max_marks"] = part["marks"] = marks
+                part["marks_evidence"] = evidence
+                part["marks_from_section"] = True
+                if not part.get("criteria"):
+                    part["criteria"] = [{"description": "Correct and complete answer", "max_marks": marks}]
+            if len(parts) == 1 or alternatives is not None:
+                notes.append(f"Q{number}: worth {each:g}, from the section's printed {evidence}.")
+    return notes
+
+
+def _section_of(records: list[dict[str, Any]], section_id: str) -> list[dict[str, Any]]:
+    return [r for r in records if str(r.get("section") or "") == section_id]
+
+
+def _choice_repairs(members: list[dict[str, Any]]) -> list[tuple[str, Any]]:
+    """Ways an internal choice is commonly misread, from the smallest change up.
+
+    Each is (what it changes, a function that applies it to the section's records).
+    """
+    repairs: list[tuple[str, Any]] = []
+    any_k = next((m.get("section_attempt_count") for m in members if m.get("section_attempt_count")), None)
+    groups: dict[str, set[int]] = {}
+    for member in members:
+        if member.get("choice_group"):
+            groups.setdefault(str(member["choice_group"]), set()).add(int(member["question_number"]))
+
+    def drop_any_k(records: list[dict[str, Any]]) -> None:
+        for record in records:
+            record["section_attempt_count"] = None
+
+    # One OR choice that spans several question numbers, each with its own alternatives,
+    # is really one choice per question: 9(A) or 9(B), and 10(A) or 10(B).
+    spanning = {
+        group: numbers for group, numbers in groups.items()
+        if len(numbers) > 1 and all(
+            len(_sum_alternatives([m for m in members if m.get("choice_group") == group
+                                   and int(m["question_number"]) == number])) >= 2
+            for number in numbers
+        )
+    }
+
+    def split_groups(records: list[dict[str, Any]]) -> None:
+        for record in records:
+            if record.get("choice_group") in spanning:
+                record["choice_group"] = f"{record['choice_group']}-Q{record['question_number']}"
+
+    if any_k and groups:
+        repairs.append((f"'answer any {any_k}' read as an internal choice, not a limit on questions", drop_any_k))
+    if spanning:
+        repairs.append(("one OR choice split into one per question number", split_groups))
+    if any_k and groups and spanning:
+        def both(records: list[dict[str, Any]]) -> None:
+            drop_any_k(records)
+            split_groups(records)
+        repairs.append(("both of the above", both))
+    return repairs
+
+
+def repair_choice_structure(
+    records: list[dict[str, Any]], printed_total: float | None
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Fix a misread internal choice when the paper's own printed totals prove it.
+
+    Only how the questions are grouped changes; no question's marks change. A repair is
+    used only when it makes the section match its printed marks (or, if none are printed,
+    the whole paper match its printed total). Returns new records and notes for the teacher.
+    """
+    import copy
+
+    records = copy.deepcopy(records)
+    notes: list[str] = []
+
+    def section_total(section_records: list[dict[str, Any]], section_id: str) -> float:
+        any_k = next((r.get("section_attempt_count") for r in section_records if r.get("section_attempt_count")), None)
+        return calculate_section_total(section_records, any_k, section_id)[0]
+
+    def paper_total(all_records: list[dict[str, Any]]) -> float:
+        return round(sum(
+            section_total(_section_of(all_records, s), s)
+            for s in dict.fromkeys(str(r.get("section") or "") for r in all_records)
+        ), 2)
+
+    for section_id in dict.fromkeys(str(r.get("section") or "") for r in records):
+        members = _section_of(records, section_id)
+        printed = next((r.get("section_max_marks") for r in members if r.get("section_max_marks") is not None), None)
+        current = section_total(members, section_id)
+        if printed is not None:
+            if abs(float(printed) - current) <= 0.01:
+                continue
+        elif printed_total is None or abs(float(printed_total) - paper_total(records)) <= 0.01:
+            continue
+        for description, apply in _choice_repairs(members):
+            trial = copy.deepcopy(records)
+            apply(_section_of(trial, section_id))
+            fixed = section_total(_section_of(trial, section_id), section_id)
+            matches = (
+                abs(float(printed) - fixed) <= 0.01 if printed is not None
+                else abs(float(printed_total) - paper_total(trial)) <= 0.01
+            )
+            if matches:
+                records = trial
+                notes.append(
+                    f"Section {section_id}: the choices were read again to match the printed marks "
+                    f"({description}). It now counts {fixed:g} marks, as printed. Please check."
+                )
+                break
+    return records, notes
+
+
 def _question_record(question: PaperQuestion, section: dict[str, Any]) -> dict[str, Any]:
     is_mcq = question.question_format == QuestionFormat.MCQ
     marks = question.printed_marks if (question.printed_marks or 0) > 0 else None
@@ -296,7 +498,9 @@ def _question_problems(record: dict[str, Any], paper_text: str) -> list[str]:
         problems.append(f"{label}: the paper prints no marks for this. Enter them from the paper.")
     else:
         evidence = record["marks_evidence"]
-        if not _number_in_text(marks, evidence):
+        if record.get("marks_from_section"):
+            pass  # Taken from the section's printed formula, which was already checked.
+        elif not _number_in_text(marks, evidence):
             problems.append(f"{label}: {marks:g} marks could not be matched to printed text ('{evidence}').")
         elif paper_text and _squeeze(evidence) not in _squeeze(paper_text):
             problems.append(f"{label}: the marks text '{evidence}' was not found on the paper.")
@@ -328,10 +532,26 @@ def paper_from_extraction(extraction: PaperExtraction, paper_text: str = "") -> 
         seen.add(key)
         if question.section_id.strip() not in known:
             problems.append(f"{_label(record)}: belongs to section '{question.section_id}', which was not read.")
-        problems.extend(_question_problems(record, paper_text))
         records.append(record)
+    formula_notes = fill_marks_from_section_formula(records, sections, paper_text)
+    for record in records:
+        problems.extend(_question_problems(record, paper_text))
+    if formula_notes:
+        # Gemini's own doubts about marks the printed formula has now settled are not repeated.
+        problems = [
+            p for p in problems
+            if not (p.startswith("Gemini was unsure:") and re.search(r"\bmarks?\b", p, re.IGNORECASE)
+                    and any(f"Q{n}" in note for note in formula_notes for n in re.findall(r"\d+", p)[:1]))
+        ]
 
+    records, repair_notes = repair_choice_structure(records, extraction.printed_total_marks)
+    for section in sections:
+        # The totals below read the section's rule, so it follows any repair.
+        members = _section_of(records, section["section_id"].strip())
+        if members and all(m.get("section_attempt_count") is None for m in members):
+            section["answer_any_k"] = None
     total, total_problems, notes = calculate_paper_total(records, sections, extraction.printed_total_marks)
+    notes = formula_notes + repair_notes + notes
     problems.extend(total_problems)
     printed = extraction.printed_total_marks
     return {
@@ -425,8 +645,10 @@ def read_question_paper(
     answer_key_extension: str = ".txt",
     client: GeminiClient | None = None,
     run: RunBudget | None = None,
+    paper_type: str = "",
 ) -> dict[str, Any]:
     """One request. Raises a GeminiError on failure, and then nothing gets saved."""
+    paper_type = normal_paper_type(paper_type)
     client = client or get_client()
     run = run or client.new_run()
     contents: list[Any] = ["QUESTION PAPER:", _document_part(data, extension)]
@@ -438,7 +660,7 @@ def read_question_paper(
         sheet_id="question_paper",
         contents=contents,
         response_schema=PaperExtraction,
-        system_instruction=PAPER_INSTRUCTIONS,
+        system_instruction=PAPER_INSTRUCTIONS + _PAPER_TYPE_HINT.get(paper_type, ""),
     )
     extraction = (
         result.parsed
@@ -449,6 +671,12 @@ def read_question_paper(
         return {"unreadable": True, "unclear_items": extraction.unclear_items}
     paper = paper_from_extraction(extraction, embedded_text(data, extension))
     paper["finish_reason"] = result.finish_reason
+    paper["paper_type"] = paper_type
+    mismatch = paper_type_mismatch(paper_type, paper["questions"])
+    if mismatch:
+        # The paper wins over the tick box: nothing is forced, the teacher is told.
+        paper["problems"].append(mismatch)
+        paper["needs_teacher_review"] = True
     if result.finish_reason not in ("STOP", ""):
         paper["problems"].append(
             f"Gemini's reply stopped early ({result.finish_reason}), so questions may be missing."

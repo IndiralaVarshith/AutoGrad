@@ -1,15 +1,232 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { ArrowLeft, ArrowRight, Check, CheckCircle2, Minus, Plus, RefreshCw, ShieldCheck, Sparkles, Trash2, X } from 'lucide-react';
 import api from '../api';
+import {
+  Button, Callout, CountUp, Disclosure, Dropzone, FoldingCallout, Pill, PageHeader, Segmented, Tip, cx, errorText,
+} from '../components/ui';
+import { useFeedback } from '../components/feedback';
 
-export default function Setup({ onExamApproved, onExamIdChange, initialExamId = 'varshith' }) {
-  const [examId, setExamId] = useState(initialExamId);
+const STEP_NAMES = ['Add the paper', 'Check the marks', 'Ready'];
+
+const PAPER_TYPES = [
+  { value: 'WRITTEN', label: 'Handwritten answers' },
+  { value: 'MCQ', label: 'Multiple choice' },
+  { value: 'MIXED', label: 'Both' },
+];
+const PAPER_TYPE_HINT = {
+  WRITTEN: 'Theory, diagrams, graphs and maps. Each answer is marked point by point.',
+  MCQ: 'Only option letters are read from the sheet. This is the quickest and uses the fewest tokens.',
+  MIXED: 'Option letters are checked against the key, and written answers are marked point by point.',
+};
+const MARKING_STYLES = [
+  { value: 'GENEROUS', label: 'Generous' },
+  { value: 'BALANCED', label: 'Balanced' },
+  { value: 'STRICT', label: 'Strict' },
+];
+const MARKING_STYLE_HINT = {
+  GENEROUS: 'Full marks when the student shows the idea, even briefly. Spelling loses nothing.',
+  BALANCED: 'Full marks for a point stated clearly and correctly, half when it is vague.',
+  STRICT: 'Marks come off for misspelt key terms, missing labels and incomplete points. Long answers rarely get full marks.',
+};
+
+function Stepper({ step, canReview, onStep }) {
+  return (
+    <ol className="mb-6 flex items-center gap-2">
+      {STEP_NAMES.map((name, index) => {
+        const number = index + 1;
+        const done = number < step;
+        const active = number === step;
+        const reachable = number === 1 || (number === 2 && canReview);
+        return (
+          <React.Fragment key={name}>
+            {index > 0 && (
+              <li aria-hidden="true" className="h-0.5 max-w-16 flex-1 overflow-hidden rounded-full bg-line">
+                <div className={cx('h-full origin-left bg-primary transition-transform duration-500 ease-out', number <= step ? 'scale-x-100' : 'scale-x-0')} />
+              </li>
+            )}
+            <li>
+              <button
+                type="button"
+                disabled={!reachable}
+                onClick={() => onStep(number)}
+                aria-current={active ? 'step' : undefined}
+                className={cx(
+                  'flex items-center gap-2 rounded-lg text-sm font-semibold transition-colors disabled:cursor-default',
+                  active ? 'text-ink' : done ? 'text-primary' : 'text-muted',
+                )}
+              >
+                <span
+                  className={cx(
+                    'grid size-6 place-items-center rounded-full text-xs font-bold transition-colors duration-300',
+                    done || active ? 'bg-primary text-on-primary' : 'bg-line text-muted',
+                  )}
+                >
+                  {done ? <Check size={13} strokeWidth={3} aria-hidden="true" /> : number}
+                </span>
+                <span className={active ? '' : 'hidden sm:inline'}>{name}</span>
+              </button>
+            </li>
+          </React.Fragment>
+        );
+      })}
+    </ol>
+  );
+}
+
+function ExamIdInput({ value, onCommit }) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [value]);
+
+  return (
+    <div className="max-w-md">
+      <label htmlFor="setup-exam-id" className="label">Exam ID <span className="text-bad">*</span></label>
+      <input
+        id="setup-exam-id"
+        value={draft}
+        required
+        placeholder="For example MATHS-MID-2026"
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => onCommit(draft)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            onCommit(draft);
+          }
+        }}
+        className="input"
+      />
+      <p className="hint">A short name you will recognise later. Use a new one for each exam.</p>
+    </div>
+  );
+}
+
+function MarksStepper({ value, onChange, label }) {
+  const nudge = (delta) => onChange(Math.max(0, (Number(value) || 0) + delta));
+  return (
+    <div className="inline-flex items-center rounded-[0.6rem] border border-line-strong bg-surface">
+      <button type="button" onClick={() => nudge(-0.5)} aria-label={`Lower ${label}`} className="icon-btn size-8 rounded-r-none">
+        <Minus size={14} aria-hidden="true" />
+      </button>
+      <input
+        type="number"
+        step="0.5"
+        min="0"
+        value={value}
+        aria-label={label}
+        onChange={(e) => onChange(e.target.value)}
+        className="h-8 w-11 bg-transparent text-center text-sm font-semibold tabular-nums focus:outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
+      />
+      <button type="button" onClick={() => nudge(0.5)} aria-label={`Raise ${label}`} className="icon-btn size-8 rounded-l-none">
+        <Plus size={14} aria-hidden="true" />
+      </button>
+    </div>
+  );
+}
+
+function SummaryTile({ label, children }) {
+  return (
+    <div className="rounded-xl bg-sunken px-4 py-3">
+      <div className="text-[13px] text-muted">{label}</div>
+      <div className="mt-0.5 text-xl font-semibold">{children}</div>
+    </div>
+  );
+}
+
+function QuestionCard({ q, qIdx, index, handlers }) {
+  const criteriaSum = q.criteria.reduce((s, c) => s + (Number(c.max_marks) || 0), 0);
+  const marksMatch = Math.abs(criteriaSum - Number(q.max_marks)) <= 0.05;
+
+  return (
+    <article className="card lazy-card rise p-4 sm:p-5" style={{ '--i': Math.min(index, 8) }}>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
+        <div className="flex shrink-0 flex-wrap items-center gap-1.5 pt-1.5">
+          <span className="font-display text-lg font-semibold">
+            Q{q.question_number}{q.sub_part ? `(${q.sub_part})` : ''}
+          </span>
+          {q.section && <Pill>{q.section}</Pill>}
+          {q.choice_group && <Pill tone="info">Choice</Pill>}
+        </div>
+        <textarea
+          rows={1}
+          value={q.question_text}
+          aria-label={`Text of question ${q.question_number}`}
+          onChange={(e) => handlers.questionText(qIdx, e.target.value)}
+          className="input input-quiet input-grow min-w-0 flex-1 text-sm"
+        />
+        <div className="flex shrink-0 flex-wrap items-center gap-2 text-[13px] text-muted">
+          Marks
+          <MarksStepper value={q.max_marks} label={`marks for question ${q.question_number}`} onChange={(v) => handlers.maxMarks(qIdx, v)} />
+        </div>
+      </div>
+
+      {q.question_format === 'MCQ' && (
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-[13px] text-muted">
+          Correct answer
+          <div className="flex flex-wrap gap-1">
+            {(q.options || []).map((option) => (
+              <button
+                key={option.label}
+                type="button"
+                title={option.text}
+                aria-pressed={q.correct_option === option.label}
+                onClick={() => handlers.correctOption(qIdx, q.correct_option === option.label ? '' : option.label)}
+                className={cx(
+                  'grid size-8 place-items-center rounded-lg border text-sm font-semibold transition-colors',
+                  q.correct_option === option.label
+                    ? 'border-primary bg-primary text-on-primary'
+                    : 'border-line-strong text-ink hover:bg-sunken',
+                )}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          {q.suggested_option && !q.correct_option && (
+            <Pill tone="warn">Gemini suggests {q.suggested_option}. Please confirm.</Pill>
+          )}
+          {!q.correct_option && !q.suggested_option && <Pill>Not set</Pill>}
+        </div>
+      )}
+
+      <div className="mt-3 space-y-1.5">
+        {q.criteria.map((c, cIdx) => (
+          <div key={cIdx} className="group flex items-start gap-2 rounded-xl bg-sunken p-1.5">
+            <textarea
+              rows={1}
+              value={c.description}
+              aria-label={`Marking point ${cIdx + 1}`}
+              onChange={(e) => handlers.criterion(qIdx, cIdx, 'description', e.target.value)}
+              className="input input-quiet input-grow min-w-0 flex-1 text-sm"
+            />
+            <MarksStepper value={c.max_marks} label={`marks for marking point ${cIdx + 1}`} onChange={(v) => handlers.criterion(qIdx, cIdx, 'max_marks', v)} />
+            <button type="button" onClick={() => handlers.removeCriterion(qIdx, cIdx)} aria-label={`Remove marking point ${cIdx + 1}`} className="icon-btn size-8 hover:text-bad!">
+              <X size={15} aria-hidden="true" />
+            </button>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+        <Button variant="ghost" size="sm" icon={Plus} onClick={() => handlers.addCriterion(qIdx)}>Add marking point</Button>
+        {marksMatch
+          ? <Pill tone="good" icon={CheckCircle2}>Points add up: {criteriaSum} of {Number(q.max_marks)}</Pill>
+          : <Pill tone="warn">Points add up to {criteriaSum}, but the question is worth {Number(q.max_marks)}</Pill>}
+      </div>
+    </article>
+  );
+}
+
+export default function Setup({ onExamApproved, onExamIdChange, examId = '' }) {
   const [step, setStep] = useState(1);
   const [questionFile, setQuestionFile] = useState(null);
   const [textbookFile, setTextbookFile] = useState(null);
   const [paperKeyFile, setPaperKeyFile] = useState(null);
+  const [paperType, setPaperType] = useState('MIXED');
+  const [markingStyle, setMarkingStyle] = useState('GENEROUS');
+  const [markingNotes, setMarkingNotes] = useState('');
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
+  const { toast, confirm } = useFeedback();
 
   // Rubric state for Step 2
   const [rubricQuestions, setRubricQuestions] = useState([]);
@@ -18,44 +235,52 @@ export default function Setup({ onExamApproved, onExamIdChange, initialExamId = 
   const [docFingerprint, setDocFingerprint] = useState('');
   const [hasUnsavedEdits, setHasUnsavedEdits] = useState(false);
   const [questionsChecked, setQuestionsChecked] = useState(false);
+  // Which exam the state above belongs to, so one exam's draft is never saved under another's ID.
+  const [loadedExam, setLoadedExam] = useState('');
+  const loadToken = useRef(0);
 
-  // Sync initialExamId from parent
+  // Load this exam's draft, or its approved rubric. Nothing from the last exam carries over.
   useEffect(() => {
-    if (initialExamId && initialExamId !== examId) {
-      setExamId(initialExamId);
-    }
-  }, [initialExamId]);
+    const cleanId = examId.trim();
+    loadToken.current += 1;
+    const token = loadToken.current;
 
-  // Load draft from sessionStorage or approved rubric from Firestore whenever examId changes
-  const loadStateForExam = useCallback(async (targetExamId) => {
-    if (!targetExamId || !targetExamId.trim()) return;
-    const cleanId = targetExamId.trim();
+    setStep(1);
+    setRubricQuestions([]);
+    setExtractedSummary(null);
+    setGenFingerprint('');
+    setDocFingerprint('');
+    setHasUnsavedEdits(false);
+    setQuestionsChecked(false);
+    setLoadedExam('');
+    if (!cleanId) return;
 
-    // 1. Check sessionStorage for local in-progress draft
+    // 1. A draft still in progress in this tab
     try {
       const rawDraft = sessionStorage.getItem(`autograde_setup_${cleanId}`);
-      if (rawDraft) {
-        const draft = JSON.parse(rawDraft);
-        if (draft && draft.rubricQuestions && draft.rubricQuestions.length > 0) {
-          setStep(draft.step || 2);
-          setRubricQuestions(draft.rubricQuestions);
-          setExtractedSummary(draft.extractedSummary || null);
-          setGenFingerprint(draft.genFingerprint || '');
-          setDocFingerprint(draft.docFingerprint || '');
-          setHasUnsavedEdits(Boolean(draft.hasUnsavedEdits));
-          return;
-        }
+      const draft = rawDraft ? JSON.parse(rawDraft) : null;
+      if (draft?.rubricQuestions?.length > 0) {
+        setStep(draft.step || 2);
+        setRubricQuestions(draft.rubricQuestions);
+        setExtractedSummary(draft.extractedSummary || null);
+        setGenFingerprint(draft.genFingerprint || '');
+        setDocFingerprint(draft.docFingerprint || '');
+        setHasUnsavedEdits(Boolean(draft.hasUnsavedEdits));
+        setLoadedExam(cleanId);
+        return;
       }
     } catch (e) {
       console.warn('[Setup] Failed to parse sessionStorage draft:', e);
     }
 
-    // 2. If no local draft, check Firestore for an already-approved rubric
-    try {
-      const existing = await api.getExamRubric(cleanId);
-      if (existing && existing.questions && existing.questions.length > 0) {
+    // 2. A rubric that is already approved
+    api.getExamRubric(cleanId)
+      .then((existing) => {
+        if (token !== loadToken.current || !existing?.questions?.length) return;
         setStep(2);
         setRubricQuestions(existing.questions);
+        setMarkingStyle(existing.marking_style || 'GENEROUS');
+        setMarkingNotes(existing.marking_notes || '');
         setExtractedSummary({
           total_marks: existing.total_marks || existing.questions.reduce((s, q) => s + (q.max_marks || 0), 0),
           declared_maximum_marks: existing.total_marks,
@@ -63,67 +288,60 @@ export default function Setup({ onExamApproved, onExamIdChange, initialExamId = 
           validation_status: 'VALID',
           sections: existing.sections || [],
           warnings: [],
-          reconciliation_notes: ['Loaded teacher-approved rubric from Firestore.'],
+          reconciliation_notes: ['Loaded the rubric a teacher already approved.'],
           from_cache: true,
           is_approved: true,
           version: existing.version || 1,
           rubric_id: existing.rubric_id || `${cleanId}_v1`,
           questions_count: existing.questions.length,
         });
-        setHasUnsavedEdits(false);
-      }
-    } catch (e) {
-      // No existing rubric in Firestore — that is fine, user can generate
-    }
-  }, []);
+      })
+      .catch(() => {
+        // No approved rubric yet: the teacher can generate one.
+      })
+      .finally(() => {
+        if (token === loadToken.current) setLoadedExam(cleanId);
+      });
+  }, [examId]);
 
+  // Keep the draft through a page reload.
   useEffect(() => {
-    loadStateForExam(examId);
-  }, [examId, loadStateForExam]);
-
-  // Persist draft to sessionStorage whenever rubric or summary changes
-  useEffect(() => {
-    if (!examId.trim()) return;
+    const cleanId = examId.trim();
+    if (!cleanId || loadedExam !== cleanId) return;
     try {
       if (rubricQuestions.length > 0 || extractedSummary) {
-        const draftData = {
+        sessionStorage.setItem(`autograde_setup_${cleanId}`, JSON.stringify({
           step,
-          examId: examId.trim(),
+          examId: cleanId,
           rubricQuestions,
           extractedSummary,
           genFingerprint,
           docFingerprint,
           hasUnsavedEdits,
-        };
-        sessionStorage.setItem(`autograde_setup_${examId.trim()}`, JSON.stringify(draftData));
+        }));
       }
-    } catch (e) {
+    } catch {
       // ignore quota errors
     }
-  }, [step, examId, rubricQuestions, extractedSummary, genFingerprint, docFingerprint, hasUnsavedEdits]);
-
-  const handleExamIdInputChange = (newId) => {
-    setExamId(newId);
-    if (onExamIdChange) {
-      onExamIdChange(newId);
-    }
-  };
+  }, [step, examId, loadedExam, rubricQuestions, extractedSummary, genFingerprint, docFingerprint, hasUnsavedEdits]);
 
   // Step 1: Upload question paper & generate proposed rubric
   const handleGenerateRubric = async (e, forceRegenerate = false) => {
-    if (e && e.preventDefault) e.preventDefault();
+    if (e?.preventDefault) e.preventDefault();
     if (!examId.trim()) {
-      setError('Please specify an Exam Identifier.');
+      toast.error('Please enter an Exam ID first.');
       return;
     }
     if (!questionFile) {
-      setError('Please upload a Question Paper (PDF or Image).');
+      toast.error(forceRegenerate
+        ? 'To read the paper again, add it on the first step.'
+        : 'Please add the question paper (PDF, image or text).');
+      if (forceRegenerate) setStep(1);
       return;
     }
 
     try {
       setLoading(true);
-      setError('');
 
       const formData = new FormData();
       formData.append('exam_id', examId.trim());
@@ -132,6 +350,7 @@ export default function Setup({ onExamApproved, onExamIdChange, initialExamId = 
         formData.append('textbook', textbookFile);
       }
       formData.append('force_regenerate', forceRegenerate ? 'true' : 'false');
+      formData.append('paper_type', paperType);
       if (paperKeyFile) {
         formData.append('answer_key', paperKeyFile);
       }
@@ -140,7 +359,7 @@ export default function Setup({ onExamApproved, onExamIdChange, initialExamId = 
 
       const questions = res.rubric?.questions || res.questions || [];
       if (questions.length === 0) {
-        setError('No questions were extracted from the question paper. Please verify the file is a valid question paper.');
+        toast.error('No questions were found in that file. Please check it is the question paper.');
         return;
       }
 
@@ -170,22 +389,22 @@ export default function Setup({ onExamApproved, onExamIdChange, initialExamId = 
 
       setHasUnsavedEdits(false);
       setQuestionsChecked(false);
+      setLoadedExam(examId.trim());
       setStep(2);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (err) {
       console.error('Setup error:', err);
-      setError(err.response?.data?.detail || err.message || 'Failed to generate rubric proposal.');
+      toast.error(errorText(err, 'Could not read the paper.'));
     } finally {
       setLoading(false);
     }
   };
 
-  const handleDraftFromKey = async (e) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
+  const handleDraftFromKey = async (files) => {
+    const file = files[0];
     if (!file) return;
     try {
       setLoading(true);
-      setError('');
       const res = await api.draftCriteria(examId.trim(), file);
       setRubricQuestions(res.questions);
       setExtractedSummary((prev) => ({
@@ -194,65 +413,43 @@ export default function Setup({ onExamApproved, onExamIdChange, initialExamId = 
       }));
       setHasUnsavedEdits(true);
       setQuestionsChecked(false);
+      toast.success('Marking points drafted. Please check them.');
     } catch (err) {
-      setError(err.response?.data?.detail || err.message || 'Could not draft criteria from this answer key.');
+      toast.error(errorText(err, 'Could not draft marking points from this answer key.'));
     } finally {
       setLoading(false);
     }
   };
 
-  const handleCorrectOptionChange = (qIdx, val) => {
-    const updated = [...rubricQuestions];
-    updated[qIdx] = { ...updated[qIdx], correct_option: val };
-    setRubricQuestions(updated);
+  // Every edit copies what it changes, so React can tell what actually moved.
+  const editQuestion = (qIdx, change) => {
+    setRubricQuestions((list) => list.map((q, i) => (i === qIdx ? change(q) : q)));
     setHasUnsavedEdits(true);
   };
 
-  // Step 2: Inline rubric editing
-  const handleCriterionChange = (qIdx, cIdx, field, val) => {
-    const updated = [...rubricQuestions];
-    updated[qIdx].criteria[cIdx][field] = field === 'max_marks' ? Number(val) : val;
-    setRubricQuestions(updated);
-    setHasUnsavedEdits(true);
+  const handlers = {
+    correctOption: (qIdx, val) => editQuestion(qIdx, (q) => ({ ...q, correct_option: val })),
+    questionText: (qIdx, text) => editQuestion(qIdx, (q) => ({ ...q, question_text: text })),
+    maxMarks: (qIdx, val) => editQuestion(qIdx, (q) => ({ ...q, max_marks: Number(val) })),
+    criterion: (qIdx, cIdx, field, val) => editQuestion(qIdx, (q) => ({
+      ...q,
+      criteria: q.criteria.map((c, i) => (i === cIdx ? { ...c, [field]: field === 'max_marks' ? Number(val) : val } : c)),
+    })),
+    addCriterion: (qIdx) => editQuestion(qIdx, (q) => ({
+      ...q,
+      criteria: [...q.criteria, { description: 'Additional marking point', max_marks: 1 }],
+    })),
+    removeCriterion: (qIdx, cIdx) => editQuestion(qIdx, (q) => ({
+      ...q,
+      criteria: q.criteria.filter((_, i) => i !== cIdx),
+    })),
   };
 
-  const handleAddCriterion = (qIdx) => {
-    const updated = [...rubricQuestions];
-    updated[qIdx].criteria.push({
-      description: 'Additional criterion',
-      max_marks: 1,
-    });
-    setRubricQuestions(updated);
-    setHasUnsavedEdits(true);
-  };
-
-  const handleRemoveCriterion = (qIdx, cIdx) => {
-    const updated = [...rubricQuestions];
-    updated[qIdx].criteria.splice(cIdx, 1);
-    setRubricQuestions(updated);
-    setHasUnsavedEdits(true);
-  };
-
-  const handleQuestionTextChange = (qIdx, text) => {
-    const updated = [...rubricQuestions];
-    updated[qIdx].question_text = text;
-    setRubricQuestions(updated);
-    setHasUnsavedEdits(true);
-  };
-
-  const handleMaxMarksChange = (qIdx, val) => {
-    const updated = [...rubricQuestions];
-    updated[qIdx].max_marks = Number(val);
-    setRubricQuestions(updated);
-    setHasUnsavedEdits(true);
-  };
-
-  // Step 2: Approve & Save Rubric to Firestore
+  // Step 2: Approve & Save Rubric
   const handleApproveRubric = async () => {
     if (saving || !questionsChecked) return; // prevent duplicate clicks and unconfirmed approval
     try {
       setSaving(true);
-      setError('');
 
       const calculatedTotal = rubricQuestions.reduce((s, q) => s + (Number(q.max_marks) || 0), 0);
       const targetTotal = extractedSummary?.total_marks || calculatedTotal;
@@ -269,7 +466,8 @@ export default function Setup({ onExamApproved, onExamIdChange, initialExamId = 
           docFingerprint,
           genFingerprint,
           printedTotal,
-          questionsChecked
+          questionsChecked,
+          { style: markingStyle, notes: markingNotes },
         );
       } catch (err) {
         const detail = err.response?.data?.detail || '';
@@ -277,16 +475,21 @@ export default function Setup({ onExamApproved, onExamIdChange, initialExamId = 
           && detail.includes('The paper prints a total of')
           && !detail.includes('criteria add up')
           && !detail.includes('has no marks');
-        if (!totalOnly || !window.confirm(`${detail}\n\nApprove with the calculated total anyway?`)) {
-          throw err;
-        }
+        if (!totalOnly) throw err;
+        const goAhead = await confirm({
+          title: 'The totals do not match',
+          body: detail,
+          confirmLabel: 'Approve with the calculated total',
+        });
+        if (!goAhead) return;
         res = await api.approveRubric(
           examId.trim(),
           rubricQuestions,
           docFingerprint,
           genFingerprint,
           null,
-          questionsChecked
+          questionsChecked,
+          { style: markingStyle, notes: markingNotes },
         );
       }
 
@@ -303,541 +506,293 @@ export default function Setup({ onExamApproved, onExamIdChange, initialExamId = 
       }));
       setHasUnsavedEdits(false);
       setStep(3);
+      toast.success('Marks approved. Next, add the answer sheets.');
 
       if (onExamApproved) {
         onExamApproved(examId.trim());
       }
     } catch (err) {
       console.error('Rubric approval error:', err);
-      setError(err.response?.data?.detail || err.message || 'Failed to save rubric to Firestore.');
+      toast.error(errorText(err, 'Could not save the approved marks.'));
     } finally {
       setSaving(false);
     }
   };
 
   // Reset draft to configure a fresh paper
-  const handleResetDraft = () => {
-    if (hasUnsavedEdits && !window.confirm('You have unsaved changes to this rubric draft. Are you sure you want to start over?')) {
-      return;
+  const handleResetDraft = async () => {
+    if (hasUnsavedEdits) {
+      const goAhead = await confirm({
+        title: 'Start over?',
+        body: 'Your changes to this draft have not been approved, and they will be lost.',
+        confirmLabel: 'Start over',
+        danger: true,
+      });
+      if (!goAhead) return;
     }
     try {
       sessionStorage.removeItem(`autograde_setup_${examId.trim()}`);
-    } catch (e) {
+    } catch {
       // ignore
     }
     setStep(1);
     setQuestionFile(null);
     setTextbookFile(null);
+    setPaperKeyFile(null);
     setRubricQuestions([]);
     setExtractedSummary(null);
     setQuestionsChecked(false);
     setGenFingerprint('');
     setDocFingerprint('');
     setHasUnsavedEdits(false);
-    setError('');
   };
 
-  // Validated total marks from the structured extraction
   const displayTotal = extractedSummary?.total_marks !== undefined
     ? extractedSummary.total_marks
     : rubricQuestions.reduce((s, q) => s + (Number(q.max_marks) || 0), 0);
 
+  const validationOk = ['VALID', 'RECONCILED'].includes(extractedSummary?.validation_status);
+  const toCheck = [
+    ...(extractedSummary?.review_items || []).map((item) => `${item.question}: ${item.reason}`),
+    ...(extractedSummary?.warnings || []),
+  ];
+
   return (
-    <div className="max-w-5xl mx-auto py-6 px-4 sm:px-6">
-      {/* Header */}
-      <div className="border-b border-[#22242a] pb-4 mb-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-lg font-bold text-[#ededed] tracking-tight">
-              Exam Setup &amp; Evaluation Rubric
-            </h1>
-            <p className="text-xs text-[#717680] mt-0.5 font-mono">
-              Upload your question paper — AutoGrade extracts questions, attempt rules, and marks automatically
-            </p>
-          </div>
+    <div className={cx('mx-auto px-4 py-8 sm:px-6', step === 2 ? 'max-w-5xl' : 'max-w-3xl')}>
+      <PageHeader
+        eyebrow="Step 1 of 4"
+        title={step === 2 ? 'Check the marks' : 'Set up the exam'}
+        subtitle={step === 2
+          ? 'AutoGrade read these from the paper. Fix anything that looks wrong: nothing is marked until you approve this.'
+          : 'Add the question paper. AutoGrade reads the questions and marks, then you check them.'}
+      />
 
-          <div className="flex items-center gap-1 font-mono text-[11px]">
-            <button
-              type="button"
-              onClick={() => setStep(1)}
-              className={`px-2.5 py-1 rounded border transition-colors cursor-pointer ${
-                step === 1 ? 'bg-[#1e2026] text-[#ededed] border-[#30333c]' : 'bg-[#121316] text-[#555963] border-[#1f2126]'
-              }`}
-            >
-              1. Upload
-            </button>
-            <span className="text-[#383c44]">/</span>
-            <button
-              type="button"
-              disabled={rubricQuestions.length === 0}
-              onClick={() => rubricQuestions.length > 0 && setStep(2)}
-              className={`px-2.5 py-1 rounded border transition-colors ${
-                rubricQuestions.length > 0 ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'
-              } ${
-                step === 2 ? 'bg-[#1e2026] text-[#ededed] border-[#30333c]' : 'bg-[#121316] text-[#555963] border-[#1f2126]'
-              }`}
-            >
-              2. Review Rubric
-            </button>
-            <span className="text-[#383c44]">/</span>
-            <span className={`px-2.5 py-1 rounded border ${step === 3 ? 'bg-[#1e2026] text-[#ededed] border-[#30333c]' : 'bg-[#121316] text-[#555963] border-[#1f2126]'}`}>
-              3. Ready
-            </span>
-          </div>
-        </div>
-      </div>
+      <Stepper step={step} canReview={rubricQuestions.length > 0} onStep={setStep} />
 
-      {error && (
-        <div className="mb-5 p-3 rounded bg-[#241212] border border-[#441d1d] text-[#ef4444] text-xs font-mono flex items-center justify-between">
-          <span>{error}</span>
-          <button type="button" onClick={() => setError('')} className="text-[#ef4444] hover:text-white ml-2 text-sm">×</button>
-        </div>
-      )}
-
-      {/* STEP 1: Upload Paper */}
       {step === 1 && (
-        <form onSubmit={handleGenerateRubric} className="space-y-5">
-          <div className="bg-[#121316] border border-[#22242a] rounded p-5 space-y-5">
-            <div className="flex items-center justify-between">
-              <div className="text-xs font-mono font-medium uppercase tracking-wider text-[#8c9099]">
-                Exam Configuration
+        <form key="step1" onSubmit={handleGenerateRubric} className="page-enter space-y-5">
+          <div className="card space-y-5 p-5 sm:p-6">
+            <ExamIdInput value={examId} onCommit={onExamIdChange} />
+
+            <div>
+              <div className="label">Question paper</div>
+              <Dropzone
+                required
+                title="Drop the question paper here, or click to choose"
+                hint="PDF, JPG, PNG or TXT"
+                accept=".pdf,.jpg,.jpeg,.png,.txt"
+                files={questionFile ? [questionFile] : []}
+                onFiles={(files) => setQuestionFile(files[0] || null)}
+                onReject={toast.error}
+              />
+            </div>
+
+            <div>
+              <div className="label">What kind of answers does this paper have?</div>
+              <Segmented label="Kind of answers" value={paperType} onChange={setPaperType} options={PAPER_TYPES} />
+              <p className="mt-1.5 text-sm text-muted">{PAPER_TYPE_HINT[paperType]}</p>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <div className="label">Answer key</div>
+                <Dropzone
+                  compact
+                  optional
+                  title="Add an answer key"
+                  hint="Helps draft the marking points"
+                  accept=".pdf,.txt,.png,.jpg,.jpeg"
+                  files={paperKeyFile ? [paperKeyFile] : []}
+                  onFiles={(files) => setPaperKeyFile(files[0] || null)}
+                  onReject={toast.error}
+                />
               </div>
+              <div>
+                <div className="label">Reference notes</div>
+                <Dropzone
+                  compact
+                  optional
+                  title="Add notes or a textbook"
+                  hint="PDF or image"
+                  accept=".pdf,.jpg,.jpeg,.png"
+                  files={textbookFile ? [textbookFile] : []}
+                  onFiles={(files) => setTextbookFile(files[0] || null)}
+                  onReject={toast.error}
+                />
+              </div>
+            </div>
+          </div>
+
+          {loading && (
+            <div className="fade rounded-xl bg-primary-soft px-4 py-3" role="status">
+              <div className="flex items-center gap-2 text-sm font-semibold text-primary">
+                <Sparkles size={16} aria-hidden="true" />
+                Reading your paper. This usually takes a few seconds.
+              </div>
+              <div className="indeterminate mt-2.5 h-1.5 rounded-full bg-surface" aria-hidden="true" />
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap gap-2">
               {rubricQuestions.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setStep(2)}
-                  className="text-xs font-mono text-[#3b82f6] hover:underline cursor-pointer"
-                >
-                  View current draft ({rubricQuestions.length} questions) →
-                </button>
+                <>
+                  <Button variant="secondary" onClick={() => setStep(2)}>
+                    View draft ({rubricQuestions.length} questions)
+                  </Button>
+                  <Button variant="danger" icon={Trash2} onClick={handleResetDraft}>Clear draft</Button>
+                </>
               )}
             </div>
-
-            {/* Exam Identifier */}
-            <div className="max-w-sm">
-              <label className="block text-[11px] font-mono text-[#8c9099] uppercase mb-1">
-                Exam Identifier
-              </label>
-              <input
-                type="text"
-                value={examId}
-                onChange={(e) => handleExamIdInputChange(e.target.value)}
-                placeholder="varshith"
-                className="w-full bg-[#0c0d0e] border border-[#25282f] rounded px-3 py-1.5 text-xs text-[#ededed] font-mono focus:outline-none focus:border-[#404552]"
-                required
-              />
-              <p className="mt-1 text-[10px] text-[#555963] font-mono">
-                Unique identifier for this exam (e.g. varshith, CS101_MID, EXAM_2026)
-              </p>
-            </div>
-
-            {/* File Uploads */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
-              <div className="border border-[#25282f] bg-[#0c0d0e] rounded p-4 text-left">
-                <div className="text-xs font-medium text-[#ededed]">Question Paper <span className="text-[#ef4444]">*</span></div>
-                <div className="text-[11px] text-[#555963] mt-0.5 mb-3 font-mono">
-                  PDF, JPG, PNG, or TXT — questions, attempt rules, and marks are auto-extracted
-                </div>
-                <input
-                  type="file"
-                  accept=".pdf,.jpg,.jpeg,.png,.txt"
-                  onChange={(e) => setQuestionFile(e.target.files[0])}
-                  className="text-xs text-[#717680] file:mr-2 file:py-1 file:px-2.5 file:rounded file:border file:border-[#2e323b] file:bg-[#1a1c21] file:text-[#b0b4be] file:text-xs file:font-mono hover:file:bg-[#22252c] cursor-pointer"
-                  required
-                />
-                {questionFile && (
-                  <div className="mt-2 text-[11px] text-[#4ade80] font-mono truncate">
-                    ✓ {questionFile.name} ({(questionFile.size / 1024).toFixed(0)} KB)
-                  </div>
-                )}
-              </div>
-
-              <div className="border border-[#25282f] bg-[#0c0d0e] rounded p-4 text-left">
-                <div className="text-xs font-medium text-[#ededed]">Reference Material / Notes <span className="text-[#555963]">(Optional)</span></div>
-                <div className="text-[11px] text-[#555963] mt-0.5 mb-3 font-mono">
-                  PDF or image — used for grounding rubric criteria
-                </div>
-                <input
-                  type="file"
-                  accept=".pdf,.jpg,.jpeg,.png"
-                  onChange={(e) => setTextbookFile(e.target.files[0])}
-                  className="text-xs text-[#717680] file:mr-2 file:py-1 file:px-2.5 file:rounded file:border file:border-[#2e323b] file:bg-[#1a1c21] file:text-[#b0b4be] file:text-xs file:font-mono hover:file:bg-[#22252c] cursor-pointer"
-                />
-                {textbookFile && (
-                  <div className="mt-2 text-[11px] text-[#93c5fd] font-mono truncate">
-                    ✓ {textbookFile.name}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <label className="block text-[11px] text-[#717680] font-mono">
-              Answer key (optional): used to draft the marking points. You still check and approve them.
-              <input
-                type="file"
-                accept=".pdf,.txt,.png,.jpg,.jpeg"
-                onChange={(e) => setPaperKeyFile(e.target.files?.[0] || null)}
-                className="block mt-1 text-xs"
-              />
-            </label>
-
-            {/* Info banner */}
-            <div className="bg-[#0d1117] border border-[#1e2226] rounded p-3 text-[11px] text-[#717680] font-mono leading-relaxed">
-              ℹ️ AutoGrade reads the question paper header (e.g. Max Marks: 20) and sections (e.g. 4x1=4M, 4x2=8M, 2x4=8M).
-              Internal choice questions (OR choices) and attempt rules ("answer any 2") are calculated deterministically.
-            </div>
-          </div>
-
-          <div className="flex justify-between items-center">
-            {rubricQuestions.length > 0 ? (
-              <button
-                type="button"
-                onClick={handleResetDraft}
-                className="text-xs font-mono text-[#ef4444] hover:underline cursor-pointer"
-              >
-                🗑 Clear draft &amp; start over
-              </button>
-            ) : <span />}
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="bg-[#2563eb] hover:bg-[#1d4ed8] text-white font-medium py-2 px-5 rounded text-xs transition-colors cursor-pointer disabled:opacity-50 font-mono"
-            >
-              {loading ? '⏳ Analyzing Question Paper & Extracting Marks...' : 'Analyze & Propose Rubric →'}
-            </button>
+            <Button type="submit" variant="primary" size="lg" loading={loading}>
+              {loading ? 'Analyzing' : 'Analyze the paper'}
+              {!loading && <ArrowRight size={17} aria-hidden="true" />}
+            </Button>
           </div>
         </form>
       )}
 
-      {/* STEP 2: Review & Edit Proposed Rubric */}
       {step === 2 && (
-        <div className="space-y-5">
-          {/* Extracted Exam Structure & Mathematical Validation Card */}
+        <div key="step2" className="page-enter space-y-4">
           {extractedSummary && (
-            <div className="bg-[#0d1520] border border-[#1a2e44] rounded p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="text-[11px] font-mono uppercase tracking-wider text-[#3b82f6] font-semibold flex items-center gap-2">
-                  <span>📋 Examination Structure &amp; Marks Validation</span>
-                  {extractedSummary.is_approved && (
-                    <span className="text-[10px] px-2 py-0.5 rounded bg-[#112217] text-[#4ade80] border border-[#1b3825]">
-                      ✓ Approved in Firestore (v{extractedSummary.version || 1})
-                    </span>
-                  )}
-                </div>
-                {extractedSummary.from_cache && !extractedSummary.is_approved && (
-                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#1a1c21] border border-[#2c2f37] text-[#717680]">
-                    ↩ Cached draft
+            <div className="card space-y-4 p-5">
+              {extractedSummary.is_approved && (
+                <Callout tone="good" title={`Approved (version ${extractedSummary.version || 1})`}>
+                  This exam already has approved marks. You can keep them and move on to Upload.
+                </Callout>
+              )}
+
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                <SummaryTile label="Questions"><CountUp value={rubricQuestions.length} /></SummaryTile>
+                <SummaryTile label="Total marks"><CountUp value={Number(displayTotal) || 0} decimals={Number.isInteger(Number(displayTotal)) ? 0 : 1} /></SummaryTile>
+                <SummaryTile label="Total printed on paper">
+                  {extractedSummary.declared_maximum_marks != null
+                    ? extractedSummary.declared_maximum_marks
+                    : <span className="text-base text-muted">Not printed</span>}
+                </SummaryTile>
+                <SummaryTile label="Marks check">
+                  <span className={cx('inline-flex items-center gap-1.5 text-base', validationOk ? 'text-good' : 'text-warn')}>
+                    {validationOk && <CheckCircle2 size={17} aria-hidden="true" />}
+                    {extractedSummary.validation_status === 'VALID'
+                      ? 'Passed'
+                      : extractedSummary.validation_status === 'RECONCILED'
+                        ? 'Passed, with changes'
+                        : (extractedSummary.validation_status || 'Passed')}
                   </span>
-                )}
+                </SummaryTile>
               </div>
 
-              {/* Metrics Grid */}
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs font-mono">
-                <div className="bg-[#121316] border border-[#22242a] rounded p-2.5">
-                  <div className="text-[10px] text-[#717680] uppercase mb-0.5">Declared Paper Marks</div>
-                  <div className="text-[#38bdf8] font-bold text-base">
-                                        {extractedSummary.declared_maximum_marks != null ? `${extractedSummary.declared_maximum_marks}M` : 'Not printed'}
-                  </div>
-                </div>
-
-                <div className="bg-[#121316] border border-[#22242a] rounded p-2.5">
-                  <div className="text-[10px] text-[#717680] uppercase mb-0.5">Calculated Max Marks</div>
-                  <div className="text-[#4ade80] font-bold text-base">
-                    {displayTotal}M
-                  </div>
-                </div>
-
-                <div className="bg-[#121316] border border-[#22242a] rounded p-2.5">
-                  <div className="text-[10px] text-[#717680] uppercase mb-0.5">Marks Validation</div>
-                  <div className={`font-semibold text-sm ${
-                    extractedSummary.validation_status === 'VALID' || extractedSummary.validation_status === 'RECONCILED'
-                      ? 'text-[#4ade80]'
-                      : 'text-[#f59e0b]'
-                  }`}>
-                    {extractedSummary.validation_status === 'VALID' ? '✓ Passed' : (extractedSummary.validation_status || 'Passed')}
-                  </div>
-                </div>
-
-                <div className="bg-[#121316] border border-[#22242a] rounded p-2.5">
-                  <div className="text-[10px] text-[#717680] uppercase mb-0.5">Questions Extracted</div>
-                  <div className="text-[#ededed] font-semibold text-sm">
-                    {rubricQuestions.length} questions
-                  </div>
-                </div>
-              </div>
-
-              {/* Sections Breakdown */}
-              {extractedSummary.sections && extractedSummary.sections.length > 0 && (
-                <div className="text-[11px] font-mono text-[#8c9099] pt-1">
-                  <span className="text-[#717680]">Detected Sections:</span>{' '}
-                  <span className="text-[#ededed]">{extractedSummary.sections.join(' · ')}</span>
-                </div>
+              {toCheck.length > 0 && (
+                <FoldingCallout tone="warn" title="Things to check" items={toCheck} />
               )}
 
-              {/* Reconciliation Notes */}
-              {extractedSummary.reconciliation_notes && extractedSummary.reconciliation_notes.length > 0 && (
-                <div className="bg-[#12161f] border border-[#1e2533] rounded p-2.5 space-y-1">
-                  <div className="text-[10px] font-mono text-[#717680] uppercase">Arithmetic &amp; Choice Reconciliation:</div>
-                  {extractedSummary.reconciliation_notes.map((note, idx) => (
-                    <div key={idx} className="text-[11px] font-mono text-[#38bdf8] flex gap-1.5 items-start">
-                      <span>•</span>
-                      <span>{note}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Validation Warnings */}
-              {extractedSummary.warnings && extractedSummary.warnings.length > 0 && (
-                <div className="mt-2 space-y-1">
-                  {extractedSummary.warnings.map((w, i) => (
-                    <div key={i} className="text-[10px] font-mono text-[#f59e0b] flex gap-1 items-start">
-                      <span>⚠️</span>
-                      <span>{w}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Questions the teacher should check first */}
-              {extractedSummary.review_items && extractedSummary.review_items.length > 0 && (
-                <div className="mt-2 space-y-1">
-                  <div className="text-[10px] font-mono uppercase text-[#f59e0b]">Check these first</div>
-                  {extractedSummary.review_items.map((item, i) => (
-                    <div key={i} className="text-[10px] font-mono text-[#f59e0b] flex gap-1 items-start">
-                      <span>{item.question}:</span>
-                      <span>{item.reason}</span>
-                    </div>
-                  ))}
-                </div>
+              {(extractedSummary.sections?.length > 0 || extractedSummary.reconciliation_notes?.length > 0) && (
+                <Disclosure title="How the total was worked out">
+                  <div className="space-y-2 text-sm text-muted">
+                    {extractedSummary.sections?.length > 0 && <p>Sections: {extractedSummary.sections.join(' · ')}</p>}
+                    {extractedSummary.reconciliation_notes?.length > 0 && (
+                      <ul className="list-disc space-y-1 pl-4">
+                        {extractedSummary.reconciliation_notes.map((note, idx) => <li key={idx}>{note}</li>)}
+                      </ul>
+                    )}
+                  </div>
+                </Disclosure>
               )}
             </div>
           )}
 
-          {/* Teacher confirmation */}
-          <label className="flex items-center gap-2 bg-[#121316] p-3 rounded border border-[#22242a] text-xs text-[#ededed] cursor-pointer">
-            <input
-              type="checkbox"
-              checked={questionsChecked}
-              onChange={(e) => setQuestionsChecked(e.target.checked)}
-            />
-            <span>I checked every question and mark against the paper</span>
-          </label>
+          <div className="space-y-3">
+            {rubricQuestions.map((q, qIdx) => (
+              <QuestionCard key={qIdx} q={q} qIdx={qIdx} index={qIdx} handlers={handlers} />
+            ))}
+          </div>
 
-          {/* Action Bar */}
-          <div className="flex items-center justify-between bg-[#121316] p-3.5 rounded border border-[#22242a]">
-            <div>
-              <div className="text-[10px] font-mono uppercase text-[#717680]">Exam: {examId}</div>
-              <div className="text-xs font-semibold text-[#ededed] flex items-center gap-2">
-                <span>Review &amp; Edit Marking Rubric ({rubricQuestions.length} questions, {displayTotal} marks)</span>
-                {hasUnsavedEdits && (
-                  <span className="text-[10px] text-[#f59e0b] font-mono bg-[#2a1e0d] px-1.5 py-0.5 rounded border border-[#4d3814]">
-                    ● Unsaved edits
-                  </span>
-                )}
+          <div className="card p-4">
+            <Disclosure title="More options">
+              <div className="space-y-4">
+                <div className="max-w-md">
+                  <div className="label">Draft marking points from an answer key</div>
+                  <Dropzone
+                    compact
+                    title="Add a CSV or text answer key"
+                    hint="You can edit everything before approving"
+                    accept=".txt,.csv"
+                    disabled={loading}
+                    onFiles={handleDraftFromKey}
+                    onReject={toast.error}
+                  />
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button icon={RefreshCw} loading={loading} onClick={(e) => handleGenerateRubric(e, true)}>Read the paper again</Button>
+                  <Button variant="danger" icon={Trash2} onClick={handleResetDraft}>Clear draft and use a different paper</Button>
+                </div>
+              </div>
+            </Disclosure>
+          </div>
+
+          {rubricQuestions.some((q) => q.question_format !== 'MCQ') && (
+            <div className="card space-y-3 p-5 sm:p-6">
+              <div>
+                <h3 className="text-lg">How strictly should written answers be marked?</h3>
+                <p className="text-sm text-muted">Pick what is closest to how you mark. You can change it later and approve again.</p>
+              </div>
+              <Segmented
+                label="Marking strictness"
+                value={markingStyle}
+                onChange={(value) => { setMarkingStyle(value); setHasUnsavedEdits(true); }}
+                options={MARKING_STYLES}
+              />
+              <p className="text-sm text-muted">{MARKING_STYLE_HINT[markingStyle]}</p>
+              <div>
+                <label htmlFor="marking-notes" className="label">Your own marking rules <span className="font-normal text-muted">(optional)</span></label>
+                <textarea
+                  id="marking-notes"
+                  className="input min-h-20"
+                  maxLength={600}
+                  placeholder="For example: cut half a mark for spelling mistakes in key terms. A map without labels gets half."
+                  value={markingNotes}
+                  onChange={(e) => { setMarkingNotes(e.target.value); setHasUnsavedEdits(true); }}
+                />
               </div>
             </div>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => setStep(1)}
-                className="px-3 py-1.5 rounded text-xs font-mono text-[#8c9099] hover:bg-[#181a1d] border border-[#25282f] transition-colors cursor-pointer"
-              >
-                ← Back
-              </button>
-              <button
-                type="button"
-                onClick={(e) => handleGenerateRubric(e, true)}
-                disabled={loading}
-                className="px-3 py-1.5 rounded text-xs font-mono text-[#8c9099] hover:bg-[#181a1d] border border-[#25282f] transition-colors disabled:opacity-50 cursor-pointer"
-                title="Regenerate rubric from question paper"
-              >
-                {loading ? 'Regenerating...' : '↺ Regenerate'}
-              </button>
-              <button
-                type="button"
-                onClick={handleApproveRubric}
-                disabled={saving || !questionsChecked}
-                className="bg-[#15803d] hover:bg-[#166534] text-white font-medium px-4 py-1.5 rounded text-xs font-mono transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
-              >
-                {saving ? 'Saving to Firestore...' : '✓ Approve & Lock Rubric'}
-              </button>
+          )}
+
+          {/* The one thing to do on this step stays within reach while scrolling. */}
+          <div className="sticky bottom-20 z-30 md:bottom-4">
+            <div className="flex flex-col gap-3 rounded-2xl border border-line bg-surface/95 p-3 shadow-float backdrop-blur-md sm:flex-row sm:items-center sm:justify-between sm:pl-4">
+              <label className="flex items-center gap-2.5 text-sm font-medium">
+                <input type="checkbox" className="check" checked={questionsChecked} onChange={(e) => setQuestionsChecked(e.target.checked)} />
+                I checked every question and mark against the paper
+                {hasUnsavedEdits && <Pill tone="warn" className="fade">Not approved yet</Pill>}
+              </label>
+              <div className="flex shrink-0 items-center justify-end gap-2">
+                <Button variant="ghost" icon={ArrowLeft} onClick={() => setStep(1)}>Back</Button>
+                <Tip text={questionsChecked ? 'Lock these marks and move on' : 'Tick the box first'}>
+                  <Button variant="primary" icon={ShieldCheck} loading={saving} disabled={!questionsChecked} onClick={handleApproveRubric}>
+                    Approve
+                  </Button>
+                </Tip>
+              </div>
             </div>
-          </div>
-
-          <label className="block mb-4 text-xs font-mono text-[#8c9099]">
-            Draft criteria from an answer key (CSV). You can edit everything before approving.
-            <input
-              type="file"
-              accept=".txt,.csv"
-              onChange={handleDraftFromKey}
-              disabled={loading}
-              className="block mt-1 text-xs"
-            />
-          </label>
-
-          {/* Question List */}
-          <div className="space-y-4">
-            {rubricQuestions.map((q, qIdx) => {
-              const criteriaSum = q.criteria.reduce((s, c) => s + (Number(c.max_marks) || 0), 0);
-              const marksMatch = Math.abs(criteriaSum - Number(q.max_marks)) <= 0.05;
-              return (
-                <div key={qIdx} className="bg-[#121316] border border-[#22242a] rounded p-4 space-y-3">
-                  <div className="flex items-start justify-between gap-3 border-b border-[#1c1e23] pb-2.5">
-                    <div className="flex items-center gap-2 flex-1">
-                      <span className="font-mono text-xs font-semibold text-[#8c9099] shrink-0">
-                        Q{q.question_number}
-                        {q.sub_part ? <span className="text-[#38bdf8]">({q.sub_part})</span> : null}
-                        {q.section ? <span className="ml-1 text-[#555963]">[{q.section}]</span> : null}
-                        {q.choice_group ? (
-                          <span className="ml-1 text-[10px] bg-[#1e2533] text-[#38bdf8] px-1.5 py-0.5 rounded font-mono">
-                            OR Choice
-                          </span>
-                        ) : null}
-                      </span>
-                      <input
-                        type="text"
-                        value={q.question_text}
-                        onChange={(e) => handleQuestionTextChange(qIdx, e.target.value)}
-                        className="bg-transparent border-b border-transparent hover:border-[#2c2f37] focus:border-[#404552] text-xs text-[#ededed] focus:outline-none px-1 py-0.5 flex-1"
-                      />
-                    </div>
-                    <div className="flex items-center gap-1.5 font-mono text-xs shrink-0">
-                      {q.question_format === 'MCQ' && (
-                        <label className="text-[#717680] text-[11px]">
-                          Correct:{' '}
-                          <select
-                            value={q.correct_option || ''}
-                            onChange={(e) => handleCorrectOptionChange(qIdx, e.target.value)}
-                            className="bg-[#0c0d0e] border border-[#25282f] rounded px-1 py-0.5 text-xs text-[#ededed] focus:outline-none"
-                          >
-                            <option value="">Not set</option>
-                            {(q.options || []).map((option) => (
-                              <option key={option.label} value={option.label}>{option.label}</option>
-                            ))}
-                          </select>
-                          {q.suggested_option && !q.correct_option && (
-                            <span className="ml-1 text-[#f59e0b]">Gemini suggests {q.suggested_option}; please confirm</span>
-                          )}
-                        </label>
-                      )}
-                      <span className="text-[#717680] text-[11px]">Marks:</span>
-                      <input
-                        type="number"
-                        step="0.5"
-                        value={q.max_marks}
-                        onChange={(e) => handleMaxMarksChange(qIdx, e.target.value)}
-                        className="w-14 bg-[#0c0d0e] border border-[#25282f] rounded px-1.5 py-0.5 text-xs text-[#ededed] text-center focus:outline-none"
-                      />
-                      {!marksMatch && (
-                        <span className="text-[#f59e0b] text-[10px]" title={`Criteria sum (${criteriaSum}) ≠ question marks (${q.max_marks})`}>⚠</span>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Criteria List */}
-                  <div className="space-y-1.5">
-                    {q.criteria.map((c, cIdx) => (
-                      <div key={cIdx} className="flex items-center gap-2 bg-[#0c0d0e] p-2 rounded border border-[#1f2126]">
-                        <input
-                          type="text"
-                          value={c.description}
-                          onChange={(e) => handleCriterionChange(qIdx, cIdx, 'description', e.target.value)}
-                          className="flex-1 bg-transparent text-xs text-[#c4c7cf] focus:outline-none"
-                        />
-                        <div className="flex items-center gap-1 font-mono shrink-0">
-                          <span className="text-[10px] text-[#555963]">Criterion Marks:</span>
-                          <input
-                            type="number"
-                            step="0.5"
-                            value={c.max_marks}
-                            onChange={(e) => handleCriterionChange(qIdx, cIdx, 'max_marks', e.target.value)}
-                            className="w-12 bg-[#121316] border border-[#22242a] rounded px-1 py-0.5 text-xs text-[#ededed] text-center focus:outline-none"
-                          />
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveCriterion(qIdx, cIdx)}
-                          className="text-[#555963] hover:text-[#ef4444] px-1 text-xs cursor-pointer"
-                        >
-                          ×
-                        </button>
-                      </div>
-                    ))}
-
-                    <div className="flex items-center justify-between pt-1">
-                      <button
-                        type="button"
-                        onClick={() => handleAddCriterion(qIdx)}
-                        className="text-[11px] text-[#717680] hover:text-[#c4c7cf] font-mono cursor-pointer"
-                      >
-                        + Add Criterion
-                      </button>
-                      <span className={`text-[10px] font-mono ${marksMatch ? 'text-[#4ade80]' : 'text-[#f59e0b]'}`}>
-                        Criteria Sum: {criteriaSum.toFixed(1)} / {Number(q.max_marks).toFixed(1)}
-                        {marksMatch ? ' ✓' : ' ⚠ criteria sum mismatch'}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Bottom approve button */}
-          <div className="flex justify-between items-center pt-2">
-            <button
-              type="button"
-              onClick={handleResetDraft}
-              className="text-xs font-mono text-[#ef4444] hover:underline cursor-pointer"
-            >
-              🗑 Clear draft &amp; upload different paper
-            </button>
-
-            <button
-              type="button"
-              onClick={handleApproveRubric}
-              disabled={saving}
-              className="bg-[#15803d] hover:bg-[#166534] text-white font-medium px-5 py-2 rounded text-xs font-mono transition-colors cursor-pointer disabled:opacity-50"
-            >
-              {saving ? 'Saving to Firestore...' : '✓ Approve & Lock Rubric'}
-            </button>
           </div>
         </div>
       )}
 
-      {/* STEP 3: Rubric Approved Confirmation */}
       {step === 3 && (
-        <div className="bg-[#121316] border border-[#1f3825] rounded p-6 text-center max-w-lg mx-auto space-y-4">
-          <div className="text-sm font-semibold text-[#4ade80] font-mono uppercase tracking-wider">
-            ✓ Rubric Approved &amp; Verified in Firestore
+        <div key="step3" className="card page-enter mx-auto max-w-lg space-y-4 p-8 text-center">
+          <div className="pop mx-auto grid size-16 place-items-center rounded-full bg-good-soft text-good">
+            <CheckCircle2 size={32} aria-hidden="true" />
           </div>
-          <p className="text-xs text-[#8c9099] leading-relaxed">
-            Marking rubric for exam <span className="font-mono text-[#ededed]">{examId}</span> has been
-            saved and verified in Firestore.
+          <h2 className="text-2xl">The marks are approved</h2>
+          <p className="text-muted">
+            <strong className="text-ink">{examId}</strong> has {rubricQuestions.length} questions worth {displayTotal} marks.
           </p>
-          <div className="text-xs text-[#717680] font-mono bg-[#0c0d0e] border border-[#1f2126] p-3 rounded">
-            <div>Total Questions: {rubricQuestions.length}</div>
-            <div className="text-[#4ade80] font-bold text-sm mt-1">Maximum Examination Marks: {displayTotal}M</div>
-          </div>
-
-          <div className="pt-2 flex justify-center gap-3">
-            <button
-              type="button"
-              onClick={() => setStep(2)}
-              className="px-3 py-1.5 rounded text-xs font-mono text-[#8c9099] hover:bg-[#181a1d] border border-[#25282f] transition-colors cursor-pointer"
-            >
-              ← Review Rubric Again
-            </button>
-
-            <button
-              type="button"
-              onClick={() => onExamApproved && onExamApproved(examId.trim())}
-              className="bg-[#2563eb] hover:bg-[#1d4ed8] text-white font-medium py-2 px-5 rounded text-xs font-mono transition-colors cursor-pointer"
-            >
-              Proceed to Upload Answer Sheets →
-            </button>
+          <div className="flex flex-wrap justify-center gap-2 pt-2">
+            <Button icon={ArrowLeft} onClick={() => setStep(2)}>See the marks again</Button>
+            <Button variant="primary" onClick={() => onExamApproved?.(examId.trim())}>
+              Add answer sheets
+              <ArrowRight size={16} aria-hidden="true" />
+            </Button>
           </div>
         </div>
       )}

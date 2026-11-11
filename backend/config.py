@@ -73,13 +73,38 @@ GEMINI_RETRY_BASE_SECONDS: float = float(os.getenv("GEMINI_RETRY_BASE_SECONDS", 
 GEMINI_RETRY_MAX_WAIT_SECONDS: float = float(os.getenv("GEMINI_RETRY_MAX_WAIT_SECONDS", "90"))
 # Below this, Gemini's own confidence sends an answer to the teacher.
 GEMINI_MIN_CONFIDENCE: float = float(os.getenv("GEMINI_MIN_CONFIDENCE", "0.8"))
-# Partial marks on a question worth this much or more go to the teacher. 0 means every
-# question: on the tuning sheets, partial marks were right far less often than full marks.
+# Partial marks on a question worth this much or more go to the teacher. 0 switches the
+# rule off: the second marking pass decides which marks are in doubt instead.
 GEMINI_HIGH_VALUE_MARKS: float = float(os.getenv("GEMINI_HIGH_VALUE_MARKS", "0"))
-# A zero on an answer the student did write goes to the teacher, for the same reason.
+# True sends every zero on an answer the student did write to the teacher.
 GEMINI_FLAG_ZERO_ON_WRITTEN: bool = (
-    os.getenv("GEMINI_FLAG_ZERO_ON_WRITTEN", "true").strip().lower() == "true"
+    os.getenv("GEMINI_FLAG_ZERO_ON_WRITTEN", "false").strip().lower() == "true"
 )
+# True sends every question with no answer found to the teacher. False gives it 0.
+GEMINI_FLAG_BLANKS: bool = os.getenv("GEMINI_FLAG_BLANKS", "false").strip().lower() == "true"
+# How generous the marking is when an exam does not choose: GENEROUS, BALANCED or STRICT.
+# GENEROUS is the wording tuned on the report sheets.
+GEMINI_MARKING_STYLE: str = (
+    os.getenv("GEMINI_MARKING_STYLE", "GENEROUS").strip().upper() or "GENEROUS"
+)
+if GEMINI_MARKING_STYLE not in ("GENEROUS", "BALANCED", "STRICT"):
+    GEMINI_MARKING_STYLE = "GENEROUS"
+# When a student answers more questions than the paper asks, count the best ones and leave
+# the rest out, as teachers do. False sends all of them to the teacher instead.
+# About how many words a full explained answer needs for each mark. An answer far shorter than
+# its marks need cannot earn full marks. 0 turns the length check off.
+GEMINI_WORDS_PER_MARK: float = float(os.getenv("GEMINI_WORDS_PER_MARK", "20") or 0)
+
+GEMINI_COUNT_BEST_ANSWERS: bool = (
+    os.getenv("GEMINI_COUNT_BEST_ANSWERS", "true").strip().lower() == "true"
+)
+# Mark every sheet a second time, independently. An answer goes to the teacher when the two
+# passes differ by more than the tolerance. Doubles the requests per sheet.
+GEMINI_DOUBLE_CHECK: bool = os.getenv("GEMINI_DOUBLE_CHECK", "true").strip().lower() == "true"
+# Model for the second pass. Empty uses GEMINI_MODEL again.
+GEMINI_CHECK_MODEL: str = os.getenv("GEMINI_CHECK_MODEL", "").strip()
+# Share of a question's marks the two passes may differ by. Never less than half a mark.
+GEMINI_CHECK_TOLERANCE: float = float(os.getenv("GEMINI_CHECK_TOLERANCE", "0.25"))
 # Second opinions from the stronger model. Off by default; they use its small daily allowance.
 GEMINI_REVIEW_ENABLED: bool = os.getenv("GEMINI_REVIEW_ENABLED", "false").strip().lower() == "true"
 # Largest single file. Gemini refuses inline requests over about 20 MB.

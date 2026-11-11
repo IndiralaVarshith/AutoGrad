@@ -206,6 +206,30 @@ class BatchQueueManager:
         with self._lock:
             return self._jobs.get(job_id)
 
+    def remove_jobs(self, exam_id: str, hall_ticket: str | None = None) -> list[QueueJob]:
+        """Forget an exam's jobs, or one student's, with their spooled files.
+
+        Refuses while one of them is being graded, so a result can never be
+        written back after its sheet was deleted.
+        """
+        with self._lock:
+            chosen = [
+                job for job in self._jobs.values()
+                if job.exam_id == exam_id and (hall_ticket is None or job.hall_ticket == hall_ticket)
+            ]
+            busy = [job.hall_ticket for job in chosen if job.status == "PROCESSING"]
+            if busy:
+                raise JobBusy(
+                    f"{', '.join(busy)} is being graded right now. Wait for it to finish, then delete."
+                )
+            for job in chosen:
+                del self._jobs[job.job_id]
+        for job in chosen:
+            Path(job.file_path).unlink(missing_ok=True)
+        if chosen:
+            self._save_state()
+        return chosen
+
     def get_exam_jobs(self, exam_id: str) -> list[QueueJob]:
         with self._lock:
             return [j for j in self._jobs.values() if j.exam_id == exam_id]
@@ -509,6 +533,10 @@ def _next_pacific_midnight() -> float:
 
 
 queue_manager = BatchQueueManager()
+
+
+class JobBusy(Exception):
+    """Raised when a job cannot be removed because it is being graded."""
 
 
 class JobCancelled(Exception):

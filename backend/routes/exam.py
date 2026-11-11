@@ -20,7 +20,14 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 
 import config
 from services.gemini_client import BadModelResponse, DailyLimitReached, GeminiError, RunCapReached
-from services.gemini_paper import PAPER_PROMPT_VERSION, read_question_paper, rubric_total_problems
+from services.gemini_paper import (
+    PAPER_PROMPT_VERSION,
+    normal_paper_type,
+    read_question_paper,
+    repair_choice_structure,
+    rubric_total_problems,
+)
+from services.gemini_sheet import MARKING_NOTES_LIMIT, normal_style
 from services.criteria_draft import (
     AnswerKeyError,
     approval_problems,
@@ -28,6 +35,8 @@ from services.criteria_draft import (
     parse_answer_key,
 )
 from services.db import db_service
+from services import sheet_store
+from services.queue_manager import JobBusy, queue_manager
 from services.upload_limits import read_limited
 from services.rubric_cache import (
     compute_doc_fingerprint,
@@ -66,6 +75,7 @@ async def exam_setup(
     textbook: UploadFile | None = File(None),
     force_regenerate: str = Form("false"),
     answer_key: UploadFile | None = File(None),
+    paper_type: str = Form(""),
 ):
     """
     Upload a question paper and turn it into structured questions and marks.
@@ -103,11 +113,19 @@ async def exam_setup(
             if existing.get("doc_fingerprint") != doc_fingerprint:
                 raise HTTPException(409, _DIFFERENT_PAPER_MESSAGE.format(exam_id=exam_id))
             return _paper_response(exam_id, existing, saved=True, duplicate=True, notices=notices)
+        # Sheets marked against the old paper would sit beside sheets marked against the new
+        # one, under the same exam, and a new sheet for the same student would be refused.
+        if existing and existing.get("doc_fingerprint") != doc_fingerprint:
+            graded = len(db_service.list_exam_results(exam_id))
+            if graded:
+                raise HTTPException(409, _GRADED_PAPER_MESSAGE.format(exam_id=exam_id, count=graded))
 
         key_bytes = await read_limited(answer_key) if answer_key and answer_key.filename else b""
         key_ext = Path(answer_key.filename).suffix.lower() if key_bytes else ""
         return _gemini_paper(
-            exam_id, q_bytes, ext, doc_fingerprint, key_bytes, key_ext, should_force, notices
+            exam_id, q_bytes, ext, doc_fingerprint, key_bytes, key_ext, should_force, notices,
+            source_filename=Path(question_paper.filename).name,
+            paper_type=normal_paper_type(paper_type),
         )
 
     except HTTPException:
@@ -141,6 +159,15 @@ _DIFFERENT_PAPER_MESSAGE = (
     "Exam '{exam_id}' already has a different question paper saved. "
     "Use force_regenerate=true to replace it, or a new exam ID."
 )
+_GRADED_PAPER_MESSAGE = (
+    "Exam '{exam_id}' already has {count} answer sheets marked against its current question "
+    "paper, so the paper cannot be replaced. Use a new exam ID for the new paper, or delete "
+    "this exam first. Nothing was saved."
+)
+_WRONG_PAPER_MESSAGE = (
+    "These marks were drafted from a different question paper than the one saved for exam "
+    "'{exam_id}', so they were not approved. Analyze this exam's question paper again, then approve."
+)
 
 
 def _load_saved_paper(exam_id: str) -> dict | None:
@@ -170,21 +197,30 @@ def _gemini_paper(
     key_ext: str,
     should_force: bool,
     notices: list[str],
+    *,
+    source_filename: str = "",
+    paper_type: str = "",
 ) -> dict:
     """One Gemini request for the paper, unless these exact files were already read."""
     gen_fingerprint = compute_generation_fingerprint(
         doc_fingerprint=doc_fingerprint,
         model_name=config.GEMINI_MODEL,
         schema_version=RUBRIC_SCHEMA_VERSION,
-        prompt_version=PAPER_PROMPT_VERSION,
+        # The teacher's choice changes what is asked, so it is part of what was generated.
+        prompt_version=(
+            PAPER_PROMPT_VERSION if paper_type in ("", "MIXED")
+            else f"{PAPER_PROMPT_VERSION}:{paper_type}"
+        ),
         ref_fingerprint=compute_doc_fingerprint(key_bytes) if key_bytes else "",
     )
     cached = None if should_force else get_cached_draft(gen_fingerprint)
     if cached:
+        cached = {**cached, "source_filename": source_filename, "paper_type": paper_type}
         return _finish_paper(exam_id, cached, should_force, from_cache=True, notices=notices)
     try:
         paper = read_question_paper(
-            q_bytes, ext, answer_key=key_bytes or None, answer_key_extension=key_ext or ".txt"
+            q_bytes, ext, answer_key=key_bytes or None, answer_key_extension=key_ext or ".txt",
+            paper_type=paper_type,
         )
     except (DailyLimitReached, RunCapReached) as error:
         raise HTTPException(429, f"{error} Nothing was saved.")
@@ -204,6 +240,7 @@ def _gemini_paper(
     paper["gen_fingerprint"] = gen_fingerprint
     paper["schema_version"] = RUBRIC_SCHEMA_VERSION
     store_draft_cache(gen_fingerprint, paper)
+    paper = {**paper, "source_filename": source_filename, "paper_type": paper_type}
     return _finish_paper(exam_id, paper, should_force, notices=notices)
 
 
@@ -337,14 +374,26 @@ async def approve_rubric(request: RubricApproveRequest):
                 "before approving. Nothing was saved.",
             )
 
+        # Marks drafted from one paper must never be approved for another exam's paper.
+        # A paper that needed teacher review was never saved, so there is nothing to compare.
+        if request.doc_fingerprint and db_service.is_connected():
+            saved_paper = db_service.get_question_paper(exam_id)
+            if saved_paper and saved_paper.get("doc_fingerprint") != request.doc_fingerprint:
+                raise HTTPException(409, _WRONG_PAPER_MESSAGE.format(exam_id=exam_id))
+
         # Validate before saving
         rubric_dict = {"questions": [
             q.model_dump() if hasattr(q, "model_dump") else q
             for q in request.rubric
         ]}
+        # A draft read before this repair existed can still carry a misread choice.
+        rubric_dict["questions"], repair_notes = repair_choice_structure(
+            rubric_dict["questions"], request.total_marks
+        )
         checked_total, total_problems, warnings = rubric_total_problems(
             rubric_dict["questions"], request.total_marks
         )
+        warnings = repair_notes + warnings
         if total_problems:
             raise HTTPException(
                 422, f"Fix these before approving: {' '.join(total_problems)} Nothing was saved."
@@ -363,12 +412,14 @@ async def approve_rubric(request: RubricApproveRequest):
         # Save to Firestore
         saved = db_service.save_approved_rubric(
             exam_id=exam_id,
-            questions=request.rubric,
+            questions=rubric_dict["questions"],
             doc_fingerprint=getattr(request, "doc_fingerprint", ""),
             gen_fingerprint=getattr(request, "gen_fingerprint", ""),
             total_marks=getattr(request, "total_marks", None),
             teacher_confirmed=True,
             checked_total=checked_total,
+            marking_style=normal_style(request.marking_style) if request.marking_style.strip() else "",
+            marking_notes=" ".join(request.marking_notes.split())[:MARKING_NOTES_LIMIT],
         )
 
         # WRITE-VERIFY: read back the saved document
@@ -452,6 +503,38 @@ async def get_exam_rubric(exam_id: str):
             "Please generate and approve a rubric in the Setup Exam tab first."
         )
     return rubric_doc
+
+
+# =========================================================
+# DELETE /exam/{exam_id}  (Delete an exam and everything in it)
+# =========================================================
+
+@router.delete("/{exam_id}")
+async def delete_exam(exam_id: str):
+    """Delete the question paper, its approved marks and every answer sheet graded for it."""
+    exam_id = exam_id.strip()
+    if not db_service.is_connected():
+        raise HTTPException(503, "Firestore is unavailable, so nothing was deleted.")
+    if not db_service.get_exam(exam_id) and not db_service.get_question_paper(exam_id):
+        raise HTTPException(404, f"There is no exam '{exam_id}' to delete.")
+    try:
+        # Jobs first, so the queue cannot write a result back into a deleted exam.
+        jobs = queue_manager.remove_jobs(exam_id)
+    except JobBusy as error:
+        raise HTTPException(409, f"{error} Nothing was deleted.")
+    try:
+        removed = db_service.delete_exam(exam_id)
+    except Exception as error:
+        print(f"[ExamDelete] Error: {type(error).__name__}: {error}")
+        raise HTTPException(503, "The exam could not be fully deleted. Please try again.")
+    for hall_ticket in set(removed["hall_tickets"]) | {job.hall_ticket for job in jobs}:
+        sheet_store.delete(exam_id, hall_ticket)
+    return {
+        "success": True,
+        "exam_id": exam_id,
+        "sheets_deleted": len(removed["hall_tickets"]),
+        "queued_removed": len(jobs),
+    }
 
 
 # =========================================================

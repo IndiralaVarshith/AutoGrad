@@ -30,3 +30,9 @@ def load(exam_id: str, hall_ticket: str) -> tuple[bytes, str] | None:
         if path.is_file():
             return path.read_bytes(), extension
     return None
+
+
+def delete(exam_id: str, hall_ticket: str) -> None:
+    base = _base(exam_id, hall_ticket)
+    for extension in (".pdf", ".png", ".jpg", ".jpeg"):
+        (base.parent / f"{base.name}{extension}").unlink(missing_ok=True)

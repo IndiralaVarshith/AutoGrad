@@ -55,6 +55,7 @@ async def upload_answer_sheets(
     exam_id: str = Form(...),
     files: list[UploadFile] = File(...),
     student_meta: str = Form("[]"),
+    expected_rubric_version: str = Form(""),
 ):
     """
     Upload one or more answer sheet images/PDFs.
@@ -77,6 +78,7 @@ async def upload_answer_sheets(
                 f"Please generate and approve the grading rubric before evaluating student answer sheets."
             ),
         )
+    _check_expected_version(exam_id, expected_rubric_version, rubric_version)
 
     queued = 0
     conflicts: list[str] = []
@@ -111,6 +113,7 @@ async def upload_answer_sheets(
             _validate_answer_sheet_bytes(file_bytes, ext)
         file_sha256 = hashlib.sha256(file_bytes).hexdigest()
 
+        _forget_lost_result(exam_id, hall_ticket)
         if _ticket_taken_by_another_file(exam_id, hall_ticket, file_sha256):
             conflicts.append(file.filename)
             continue
@@ -250,7 +253,11 @@ def _execute_grading_job(job: QueueJob):
             source_sha256=job.file_sha256,
             run=_batch_run(job.exam_id),
             on_stage=update_stage,
+            **_marking_settings(job.exam_id, job.rubric_version),
         )
+        # Deleted while it was being graded: the teacher asked for it gone, so keep it gone.
+        if queue_manager.get_job(job.job_id) is None:
+            raise RuntimeError(f"{job.hall_ticket} was deleted while it was being graded.")
         db_service.save_grading_result(job.exam_id, job.hall_ticket, result)
         _finish_batch_if_done(job)
         return result
@@ -269,6 +276,24 @@ def _execute_grading_job(job: QueueJob):
 _batch_runs: dict[str, RunBudget] = {}
 
 
+def _marking_settings(exam_id: str, rubric_version: str) -> dict[str, str]:
+    """How strict this exam's teacher asked the marking to be, from the approved rubric.
+
+    Only the version the sheet was queued against counts. If that cannot be read, the
+    configured default is used rather than another version's rules.
+    """
+    try:
+        rubric = db_service.get_approved_rubric(exam_id) or {}
+    except Exception:
+        return {}
+    if rubric_version and str(rubric.get("version", "")) != str(rubric_version):
+        return {}
+    return {
+        "marking_style": str(rubric.get("marking_style") or ""),
+        "marking_notes": str(rubric.get("marking_notes") or ""),
+    }
+
+
 def _batch_run(exam_id: str) -> RunBudget:
     if exam_id not in _batch_runs:
         _batch_runs[exam_id] = get_client().new_run(f"{exam_id}-{uuid.uuid4().hex[:6]}")
@@ -280,8 +305,32 @@ def _finish_batch_if_done(job: QueueJob) -> None:
         _batch_runs.pop(job.exam_id, None)
 
 
+def _check_expected_version(exam_id: str, expected: str, current: str) -> None:
+    """The page names the marks the teacher picked. Different marks now means stop."""
+    if expected.strip() and expected.strip() != str(current):
+        raise HTTPException(
+            409,
+            f"The approved marks for exam '{exam_id}' changed since you chose this question paper "
+            f"(you chose version {expected.strip()}, it is now version {current}). "
+            "Nothing was uploaded. Choose the paper again and check it.",
+        )
+
+
 def _ticket_from_filename(filename: str) -> str:
     return re.sub(r"[^\w.-]+", "_", Path(filename).stem).strip("._") or "UNNAMED"
+
+
+def _forget_lost_result(exam_id: str, hall_ticket: str) -> None:
+    """A finished job whose saved marks are gone, say after a database reset, is forgotten,
+    so uploading the sheet again grades it again instead of pointing at nothing."""
+    finished = [
+        job for job in queue_manager.get_exam_jobs(exam_id)
+        if job.hall_ticket == hall_ticket and job.status in ("COMPLETE", "NEEDS_REVIEW")
+    ]
+    if not finished or not db_service.is_connected():
+        return
+    if db_service.get_grading_result(exam_id, hall_ticket) is None:
+        queue_manager.remove_jobs(exam_id, hall_ticket)
 
 
 def _ticket_taken_by_another_file(exam_id: str, hall_ticket: str, file_sha256: str) -> bool:
@@ -292,8 +341,8 @@ def _ticket_taken_by_another_file(exam_id: str, hall_ticket: str, file_sha256: s
 
 
 def _update_submission_failure(job: QueueJob, error: Exception) -> None:
-    if not db_service.is_connected():
-        return
+    if not db_service.is_connected() or queue_manager.get_job(job.job_id) is None:
+        return  # A deleted sheet stays deleted, failure or not.
     teacher_review_required = bool(
         getattr(error, "requires_teacher_validation", False)
         or getattr(error, "teacher_validation_required", False)
@@ -327,6 +376,7 @@ async def evaluate_single_student(
     hall_ticket: str = Form(...),
     file: UploadFile = File(...),
     student_name: str = Form(""),
+    expected_rubric_version: str = Form(""),
 ):
     """
     Accept one student answer sheet for persistent background evaluation.
@@ -377,6 +427,7 @@ async def evaluate_single_student(
                 f"You must generate and approve the grading rubric before evaluating answer sheets."
             ),
         )
+    _check_expected_version(exam_id.strip(), expected_rubric_version, rubric_version)
 
     job = queue_manager.enqueue(
         exam_id=exam_id.strip(),

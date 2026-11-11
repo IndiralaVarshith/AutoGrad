@@ -1,14 +1,17 @@
-"""One answer sheet: one Gemini request reads and grades it, then code decides the flags.
+"""One answer sheet: Gemini reads and grades it, then code decides the flags.
 
-Gemini proposes. Code checks. An answer counts toward the total only when no rule
-flags it; a flagged answer keeps its mark as a suggestion and counts only after the
-teacher confirms it. MCQ marks are computed here from the letter read, and Gemini
-never sees the MCQ key, so knowing the answer cannot affect how a letter is read.
+Gemini proposes. Code checks. Written answers are marked point by point against the
+rubric and the code adds the points up. A second, independent pass marks the sheet
+again; an answer goes to the teacher only when a rule doubts it or the two passes
+disagree. A flagged answer's mark still counts toward the total, as a suggestion the
+teacher can change; the sheet is final only after the teacher approves it. MCQ marks
+are computed here from the letter read, and Gemini never sees the MCQ key.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import re
 from enum import Enum
 from typing import Any, Callable
@@ -30,7 +33,7 @@ from services.gemini_client import (
 )
 from services.gemini_paper import question_units
 
-SHEET_PROMPT_VERSION = "gemini-sheet-v2"
+SHEET_PROMPT_VERSION = "gemini-sheet-v6"
 
 # Flag reasons.
 UNREADABLE = "UNREADABLE"
@@ -47,13 +50,36 @@ NUMBER_INFERRED = "NUMBER_INFERRED"
 ATTEMPT_RULE = "ATTEMPT_RULE"
 ZERO_ON_WRITTEN = "ZERO_ON_WRITTEN"
 SHEET_NOT_READ = "SHEET_NOT_READ"
+CHECK_DISAGREED = "CHECK_DISAGREED"
 
+# With these, both sides of a choice were answered: counting both could pass the paper's total.
+_NOT_COUNTED = {ATTEMPT_RULE}
 _NO_SUGGESTION = {UNREADABLE, MISSING, SHEET_NOT_READ, INVALID_MARK, NO_KEY, UNCLEAR_OPTION}
 
 
 class NumberSource(str, Enum):
     WRITTEN = "WRITTEN"
     INFERRED = "INFERRED"
+
+
+class PointMark(BaseModel):
+    n: int = Field(description="The rubric point's number n for this question.")
+    marks: float = Field(description="Marks earned for this point: 0 up to the point's marks.")
+    quote: str = Field(default="", description="Words from read_text that earned it, copied exactly.")
+
+
+class Deduction(BaseModel):
+    reason: str = Field(description="The mistake, in a few words, with the correction: 'Spelling: \"Mugal\" should be \"Mughal\"'.")
+    marks: float = Field(description="Marks taken off for it, in steps of 0.5.")
+    quote: str = Field(default="", description="The student's words with the mistake, copied exactly from read_text.")
+
+
+class AnswerLength(str, Enum):
+    FULL = "FULL"
+    SHORT = "SHORT"
+    HALF = "HALF"
+    VERY_SHORT = "VERY_SHORT"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
 
 
 class SheetAnswer(BaseModel):
@@ -69,6 +95,22 @@ class SheetAnswer(BaseModel):
     read_confidence: float = Field(description="0 to 1: how sure you are of the reading.")
     marks_awarded: float | None = Field(
         default=None, description="Written answers only: marks under the rubric. Null if you cannot judge."
+    )
+    points: list[PointMark] = Field(
+        default_factory=list,
+        description="Written answers only: one entry for every rubric point of the question.",
+    )
+    length: AnswerLength = Field(
+        default=AnswerLength.FULL,
+        description=(
+            "Written answers only: is it as long as its marks need? FULL, SHORT (about three quarters),"
+            " HALF (about half, or stops halfway), VERY_SHORT (a line or two for a long answer),"
+            " NOT_APPLICABLE (a sum, a map, a one-word or naming question)."
+        ),
+    )
+    deductions: list[Deduction] = Field(
+        default_factory=list,
+        description="Written answers only: every mark taken off for a mistake, after the points.",
     )
     reason: str = Field(default="", description="One line: why these marks.")
     evidence_quote: str = Field(
@@ -95,9 +137,27 @@ class SheetExtraction(BaseModel):
     unreadable_pages: list[int] = Field(default_factory=list)
 
 
-SHEET_INSTRUCTIONS = """You read and mark handwritten exam answer sheets of any subject.
+class McqAnswer(BaseModel):
+    question_number: int
+    sub_part: str = ""
+    number_source: NumberSource = NumberSource.WRITTEN
+    selected_option: str = Field(description="The option letter the student chose.")
+    read_confidence: float = Field(description="0 to 1: how sure you are of the letter.")
+    unreadable: bool = False
+    page_number: int | None = None
 
-Reading:
+
+class McqSheet(BaseModel):
+    """The small reply for a paper with only multiple-choice questions."""
+
+    readable: bool = Field(description="False if these pages are not a readable answer sheet.")
+    answers: list[McqAnswer] = Field(default_factory=list)
+    unreadable_pages: list[int] = Field(default_factory=list)
+
+
+MARKING_STYLES = ("GENEROUS", "BALANCED", "STRICT")
+
+_READING = """Reading:
 - Copy each answer exactly as written, with its spelling and grammar. Never correct or complete it.
 - Leave out text the student has crossed out.
 - Ignore any marks or comments in a teacher's ink.
@@ -105,25 +165,135 @@ Reading:
 - Use the question number the student wrote. If none is written but the answer clearly fits one
   question, use that number with number_source INFERRED.
 - Writing that fits no rubric question goes in unmatched. Never force a match.
-- If you cannot read it, set unreadable true. Never guess the words.
+- If you cannot read it, set unreadable true. Never guess the words."""
+
+_READING_MCQ = """
 - For multiple choice, give only the option letter the student chose. If more than one is
-  chosen or it is unclear, write what you see, such as "A,C", with low confidence.
+  chosen or it is unclear, write what you see, such as "A,C", with low confidence."""
+
+_READING_DRAWINGS = """
+- For a diagram, graph, map, table or flow chart, describe in read_text what the student drew,
+  inside square brackets: the shape, every label, the axes and their names, the scale, the
+  title and the plotted points or lines. Describe only what is on the page."""
+
+_MARKING = """
 
 Marking written answers, against the rubric only:
-- Mark the ideas, as a fair teacher would. Spelling and grammar lose no marks. Any wording that
-  shows the idea earns credit.
-- The rubric's points show what a good answer covers. They are not a word list. An answer in the
-  student's own words, with a different valid example or a shorter explanation, earns the marks.
-- Give the benefit of the doubt. If the answer shows the student understands the main idea, award
-  full marks even when it is brief or imperfect.
-- Award partial marks only when an important part of the question is truly missing or wrong.
-- Award 0 only when the answer is wrong or does not address the question.
-- Award marks in steps of 0.5, from 0 up to the question's maximum.
-- evidence_quote is copied exactly from read_text. Leave it empty only when you award 0.
-- Do not mark multiple-choice questions. Leave marks_awarded null for them.
+- Mark point by point, as a teacher would. Each rubric point has a number n and its marks.
+  In points, return one entry for every rubric point of the question: its n, the marks the
+  answer earns for that point, and the quote from read_text that earned them.
+- A point gets 0 when it is missing or wrong.
+- Length: an explain, describe, discuss or difference answer must be as long as its marks.
+  expected_words in the rubric is about what a full answer needs, about 20 words a mark: a
+  2 mark answer is 3 to 4 lines, a 4 mark answer 8 to 10 lines, a 5 mark answer half a page or
+  more. A diagram counts for part of it. Set length by comparing the answer with this. An
+  answer that stops halfway, or is correct but only a line or two for a 4 mark question, has
+  not earned full marks: its points are not fully explained, so mark them down. A brief answer
+  can be fine for a sum, a map, a definition or a one-word question: set NOT_APPLICABLE.
+- Marks taken off for mistakes go in deductions, never hidden inside a point: each with the
+  mistake and its correction, the marks, and the student's words. Leave deductions empty when
+  this marking style takes nothing off."""
+
+_STYLE = {
+    "GENEROUS": """
+- A point is earned by the idea, in any wording. The points are not a word list: the student's
+  own words, a different valid example or a shorter explanation can earn the marks.
+- For a diagram or graph, a point is earned by what is drawn and labelled, not by neatness.
+- Give the benefit of the doubt. If the answer shows the student understands a point, give that
+  point its full marks even when its wording is imperfect. Give part of a point's marks only
+  when the idea is half there.
+- Spelling and grammar lose no marks. Use deductions only for a wrong fact stated as true.""",
+    "BALANCED": """
+- A point is earned by the idea, in any wording, but it must be stated, not hinted at.
+- For a diagram or graph, a point is earned by what is drawn and labelled, not by neatness.
+- Give a point its full marks when the idea is stated clearly and correctly. Give half of the
+  point's marks when it is only partly there or vague.
+- Deduct 0.5 for a wrong fact stated as true. Spelling and grammar lose no marks, unless a key
+  term cannot be recognised.""",
+    "STRICT": """
+Mark as a strict board examiner who checks every line and corrects every mistake. Never round
+up and never give the benefit of the doubt: when you are unsure whether a point is earned, it
+is not.
+- A point earns its full marks only when it is stated completely, correctly and precisely, with
+  the right term. Your own wording is allowed, but a vague or general line ("it was important",
+  "it helped people") earns nothing. A point that is only partly stated earns at most half.
+- If the question asks for a number of points, reasons, examples or features, only that many
+  correct ones earn marks, and each one missing loses its share.
+- If the question asks to explain, compare, give an example or draw, an answer that only lists
+  or only defines loses the marks for the missing part.
+- Writing that does not answer the question, or repeats an earlier point, earns nothing.
+- Diagrams, graphs and maps: each missing or wrong label, title, axis name, unit, scale, key or
+  direction loses 0.5. A rough or wrongly shaped drawing loses 0.5.
+- Then list in deductions every mistake left in the answer, each with its correction:
+  - a wrong fact, name, date, number, formula or unit: 0.5 each, or 1 if the answer depends on it;
+  - a misspelt key term, name or place: 0.5 each, at most 1 for spelling in one answer;
+  - a missing heading, step, final answer or unit where one is expected: 0.5 each;
+  - careless, unordered or incomplete presentation: 0.5.
+- An answer worth 3 marks or more gets full marks only when it has no fault at all. Nearly
+  every real answer has one: find it.
+- In reason, say where the marks were lost.""",
+}
+
+_MARKING_END = """
+- Marks are in steps of 0.5. marks_awarded is the sum of the points minus the deductions,
+  never below 0.
+- Each quote is copied exactly from read_text. Leave it empty only for a point that gets 0.
+  evidence_quote is the single most important quote."""
+
+_MARKING_NO_MCQ = """
+- Do not mark multiple-choice questions. Leave marks_awarded null and points empty for them."""
+
+_CONFIDENCE = """
 
 Confidence is honest: use a low value when the writing is hard to read or the marks could
 reasonably differ. A teacher reviews low-confidence answers, so doubt costs nothing."""
+
+MCQ_INSTRUCTIONS = """You read multiple-choice answer sheets. Every question on this paper is multiple choice.
+
+- For each question the student answered, give the question number and only the option letter
+  chosen. Skip blank questions.
+- If more than one option is chosen or it is unclear, write what you see, such as "A,C", with
+  low read_confidence.
+- Ignore crossed-out choices and anything in a teacher's ink.
+- If the number is not written but the position makes it clear, set number_source INFERRED.
+- If a choice cannot be read, set unreadable true. Never guess."""
+
+
+def normal_style(value: str | None) -> str:
+    """One of MARKING_STYLES. Anything else falls back to the configured default."""
+    style = str(value or "").strip().upper()
+    return style if style in MARKING_STYLES else config.GEMINI_MARKING_STYLE
+
+
+def sheet_instructions(
+    rubric_list: list[QuestionRubric] | None = None, style: str = "", notes: str = ""
+) -> str:
+    """The instructions for one paper: only the rules its kinds of question need.
+
+    A paper with no multiple-choice questions is not sent the multiple-choice rules, and
+    the other way round, so no request pays for text it cannot use.
+    """
+    formats = {q.question_format for q in rubric_list} if rubric_list else {"MCQ", ""}
+    has_mcq = "MCQ" in formats
+    has_written = bool(formats - {"MCQ"})
+    text = "You read and mark handwritten exam answer sheets of any subject.\n\n" + _READING
+    if has_mcq:
+        text += _READING_MCQ
+    if has_written:
+        text += _READING_DRAWINGS + _MARKING + _STYLE[normal_style(style)] + _MARKING_END
+        if has_mcq:
+            text += _MARKING_NO_MCQ
+        notes = " ".join(str(notes or "").split())[:MARKING_NOTES_LIMIT]
+        if notes:
+            text += (
+                "\n\nThis teacher's own marking rules for this exam. Where they differ from the"
+                f" rules above, follow these:\n{notes}"
+            )
+    return text + _CONFIDENCE
+
+
+MARKING_NOTES_LIMIT = 600
+SHEET_INSTRUCTIONS = sheet_instructions()
 
 
 def normalize_part(value: Any) -> str:
@@ -141,6 +311,62 @@ def _quote_is_in_text(quote: str, text: str) -> bool:
     return quote in text or fuzz.partial_ratio(quote, text) >= 90
 
 
+def expected_words(max_marks: float) -> int:
+    """About how many words a full explained answer of these marks needs. 0 means not checked."""
+    per_mark = config.GEMINI_WORDS_PER_MARK
+    return int(round(float(max_marks) * per_mark)) if per_mark > 0 and max_marks >= 2 else 0
+
+
+# The most a short answer can earn, as a share of the question's marks.
+_LENGTH_CAP = {
+    "GENEROUS": {"SHORT": 1.0, "HALF": 0.75, "VERY_SHORT": 0.5},
+    "BALANCED": {"SHORT": 0.75, "HALF": 0.5, "VERY_SHORT": 0.25},
+    "STRICT": {"SHORT": 0.5, "HALF": 0.5, "VERY_SHORT": 0.25},
+}
+_LENGTH_ORDER = ["FULL", "SHORT", "HALF", "VERY_SHORT"]
+# Questions where a short answer can be complete: sums, maps, naming, one word.
+_BRIEF_IS_FINE = re.compile(
+    r"\b(calculate|solve|find|prove|evaluate|simplify|compute|draw|sketch|map|locate|mark|"
+    r"label|name|identify|fill|match|choose|one word|true or false|expand|abbreviat|define|"
+    r"state|list|mention|what is meant|full form)",
+    re.IGNORECASE,
+)
+
+
+def _word_count(text: str) -> tuple[int, bool]:
+    """Words written outside the [drawing] descriptions, and whether there is a drawing."""
+    drawing = "[" in (text or "")
+    prose = re.sub(r"\[[^\]]*\]?", " ", text or "")
+    return len(re.findall(r"[^\W\d_]{2,}", prose)), drawing
+
+
+def _length_cap(
+    rubric: QuestionRubric, answer: SheetAnswer, style: str
+) -> tuple[float | None, str]:
+    """The most this answer can earn for its length, and why. None when length is not checked."""
+    expected = expected_words(rubric.max_marks)
+    judged = answer.length.value if isinstance(answer.length, AnswerLength) else str(answer.length)
+    if not expected:
+        return None, ""
+    words, drawing = _word_count(answer.read_text)
+    measured = "FULL"
+    # The count backs up Gemini's own judgement, even when Gemini said length does not apply.
+    # A drawing, a sum or a naming question can be brief, so the count is skipped for those.
+    if not drawing and not _BRIEF_IS_FINE.search(rubric.question_text or ""):
+        share = words / expected
+        measured = "VERY_SHORT" if share < 0.25 else "HALF" if share < 0.5 else "FULL"
+    worst = max(judged if judged in _LENGTH_ORDER else "FULL", measured, key=_LENGTH_ORDER.index)
+    share = _LENGTH_CAP[normal_style(style)].get(worst, 1.0)
+    if share >= 1.0:
+        return None, ""
+    cap = math.floor(float(rubric.max_marks) * share * 2) / 2
+    label = {"SHORT": "shorter than", "HALF": "about half of", "VERY_SHORT": "far shorter than"}[worst]
+    return cap, (
+        f"Answer is {label} a {rubric.max_marks:g} mark answer needs ({words} words; about "
+        f"{expected} expected), so at most {cap:g}"
+    )
+
+
 def rubric_for_prompt(rubric_list: list[QuestionRubric]) -> str:
     """The rubric Gemini marks against. The MCQ key and suggestions are left out on purpose."""
     return json.dumps(
@@ -150,11 +376,18 @@ def rubric_for_prompt(rubric_list: list[QuestionRubric]) -> str:
                 "sub_part": q.sub_part,
                 "section": q.section,
                 "format": q.question_format,
-                "question": q.question_text,
-                "max_marks": q.max_marks,
-                **({"options": q.options} if q.question_format == "MCQ" else {"criteria": [
-                    {"point": c.description, "marks": c.max_marks} for c in q.criteria
-                ]}),
+                # Reading a chosen letter needs only the letters, not the question or options.
+                **({"options": [str(o.get("label", "")) for o in q.options]}
+                   if q.question_format == "MCQ" else {
+                    "question": q.question_text,
+                    "max_marks": q.max_marks,
+                    **({"expected_words": expected_words(q.max_marks)}
+                       if expected_words(q.max_marks) else {}),
+                    "criteria": [
+                        {"n": index, "point": c.description, "marks": c.max_marks}
+                        for index, c in enumerate(q.criteria, start=1)
+                    ],
+                }),
                 **({"or_choice": q.choice_group} if q.choice_group else {}),
                 **(
                     {"answer_any_k_in_section": q.section_attempt_count}
@@ -198,6 +431,10 @@ def _read_parts(
     sheet_id: str,
     client: GeminiClient,
     run: RunBudget,
+    kind: str = "sheet",
+    model_name: str | None = None,
+    style: str = "",
+    notes: str = "",
 ) -> tuple[list[tuple[SheetExtraction, int]], list[str], str]:
     """Send the sheet: one request, or two if it is over the page limit.
 
@@ -209,32 +446,49 @@ def _read_parts(
     rubric_text = rubric_for_prompt(rubric_list)
     readings: list[tuple[SheetExtraction, int]] = []
     problems: list[str] = []
-    model = config.GEMINI_MODEL
+    model = model_name or config.GEMINI_MODEL
+    # A paper of only multiple-choice questions gets a short prompt and a small reply.
+    mcq_only = bool(rubric_list) and all(q.question_format == "MCQ" for q in rubric_list)
+    schema = McqSheet if mcq_only else SheetExtraction
+    instructions = MCQ_INSTRUCTIONS if mcq_only else sheet_instructions(rubric_list, style, notes)
     for start, end in ranges:
         piece = file_bytes if len(ranges) == 1 else _page_slice(file_bytes, start, end)
         contents = ["RUBRIC:", rubric_text, "ANSWER SHEET:", _sheet_part(piece, extension)]
         try:
             result = client.generate(
                 run,
-                kind="sheet",
+                kind=kind,
                 sheet_id=sheet_id,
                 contents=contents,
-                response_schema=SheetExtraction,
-                system_instruction=SHEET_INSTRUCTIONS,
+                response_schema=schema,
+                system_instruction=instructions,
+                model=model_name,
             )
         except BadModelResponse as error:
             problems.append(f"Pages {start + 1}-{end}: {error}")
             continue
-        extraction = (
-            result.parsed
-            if isinstance(result.parsed, SheetExtraction)
-            else SheetExtraction.model_validate(result.parsed)
-        )
+        parsed = result.parsed if isinstance(result.parsed, schema) else schema.model_validate(result.parsed)
+        extraction = _from_mcq_sheet(parsed) if mcq_only else parsed
         model = result.model
         if result.finish_reason not in ("STOP", ""):
             problems.append(f"Pages {start + 1}-{end}: the reply stopped early ({result.finish_reason}).")
         readings.append((extraction, start))
     return readings, problems, model
+
+
+def _from_mcq_sheet(sheet: McqSheet) -> SheetExtraction:
+    return SheetExtraction(
+        readable=sheet.readable,
+        unreadable_pages=sheet.unreadable_pages,
+        answers=[
+            SheetAnswer(
+                question_number=a.question_number, sub_part=a.sub_part, number_source=a.number_source,
+                read_text=a.selected_option, selected_option=a.selected_option,
+                page_number=a.page_number, unreadable=a.unreadable, read_confidence=a.read_confidence,
+            )
+            for a in sheet.answers
+        ],
+    )
 
 
 def _attempted(answer: SheetAnswer | None) -> bool:
@@ -259,29 +513,112 @@ def _mcq_grade(rubric: QuestionRubric, answer: SheetAnswer) -> tuple[float | Non
     return (rubric.max_marks if chosen == key else 0.0), flags
 
 
-def _written_grade(rubric: QuestionRubric, answer: SheetAnswer) -> tuple[float | None, list[str]]:
+def _half_step(value: float) -> bool:
+    return abs(value * 2 - round(value * 2)) < 1e-6
+
+
+def _point_marks(
+    rubric: QuestionRubric, answer: SheetAnswer
+) -> tuple[float | None, list[CriterionResult], bool]:
+    """Add up the marks given point by point: (total, per-point record, every quote found).
+
+    The total is None when the points cannot be trusted: a number that is not in the
+    rubric, a point marked twice, or marks outside the point's range.
+    """
+    by_number: dict[int, PointMark] = {}
+    for point in answer.points:
+        if point.n in by_number or not 1 <= point.n <= len(rubric.criteria):
+            return None, [], False
+        by_number[point.n] = point
+    total = 0.0
+    quotes_found = True
+    record: list[CriterionResult] = []
+    for number, criterion in enumerate(rubric.criteria, start=1):
+        point = by_number.get(number)
+        earned = float(point.marks) if point else 0.0
+        if earned < 0 or earned > float(criterion.max_marks) + 1e-6 or not _half_step(earned):
+            return None, [], False
+        found = bool(point) and _quote_is_in_text(point.quote, answer.read_text)
+        if earned > 0 and not found:
+            quotes_found = False
+        total += earned
+        record.append(CriterionResult(
+            criterion=criterion.description,
+            verbatim_quote=point.quote if point else "",
+            marks_awarded=earned,
+            rationale=answer.reason,
+            quote_verified=found,
+        ))
+    return total, record, quotes_found
+
+
+def _deductions(answer: SheetAnswer, maximum: float) -> tuple[float | None, list[CriterionResult]]:
+    """Marks taken off for mistakes: (total, one row each for the teacher to see).
+
+    The total is None when a deduction is not a positive half step within the question's marks.
+    """
+    total = 0.0
+    record: list[CriterionResult] = []
+    for item in answer.deductions:
+        taken = float(item.marks)
+        if taken <= 0 or taken > maximum + 1e-6 or not _half_step(taken):
+            return None, []
+        total += taken
+        record.append(CriterionResult(
+            criterion=f"Taken off: {item.reason.strip() or 'mistake'}",
+            verbatim_quote=item.quote,
+            marks_awarded=-taken,
+            rationale=item.reason,
+            quote_verified=bool(item.quote) and _quote_is_in_text(item.quote, answer.read_text),
+        ))
+    return total, record
+
+
+def _written_grade(
+    rubric: QuestionRubric, answer: SheetAnswer, style: str = ""
+) -> tuple[float | None, list[str], list[CriterionResult]]:
     if answer.unreadable:
-        return None, [UNREADABLE]
-    marks = answer.marks_awarded
+        return None, [UNREADABLE], []
     maximum = float(rubric.max_marks)
-    if (
-        marks is None
-        or marks < 0
-        or marks > maximum + 1e-6
-        or abs(marks * 2 - round(marks * 2)) > 1e-6
-    ):
-        return None, [INVALID_MARK]
+    record: list[CriterionResult] = []
+    if answer.points:
+        # The code adds the points up and takes the deductions off; Gemini's own total is not used.
+        marks, record, quotes_found = _point_marks(rubric, answer)
+        if marks is not None:
+            taken, deduction_record = _deductions(answer, maximum)
+            if taken is None:
+                return None, [INVALID_MARK], []
+            marks = max(0.0, marks - taken)
+            record += deduction_record
+    else:
+        marks = answer.marks_awarded
+        quotes_found = bool(marks) and _quote_is_in_text(answer.evidence_quote, answer.read_text)
+    if marks is None or marks < 0 or marks > maximum + 1e-6 or not _half_step(marks):
+        return None, [INVALID_MARK], []
+    cap, why = _length_cap(rubric, answer, style)
+    if cap is not None and marks > cap:
+        if not record:
+            record = [CriterionResult(
+                criterion="Overall", verbatim_quote=answer.evidence_quote, marks_awarded=marks,
+                rationale=answer.reason,
+                quote_verified=_quote_is_in_text(answer.evidence_quote, answer.read_text),
+            )]
+        record.append(CriterionResult(
+            criterion=f"Taken off: {why}", marks_awarded=-(marks - cap), rationale=why,
+        ))
+        marks = cap
     flags: list[str] = []
     lowest = min(answer.read_confidence, answer.grading_confidence)
     if lowest < config.GEMINI_MIN_CONFIDENCE:
         flags.append(LOW_CONFIDENCE)
-    if marks > 0 and not _quote_is_in_text(answer.evidence_quote, answer.read_text):
+    if marks > 0 and not quotes_found:
         flags.append(EVIDENCE_NOT_FOUND)
-    if 0 < marks < maximum and maximum >= config.GEMINI_HIGH_VALUE_MARKS:
+    high_value = config.GEMINI_HIGH_VALUE_MARKS
+    if high_value > 0 and 0 < marks < maximum and maximum >= high_value:
         flags.append(PARTIAL_HIGH_VALUE)
     if marks == 0 and config.GEMINI_FLAG_ZERO_ON_WRITTEN:
         flags.append(ZERO_ON_WRITTEN)
-    return marks, flags
+    return marks, flags, record
 
 
 def _grade_record(
@@ -291,11 +628,14 @@ def _grade_record(
     flags: list[str],
     model: str,
     reason: str = "",
+    point_record: list[CriterionResult] | None = None,
 ) -> QuestionGrade:
     routing = "AUTO_ACCEPT"
     if flags:
         routing = "MANUAL" if _NO_SUGGESTION & set(flags) else "FLAGGED"
     accepted = routing == "AUTO_ACCEPT" and marks is not None
+    # A flagged mark counts too, as a suggestion, so the total is not low until review.
+    counted = marks is not None and routing != "MANUAL" and not _NOT_COUNTED & set(flags)
     is_mcq = rubric.question_format == "MCQ"
     text = (answer.read_text if answer else "") or ""
     selected = normalize_part(answer.selected_option or answer.read_text) if answer and is_mcq else ""
@@ -316,7 +656,7 @@ def _grade_record(
             [{"page_number": answer.page_number}] if answer and answer.page_number else []
         ),
         grader_score=marks or 0.0,
-        final_score=marks if accepted else 0.0,
+        final_score=marks if counted else 0.0,
         suggested_score=None if accepted or marks is None or routing == "MANUAL" else marks,
         selected_option=selected,
         flag_reason=",".join(flags),
@@ -324,7 +664,7 @@ def _grade_record(
         routing=routing,
         routing_reason=reason or (answer.reason if answer else ""),
         criteria=(
-            [] if is_mcq or answer is None else [CriterionResult(
+            [] if is_mcq or answer is None else point_record or [CriterionResult(
                 criterion="Overall",
                 verbatim_quote=quote,
                 marks_awarded=marks or 0.0,
@@ -361,11 +701,18 @@ def _merge_answers(
 
 
 def _unattempted_flags(rubric_list: list[QuestionRubric], attempted: set[tuple[int, str]]) -> tuple[
-    dict[tuple[int, str], list[str]], set[tuple[int, str]]
+    dict[tuple[int, str], list[str]],
+    set[tuple[int, str]],
+    list[tuple[int, list[list[tuple[int, str]]]]],
 ]:
-    """Apply OR and any-K rules: which questions are allowed to be blank, and what breaks a rule."""
+    """Apply OR and any-K rules: which questions are allowed to be blank, and what breaks a rule.
+
+    The third value lists each place where the student answered more than the paper asks:
+    how many answers count there, and the answered parts of each answer.
+    """
     extra: dict[tuple[int, str], list[str]] = {}
     allowed_blank: set[tuple[int, str]] = set()
+    over: list[tuple[int, list[list[tuple[int, str]]]]] = []
 
     def key_of(question: QuestionRubric) -> tuple[int, str]:
         return (question.question_number, normalize_part(question.sub_part))
@@ -381,6 +728,7 @@ def _unattempted_flags(rubric_list: list[QuestionRubric], attempted: set[tuple[i
             sides.setdefault(side, []).append(member)
         tried = [side for side, parts in sides.items() if any(key_of(p) in attempted for p in parts)]
         if len(tried) > 1:
+            over.append((1, [[key_of(p) for p in sides[side] if key_of(p) in attempted] for side in tried]))
             for side in tried:
                 for part in sides[side]:
                     if key_of(part) in attempted:
@@ -404,6 +752,9 @@ def _unattempted_flags(rubric_list: list[QuestionRubric], attempted: set[tuple[i
             unit for unit, parts in by_unit.items() if any(key_of(p) in attempted for p in parts)
         ]
         if len(tried_units) > wanted:
+            over.append((wanted, [
+                [key_of(p) for p in by_unit[unit] if key_of(p) in attempted] for unit in tried_units
+            ]))
             for unit in tried_units:
                 for part in by_unit[unit]:
                     if key_of(part) in attempted:
@@ -412,7 +763,30 @@ def _unattempted_flags(rubric_list: list[QuestionRubric], attempted: set[tuple[i
             for unit, parts in by_unit.items():
                 if unit not in tried_units:
                     allowed_blank.update(key_of(part) for part in parts)
-    return extra, allowed_blank
+    return extra, allowed_blank, over
+
+
+def _best_answers(
+    over: list[tuple[int, list[list[tuple[int, str]]]]],
+    marks: dict[tuple[int, str], float | None],
+) -> tuple[set[tuple[int, str]], set[tuple[int, str]]]:
+    """Where a student wrote extra answers, pick the best ones, as a teacher does.
+
+    Returns (parts that count, parts that are extra). A place where any answer has no
+    mark is left out of both: only the teacher can choose there.
+    """
+    counted: set[tuple[int, str]] = set()
+    extras: set[tuple[int, str]] = set()
+    for wanted, answers in over:
+        keys = [key for answer in answers for key in answer]
+        if any(marks.get(key) is None for key in keys):
+            continue
+        # Highest marks first; equal marks keep the paper's order.
+        ranked = sorted(answers, key=lambda answer: -sum(marks[key] for key in answer))
+        counted.update(key for answer in ranked[:wanted] for key in answer)
+        extras.update(key for answer in ranked[wanted:] for key in answer)
+    # A part that loses anywhere is extra, even if another rule would have kept it.
+    return counted - extras, extras
 
 
 def grade_readings(
@@ -420,13 +794,29 @@ def grade_readings(
     readings: list[tuple[SheetExtraction, int]],
     problems: list[str],
     model: str,
+    style: str = "",
 ) -> tuple[list[QuestionGrade], list[dict[str, Any]]]:
     """Apply every rule to Gemini's replies. Pure, so all flag logic is testable."""
     merged, repeats = _merge_answers(readings)
     rubric_keys = {(q.question_number, normalize_part(q.sub_part)) for q in rubric_list}
-    extra_flags, allowed_blank = _unattempted_flags(rubric_list, set(merged) & rubric_keys)
+    extra_flags, allowed_blank, over = _unattempted_flags(rubric_list, set(merged) & rubric_keys)
     all_unreadable = bool(readings) and not any(extraction.readable for extraction, _ in readings)
     cut_off = bool(problems)
+
+    marked: dict[tuple[int, str], tuple[float | None, list[str], list[CriterionResult]]] = {}
+    for rubric in rubric_list:
+        key = (rubric.question_number, normalize_part(rubric.sub_part))
+        answer = merged.get(key)
+        if answer is None:
+            continue
+        if rubric.question_format == "MCQ":
+            marked[key] = (*_mcq_grade(rubric, answer), [])
+        else:
+            marked[key] = _written_grade(rubric, answer, style)
+    counted, extras = (
+        _best_answers(over, {key: value[0] for key, value in marked.items()})
+        if config.GEMINI_COUNT_BEST_ANSWERS else (set(), set())
+    )
 
     grades: list[QuestionGrade] = []
     for rubric in rubric_list:
@@ -442,18 +832,34 @@ def grade_readings(
                 flag = SHEET_NOT_READ
             elif all_unreadable:
                 flag = UNREADABLE
-            else:
+            elif config.GEMINI_FLAG_BLANKS:
                 flag = MISSING
+            else:
+                grade = _grade_record(rubric, None, 0.0, [], model, "No answer was found for this question, so it gets 0.")
+                grade.blank = True
+                grades.append(grade)
+                continue
             grades.append(_grade_record(rubric, None, None, [flag], model, "No answer was read for this question."))
             continue
-        grader = _mcq_grade if rubric.question_format == "MCQ" else _written_grade
-        marks, flags = grader(rubric, answer)
+        marks, flags, point_record = marked[key]
+        if key in extras:
+            # Written beyond what the paper asks, and it scored no higher than the others.
+            grade = _grade_record(rubric, answer, marks, [], model, point_record=point_record)
+            grade.routing = grade.local_routing = "NOT_ATTEMPTED"
+            grade.extra = True
+            grade.final_score = 0.0
+            grade.routing_reason = (
+                f"Extra answer, not counted: the student answered more than the paper asks here, "
+                f"and the best answers count. This one earned {marks:g}."
+            )
+            grades.append(grade)
+            continue
         if answer.number_source == NumberSource.INFERRED:
             flags.append(NUMBER_INFERRED)
         if key in repeats:
             flags.append(DUPLICATE_ANSWER)
-        flags.extend(extra_flags.get(key, []))
-        grades.append(_grade_record(rubric, answer, marks, flags, model))
+        flags.extend(f for f in extra_flags.get(key, []) if not (f == ATTEMPT_RULE and key in counted))
+        grades.append(_grade_record(rubric, answer, marks, flags, model, point_record=point_record))
 
     unmapped: list[dict[str, Any]] = []
     for key, answer in merged.items():
@@ -482,6 +888,65 @@ def grade_readings(
     return grades, unmapped
 
 
+def _flag(grade: QuestionGrade, reason: str) -> None:
+    """Send an answer to the teacher. Its mark, if it has one, stays as the suggestion."""
+    reasons = [r for r in grade.flag_reason.split(",") if r]
+    if reason not in reasons:
+        reasons.append(reason)
+    grade.flag_reason = ",".join(reasons)
+    if grade.routing != "MANUAL":
+        grade.routing = grade.local_routing = "FLAGGED"
+        grade.suggested_score = grade.final_score
+
+
+def apply_double_check(
+    rubric_list: list[QuestionRubric],
+    grades: list[QuestionGrade],
+    check: list[QuestionGrade],
+) -> None:
+    """Compare two independent passes over one sheet. Pure.
+
+    A written answer goes to the teacher when the passes differ by more than the
+    tolerance, or when only one of them found an answer. Agreement changes nothing:
+    the first pass's mark stands. MCQ answers are marked by code and are left alone.
+    """
+    by_key = {(g.question_number, g.sub_part): g for g in check}
+    formats = {(q.question_number, normalize_part(q.sub_part)): q.question_format for q in rubric_list}
+    for position, grade in enumerate(grades):
+        key = (grade.question_number, grade.sub_part)
+        other = by_key.get(key)
+        if other is None or formats.get(key) == "MCQ" or grade.routing == "NOT_ATTEMPTED":
+            continue
+        if other.routing == "NOT_ATTEMPTED" and not other.extra:
+            # Only the first pass found this answer.
+            _flag(grade, CHECK_DISAGREED)
+            continue
+        if not other.blank and other.routing != "MANUAL":
+            grade.second_opinion = {
+                "model": other.model_used,
+                "read_text": other.extracted_text,
+                "marks": other.grader_score,
+                "reason": other.routing_reason,
+                "confidence": other.c_final,
+            }
+        if grade.blank and other.blank:
+            continue
+        if grade.blank:
+            # Only the second pass found an answer here: show it, as a suggestion.
+            other.second_opinion = None
+            _flag(other, CHECK_DISAGREED)
+            grades[position] = other
+            continue
+        if grade.routing == "MANUAL":
+            continue
+        if other.blank or other.routing == "MANUAL":
+            _flag(grade, CHECK_DISAGREED)
+            continue
+        allowed = max(0.5, config.GEMINI_CHECK_TOLERANCE * float(grade.max_marks))
+        if abs(grade.grader_score - other.grader_score) > allowed + 1e-6:
+            _flag(grade, CHECK_DISAGREED)
+
+
 def second_opinions(
     result: PaperResult,
     file_bytes: bytes,
@@ -489,6 +954,8 @@ def second_opinions(
     rubric_list: list[QuestionRubric],
     client: GeminiClient,
     run: RunBudget,
+    style: str = "",
+    notes: str = "",
 ) -> None:
     """Ask the stronger model about flagged written answers, for the teacher to see.
 
@@ -519,7 +986,7 @@ def second_opinions(
                 sheet_id=result.hall_ticket,
                 contents=contents,
                 response_schema=SheetExtraction,
-                system_instruction=SHEET_INSTRUCTIONS,
+                system_instruction=sheet_instructions([rubric], style, notes),
                 review=True,
             )
         except (RunCapReached, DailyLimitReached):
@@ -554,6 +1021,8 @@ def grade_sheet(
     client: GeminiClient | None = None,
     run: RunBudget | None = None,
     on_stage: Callable[[str, str], None] | None = None,
+    marking_style: str = "",
+    marking_notes: str = "",
 ) -> PaperResult:
     """Read and grade one sheet. Raises a GeminiError if no request got through."""
     client = client or get_client()
@@ -561,9 +1030,26 @@ def grade_sheet(
     if on_stage:
         on_stage("gemini_sheet", "Gemini is reading and marking the sheet")
     readings, problems, model = _read_parts(
-        file_bytes, extension, rubric_list, hall_ticket, client, run
+        file_bytes, extension, rubric_list, hall_ticket, client, run,
+        style=marking_style, notes=marking_notes,
     )
-    grades, unmapped = grade_readings(rubric_list, readings, problems, model)
+    grades, unmapped = grade_readings(rubric_list, readings, problems, model, marking_style)
+    double_checked = False
+    has_written = any(q.question_format != "MCQ" for q in rubric_list)
+    if config.GEMINI_DOUBLE_CHECK and readings and not problems and has_written:
+        if on_stage:
+            on_stage("gemini_check", "Marking the sheet a second time to check the marks")
+        # A limit or outage here raises, as in the first pass, so the queue pauses and the
+        # sheet is graded again later: no sheet is saved half checked without saying so.
+        check_readings, check_problems, check_model = _read_parts(
+            file_bytes, extension, rubric_list, hall_ticket, client, run,
+            kind="sheet_check", model_name=config.GEMINI_CHECK_MODEL or None,
+            style=marking_style, notes=marking_notes,
+        )
+        if check_readings and not check_problems:
+            check_grades, _ = grade_readings(rubric_list, check_readings, [], check_model, marking_style)
+            apply_double_check(rubric_list, grades, check_grades)
+            double_checked = True
     unreadable_pages = sorted(
         {page + offset for extraction, offset in readings for page in extraction.unreadable_pages}
     )
@@ -589,6 +1075,7 @@ def grade_sheet(
             {"page": page, "model": model, "status": "UNREADABLE"} for page in unreadable_pages
         ],
         sheet_problems=problems,
+        double_checked=double_checked,
         source_sha256=source_sha256,
         page_count=page_count_of(file_bytes, extension),
         gemini_usage=usage.as_dict(config.GEMINI_USD_INR) if usage else {},
@@ -596,7 +1083,10 @@ def grade_sheet(
     if config.GEMINI_REVIEW_ENABLED and flagged:
         if on_stage:
             on_stage("gemini_second_opinion", "Stronger model is looking at flagged answers")
-        second_opinions(result, file_bytes, extension, rubric_list, client, run)
+        second_opinions(
+            result, file_bytes, extension, rubric_list, client, run,
+            style=marking_style, notes=marking_notes,
+        )
         usage = run.per_sheet.get(hall_ticket)
         result.gemini_usage = usage.as_dict(config.GEMINI_USD_INR) if usage else {}
     return result

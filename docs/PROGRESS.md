@@ -117,3 +117,26 @@ Branch `wip`. Update after every step so a new session can resume.
 - Struck-out text still partly leaks into transcripts (Student_4 Q21 "have has", Q25 "Self-driving car"). Known reader limit; compare models in A5.
 - Student number written with nothing after it comes back as empty text (Student_4 Q30, 33, 35), which is correct.
 - Student_4 real run (draft rubric, default models): 222s, MCQ letters all match, Q30/33/35 BLANK_ANSWER match teacher blanks, but all 12 written short answers flagged CRITIC_DISAGREED and grader far harsher than teacher. This is what A5 must tune.
+
+## 2026-11-10: fewer flags, marks like a teacher (not yet run on real sheets)
+
+Changed in `services/gemini_sheet.py`, prompt `gemini-sheet-v3`. Tested with fake replies only; no real Gemini run yet.
+
+- A flagged answer's mark now counts in the total, as a suggestion. `MANUAL` answers (no mark) still count 0.
+- Written answers are marked point by point (`points`); code adds the points up and ignores Gemini's own total.
+- Diagrams, graphs and maps are described in `read_text` in square brackets, so points can quote them.
+- Extra answers beyond what the paper asks: the best ones count, the rest are `NOT_ATTEMPTED` with `extra=true` (`GEMINI_COUNT_BEST_ANSWERS`). If any of them has no mark, all go to the teacher as before.
+- A question with no answer found gets 0 with `blank=true`, no flag (`GEMINI_FLAG_BLANKS=false`).
+- Every partial mark and every zero no longer flag by default (`GEMINI_HIGH_VALUE_MARKS=0` now means off, `GEMINI_FLAG_ZERO_ON_WRITTEN=false`).
+- Each sheet is marked twice (`GEMINI_DOUBLE_CHECK`, 2 requests per sheet). A written answer is flagged `CHECK_DISAGREED` when the passes differ by more than `GEMINI_CHECK_TOLERANCE` (25% of the marks, never under 0.5) or only one pass found it. `GEMINI_CHECK_MODEL` picks another model for the second pass; empty reuses `GEMINI_MODEL`, so the two passes can share mistakes.
+- Open: measure flag rate and silent wrong marks on the 40 report sheets and on the Narayana 20-mark sheet (teacher total 18.5/20). `tests/test_delete_and_paper_guards.py` (uncommitted) has 6 tests failing on rubric approval, "Q1: multiple-choice question without a valid correct option"; not caused by this change.
+
+## 2026-11-10 (later): paper type, marking strictness, lighter MCQ reading (not yet run on real sheets)
+
+Prompt `gemini-sheet-v4`. Tested with fake replies and through the Setup page on a test server with Gemini blocked; no real Gemini run yet.
+
+- Setup page asks the kind of answers: Handwritten, Multiple choice, or Both (`paper_type` on `POST /exam/setup`: `WRITTEN`, `MCQ`, `MIXED`). It is a hint to the paper reader and part of the draft cache key. If the paper does not match the tick, the draft says so and is returned for review, not saved.
+- Each exam has a marking strictness (`GENEROUS`, `BALANCED`, `STRICT`) and optional teacher's own marking rules (600 characters), chosen on the Check the marks step and saved with the approved rubric (`marking_style`, `marking_notes`). Changing either is a new rubric version. `GEMINI_MARKING_STYLE` is the default (`GENEROUS`, the wording tuned on the report sheets). Reason: on two real 20-mark sheets the teacher gave 18.5 and the app gave 20.
+- The grading job reads the style from the approved rubric of the version the sheet was queued against (`routes/upload.py::_marking_settings`).
+- Fewer tokens for MCQ: a paper of only MCQs uses a short prompt and a small reply schema (`McqSheet`), one request, no second pass. In a mixed paper each MCQ sends only its option letters, not the question or option text. A written-only paper is not sent the MCQ rules. Savings not measured.
+- `.claude/launch.json` has `backend-test` (port 8001, test emulator on 8099, Gemini blocked, its own test password) and `frontend-test` (port 5174) for checking pages without touching real data or quota.

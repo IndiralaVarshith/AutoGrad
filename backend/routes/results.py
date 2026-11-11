@@ -10,6 +10,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
 from config import get_firestore
+from services import sheet_store
+from services.db import db_service
+from services.queue_manager import JobBusy, queue_manager
 
 
 router = APIRouter(prefix="/results", tags=["Results"])
@@ -83,3 +86,27 @@ async def get_single_result(exam_id: str, hall_ticket: str):
 
     except Exception as error:
         raise HTTPException(500, f"Failed to fetch result: {error}")
+
+
+# =========================================================
+# DELETE /results/{exam_id}/{hall_ticket}
+# =========================================================
+
+@router.delete("/{exam_id}/{hall_ticket}")
+async def delete_single_result(exam_id: str, hall_ticket: str):
+    """Delete one student's answer sheet: its marks, review log, stored pages and queue entry."""
+    if not db_service.is_connected():
+        raise HTTPException(503, "Firestore is unavailable, so nothing was deleted.")
+    try:
+        jobs = queue_manager.remove_jobs(exam_id, hall_ticket)
+    except JobBusy as error:
+        raise HTTPException(409, f"{error} Nothing was deleted.")
+    try:
+        existed = db_service.delete_result(exam_id, hall_ticket)
+    except Exception as error:
+        print(f"[ResultDelete] Error: {type(error).__name__}: {error}")
+        raise HTTPException(503, "The answer sheet could not be fully deleted. Please try again.")
+    if not existed and not jobs:
+        raise HTTPException(404, f"There is no answer sheet {hall_ticket} in exam {exam_id}.")
+    sheet_store.delete(exam_id, hall_ticket)
+    return {"success": True, "exam_id": exam_id, "hall_ticket": hall_ticket}
