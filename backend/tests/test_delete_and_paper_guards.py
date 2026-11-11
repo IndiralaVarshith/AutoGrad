@@ -25,6 +25,7 @@ def client(app_client):  # noqa: F811
 
 def approved_exam(client, exam_id, text=PAPER_TEXT):
     rubric = upload(client, exam_id, text=text).json()["rubric"]
+    rubric["questions"][0]["correct_option"] = "B"  # The teacher sets the MCQ key.
     assert approve(client, exam_id, rubric, rubric["total_marks"]).status_code == 200
     return rubric
 
