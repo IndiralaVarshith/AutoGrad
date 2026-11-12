@@ -38,4 +38,4 @@ services:
       # If Render gives the backend a different address, change it here (and in the dashboard).
       - type: rewrite
         source: /api/*
-        destination: https://autograde-backend.onrender.com/*
+        destination: https://autograde-backend-26z3.onrender.com/*

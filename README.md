@@ -199,10 +199,10 @@ Service accounts → Generate new private key).
    | `TEACHER_PASSWORD` | The sign-in password |
    | `FIREBASE_SERVICE_ACCOUNT_JSON` | The whole contents of the service account JSON file |
 
-4. When the backend is live, open `https://autograde-backend.onrender.com/health`. It should say `healthy`.
+4. When the backend is live, open `https://autograde-backend-26z3.onrender.com/health`. It should say `healthy`.
 
 ### 3. Check the backend address
-The frontend forwards `/api` to `https://autograde-backend.onrender.com`. If Render gave the backend a
+The frontend forwards `/api` to `https://autograde-backend-26z3.onrender.com`. If Render gave the backend a
 different address (shown at the top of its page), put that address in `render.yaml` under
 `autograde-frontend` → `routes` → `destination`, keeping the `/*` at the end, then commit and push.
 
