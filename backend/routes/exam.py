@@ -40,7 +40,7 @@ from services.criteria_draft import (
 from services.db import db_service
 from services import sheet_store
 from services.queue_manager import JobBusy, queue_manager
-from services.upload_limits import read_limited
+from services.upload_limits import actual_extension, read_limited
 from services.rubric_cache import (
     compute_doc_fingerprint,
     compute_generation_fingerprint,
@@ -106,6 +106,7 @@ async def exam_setup(
         q_bytes = await read_limited(question_paper)
         if not q_bytes:
             raise HTTPException(400, "Question paper file is empty.")
+        ext = actual_extension(q_bytes, ext, Path(question_paper.filename).name)
 
         should_force = force_regenerate.lower() in ("true", "1", "yes")
         doc_fingerprint = compute_doc_fingerprint(q_bytes)
@@ -125,7 +126,10 @@ async def exam_setup(
                 raise HTTPException(409, _GRADED_PAPER_MESSAGE.format(exam_id=exam_id, count=graded))
 
         key_bytes = await read_limited(answer_key) if answer_key and answer_key.filename else b""
-        key_ext = Path(answer_key.filename).suffix.lower() if key_bytes else ""
+        key_ext = (
+            actual_extension(key_bytes, Path(answer_key.filename).suffix.lower(), Path(answer_key.filename).name)
+            if key_bytes else ""
+        )
         return _gemini_paper(
             exam_id, q_bytes, ext, doc_fingerprint, key_bytes, key_ext, should_force, notices,
             source_filename=Path(question_paper.filename).name,
