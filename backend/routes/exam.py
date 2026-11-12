@@ -14,6 +14,7 @@ Route ordering is critical:
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
@@ -177,6 +178,24 @@ _WRONG_PAPER_MESSAGE = (
 )
 
 
+def _read_failed_message(error: Exception) -> str:
+    """Say why the reading failed, in words a teacher can act on."""
+    text = str(error)
+    start = "AutoGrade could not read the paper, so nothing was saved."
+    if getattr(error, "transient", False) or re.search(r"status=(429|5\d\d)|Timeout|Connect", text):
+        return f"{start} The reading service is busy right now. Please try again in a minute."
+    if "status=400" in text:
+        return (
+            f"{start} The reading service refused the files. A file may be damaged or "
+            "password-protected. Try saving it again as a normal PDF, or use a smaller scan."
+        )
+    if re.search(r"status=(401|403)|not set", text):
+        return f"{start} The server's Gemini key was not accepted. Check GEMINI_API_KEY on the server."
+    if "status=404" in text:
+        return f"{start} The Gemini model name on the server was not found. Check GEMINI_MODEL."
+    return f"{start} Try again."
+
+
 def _load_saved_paper(exam_id: str) -> dict | None:
     if not db_service.is_connected():
         raise HTTPException(503, "Firestore is unavailable, so the question paper cannot be saved.")
@@ -238,7 +257,7 @@ def _gemini_paper(
         raise HTTPException(422, _UNUSABLE_REPLY_MESSAGE)
     except GeminiError as error:
         print(f"[ExamSetup] Gemini failed: {error}")
-        raise HTTPException(503, "AutoGrade could not read the paper, so nothing was saved. Try again.")
+        raise HTTPException(503, _read_failed_message(error))
     if paper.get("unreadable"):
         reasons = "; ".join(paper.get("unclear_items") or []) or "No questions were found."
         raise HTTPException(422, _UNREADABLE_MESSAGE.format(reasons=reasons))

@@ -289,3 +289,41 @@ def test_key_comes_only_from_the_named_setting(monkeypatch):
     with pytest.raises(GeminiCallFailed) as caught:
         gemini_client._load_api_key()
     assert "SOME_SLOT" in str(caught.value)
+
+
+class _FakeFiles:
+    def __init__(self):
+        self.uploaded, self.deleted = [], []
+
+    def upload(self, file, config):
+        name = f"files/{len(self.uploaded)}"
+        self.uploaded.append((name, len(file.read()), config.mime_type))
+        return SimpleNamespace(name=name, uri=f"https://example.test/{name}", state=SimpleNamespace(name="ACTIVE"))
+
+    def delete(self, name):
+        self.deleted.append(name)
+
+
+def test_big_files_go_through_file_upload(monkeypatch):
+    from google.genai import types
+
+    monkeypatch.setattr(config, "GEMINI_INLINE_LIMIT_MB", 1)
+    client = SimpleNamespace(files=_FakeFiles())
+    paper = types.Part.from_bytes(data=b"p" * 700_000, mime_type="application/pdf")
+    key = types.Part.from_bytes(data=b"k" * 700_000, mime_type="image/png")
+    sent, uploaded = gemini_client._upload_if_too_big(client, ["QUESTION PAPER:", paper, "ANSWER KEY:", key])
+
+    assert [entry[2] for entry in client.files.uploaded] == ["application/pdf", "image/png"]
+    assert sent[0] == "QUESTION PAPER:" and sent[2] == "ANSWER KEY:"
+    assert sent[1].file_data.file_uri.endswith("files/0") and sent[3].file_data.mime_type == "image/png"
+    assert len(uploaded) == 2
+
+
+def test_small_files_stay_inside_the_request(monkeypatch):
+    from google.genai import types
+
+    monkeypatch.setattr(config, "GEMINI_INLINE_LIMIT_MB", 12)
+    client = SimpleNamespace(files=_FakeFiles())
+    contents = ["QUESTION PAPER:", types.Part.from_bytes(data=b"p" * 1000, mime_type="application/pdf")]
+    sent, uploaded = gemini_client._upload_if_too_big(client, contents)
+    assert sent is contents and uploaded == [] and client.files.uploaded == []

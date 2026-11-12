@@ -75,6 +75,8 @@ GEMINI_COUNT_BEST_ANSWERS: bool = (
 )
 # Largest single file. Gemini refuses inline requests over about 20 MB.
 MAX_UPLOAD_MB: float = float(os.getenv("MAX_UPLOAD_MB", "18"))
+# Files in one request above this many MB go through Gemini's file upload instead.
+GEMINI_INLINE_LIMIT_MB: float = float(os.getenv("GEMINI_INLINE_LIMIT_MB", "12"))
 # Largest whole request, for many sheets uploaded together.
 MAX_REQUEST_MB: float = float(os.getenv("MAX_REQUEST_MB", "500"))
 # true when the site is served over HTTPS (deployed): the sign-in cookie is then sent only over HTTPS.

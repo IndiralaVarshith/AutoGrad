@@ -135,11 +135,70 @@ def _sdk_transport(api_key: str) -> Callable[..., Any]:
     )
 
     def send(model: str, contents: Any, generation_config: Any) -> Any:
-        return client.models.generate_content(
-            model=model, contents=contents, config=generation_config
-        )
+        contents, uploaded = _upload_if_too_big(client, contents)
+        try:
+            return client.models.generate_content(
+                model=model, contents=contents, config=generation_config
+            )
+        finally:
+            for file in uploaded:
+                try:
+                    client.files.delete(name=file.name)
+                except Exception:  # noqa: BLE001 - Google deletes it after 48 hours anyway
+                    pass
 
     return send
+
+
+def _inline_bytes(part: Any) -> bytes | None:
+    inline = getattr(part, "inline_data", None)
+    data = getattr(inline, "data", None)
+    return data if isinstance(data, bytes) and data else None
+
+
+def _upload_if_too_big(client: Any, contents: Any) -> tuple[Any, list[Any]]:
+    """Send big files through Gemini's file upload instead of inside the request.
+
+    Gemini refuses a request over about 20 MB, and files grow by a third inside it. A scanned
+    paper with a scanned answer key, or a long scanned sheet, can pass that together even when
+    each file is under the upload limit. Uploaded files are deleted once the reply is back.
+    """
+    if not isinstance(contents, list):
+        return contents, []
+    limit = int(config.GEMINI_INLINE_LIMIT_MB * 1024 * 1024)
+    if sum(len(_inline_bytes(part) or b"") for part in contents) <= limit:
+        return contents, []
+
+    import io
+
+    from google.genai import types
+
+    uploaded: list[Any] = []
+    try:
+        sent: list[Any] = []
+        for part in contents:
+            data = _inline_bytes(part)
+            if data is None:
+                sent.append(part)
+                continue
+            mime = part.inline_data.mime_type
+            file = client.files.upload(file=io.BytesIO(data), config=types.UploadFileConfig(mime_type=mime))
+            uploaded.append(file)
+            # PDFs are usually ready at once. Wait briefly for any still being processed.
+            for _ in range(30):
+                if getattr(getattr(file, "state", None), "name", "ACTIVE") != "PROCESSING":
+                    break
+                time.sleep(1)
+                file = client.files.get(name=file.name)
+            sent.append(types.Part.from_uri(file_uri=file.uri, mime_type=mime))
+    except Exception:
+        for file in uploaded:
+            try:
+                client.files.delete(name=file.name)
+            except Exception:  # noqa: BLE001
+                pass
+        raise
+    return sent, uploaded
 
 
 def _load_api_key() -> str:
