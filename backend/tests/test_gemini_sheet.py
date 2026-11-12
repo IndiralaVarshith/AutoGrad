@@ -723,3 +723,21 @@ def test_without_calibration_nothing_extra_is_sent(client_for, monkeypatch):
     assert "teacher_example" not in seen[0]["contents"][1]
     assert "teacher_example" not in seen[0]["system_instruction"]
     assert result.calibration_id == "" and result.calibrated_from == ""
+
+
+def test_mcq_letters_left_out_of_a_mixed_reply_are_read_again(client_for):
+    letters = reply({"readable": True, "answers": [
+        {"question_number": 1, "selected_option": "B", "read_confidence": 0.95, "page_number": 1},
+    ]})
+    client, fake = client_for(good_reply(answer()), letters)
+    result = sheet(client)
+    assert len(fake.calls) == 2
+    by_number = {q.question_number: q for q in result.questions}
+    assert by_number[1].final_score == 1 and by_number[1].extracted_text == "B"
+    assert result.total_score == 3
+
+
+def test_no_extra_request_when_mcq_letters_came_back(client_for):
+    client, fake = client_for(good_reply(mcq_answer(letter="A"), answer()))
+    result = sheet(client)
+    assert len(fake.calls) == 1 and result.total_score == 2

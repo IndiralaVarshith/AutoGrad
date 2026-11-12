@@ -226,7 +226,8 @@ _MARKING_END = """
   evidence_quote is the single most important quote."""
 
 _MARKING_NO_MCQ = """
-- Do not mark multiple-choice questions. Leave marks_awarded null and points empty for them."""
+- Multiple-choice questions are marked elsewhere, but still return an entry for every one the
+  student answered, with its selected_option. Leave marks_awarded null and points empty for them."""
 
 _CALIBRATION = """
 
@@ -500,7 +501,59 @@ def _read_parts(
         if result.finish_reason not in ("STOP", ""):
             problems.append(f"Pages {start + 1}-{end}: the reply stopped early ({result.finish_reason}).")
         readings.append((extraction, start))
+    if not mcq_only:
+        readings += _read_missing_mcq(file_bytes, extension, ranges, rubric_list, readings, sheet_id, client, run)
     return readings, problems, model
+
+
+def _read_missing_mcq(
+    file_bytes: bytes,
+    extension: str,
+    ranges: list[tuple[int, int]],
+    rubric_list: list[QuestionRubric],
+    readings: list[tuple[SheetExtraction, int]],
+    sheet_id: str,
+    client: GeminiClient,
+    run: RunBudget,
+) -> list[tuple[SheetExtraction, int]]:
+    """Read the option letters again when a mixed paper's reply left out every MCQ answer.
+
+    Gemini sometimes skips all multiple-choice answers while marking the written ones, and
+    each would then count as blank. One small letters-only request reads them instead. It is
+    sent only when written answers came back and not a single MCQ answer did.
+    """
+    mcq_rubric = [q for q in rubric_list if q.question_format == "MCQ"]
+    mcq_keys = {(q.question_number, normalize_part(q.sub_part)) for q in mcq_rubric}
+    answered = [
+        (a.question_number, normalize_part(a.sub_part))
+        for extraction, _ in readings for a in extraction.answers if _attempted(a)
+    ]
+    if not mcq_rubric or not answered or any(key in mcq_keys for key in answered):
+        return []
+    found: list[tuple[SheetExtraction, int]] = []
+    for start, end in ranges:
+        piece = file_bytes if len(ranges) == 1 else _page_slice(file_bytes, start, end)
+        try:
+            result = client.generate(
+                run,
+                kind="sheet_mcq",
+                sheet_id=sheet_id,
+                contents=["RUBRIC:", rubric_for_prompt(mcq_rubric), "ANSWER SHEET:", _sheet_part(piece, extension)],
+                response_schema=McqSheet,
+                system_instruction=MCQ_INSTRUCTIONS.replace(
+                    "Every question on this paper is multiple choice.",
+                    "Read only the multiple-choice questions in the rubric.",
+                ),
+            )
+        except BadModelResponse:
+            continue
+        parsed = result.parsed if isinstance(result.parsed, McqSheet) else McqSheet.model_validate(result.parsed)
+        extraction = _from_mcq_sheet(parsed)
+        extraction.answers = [
+            a for a in extraction.answers if (a.question_number, normalize_part(a.sub_part)) in mcq_keys
+        ]
+        found.append((extraction, start))
+    return found
 
 
 def _from_mcq_sheet(sheet: McqSheet) -> SheetExtraction:
