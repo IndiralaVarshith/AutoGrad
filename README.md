@@ -1,113 +1,180 @@
 # AutoGrade
 
-AutoGrade reads handwritten exam answer sheets and drafts marks for a teacher to check.
-Gemini reads the question paper, drafts the marking points, then reads and marks each answer sheet
-in **one request per sheet**. Code checks that work and sends anything uncertain to the teacher.
-**No mark is final until a teacher approves the sheet.**
+AutoGrade helps a teacher mark handwritten answer sheets faster.
 
-Papers can be multiple choice, short or long answer, with sub-parts, OR choices and "answer any K of N".
+You upload the question paper and the students' answer sheets. Gemini reads them and suggests marks.
+Anything it is unsure about is flagged for you to check. **No mark is final until you approve the sheet.**
 
-## Before you use it on real exams
+It works with multiple choice, short answer and long answer questions, including sub-parts, OR choices
+and "answer any 3 of 5".
 
-This setup uses Gemini's free tier. Google's terms for unpaid services say people may read what you
-send and that it may be used to improve Google's products, and they say not to submit personal
-information. **Real students' sheets should not go through the free tier.** Real exams need a paid
-key, and the school's agreement.
+---
 
-## Setup
+## What it does, in short
 
-You need Python 3.14, Node.js and Java (for the Firestore emulator).
+- **Reads the question paper** and lists every question with its marks. A progress bar with a
+  percentage and time left shows while it reads.
+- **Marks each answer sheet with one Gemini request.**
+- **Marking style:** choose Generous, Balanced or Strict for each exam, and add your own rules if you like.
+- **No negative marking.** A mistake only lowers the mark for that point, and a mark never goes below 0.
+- **Flags anything uncertain**, such as unreadable writing, a missing question number or a strange mark,
+  so you check it beside the scanned page.
+- **Calibration from one sheet (optional):** mark one sheet yourself and the app marks the rest the same way.
+- **Delete buttons** for every exam, question paper and answer sheet.
+- **Sign-in every time:** the app always opens on the password page when it starts.
+- **Notebook look**, in light and dark mode.
+
+---
+
+## Important: real student data
+
+The free Gemini tier lets Google read what you send and use it to improve its products. **Do not send
+real students' sheets on the free tier.** Use a paid key, and get the school's permission first.
+
+---
+
+## Install (one time)
+
+You need **Python 3.14**, **Node.js** and **Java**. Java runs the local database (the Firestore emulator).
 
 ```bash
 python3 -m venv .venv
+```
+
+```bash
 .venv/bin/pip install -r backend/requirements.txt
+```
+
+```bash
 cd frontend && npm ci && cd ..
+```
+
+```bash
 cp backend/.env.example backend/.env
 ```
 
-Then, in `backend/.env`:
+Then open `backend/.env` and fill in:
 
 | Setting | What to put |
 |---|---|
-| `GEMINI_API_KEY` | Your key from [Google AI Studio](https://aistudio.google.com/). Keep billing off for free use. |
-| `GEMINI_KEY_ENV_NAME` | The name of the entry holding the key, if it is not `GEMINI_API_KEY` |
-| `GEMINI_MODEL` | The one model that does the work |
-| `TEACHER_PASSWORD` | The password everyone signs in with. Nothing works until it is set. |
+| `GEMINI_API_KEY` | Your key from [Google AI Studio](https://aistudio.google.com/) |
+| `GEMINI_MODEL` | The Gemini model to use |
+| `TEACHER_PASSWORD` | The password you will sign in with |
 
-## Run it on the emulator
+---
 
-The emulator keeps all data on your machine. With `FIRESTORE_EMULATOR_HOST` set, the app never loads
-the service account key or touches real Firestore or Storage.
+## Start the app
+
+Open three terminals and run one command in each.
+
+**1. Database**
 
 ```bash
-# Terminal 1
 java -jar ~/.cache/firebase/emulators/cloud-firestore-emulator-v1.19.8.jar --host 127.0.0.1 --port 8080
+```
 
-# Terminal 2
+**2. Backend**
+
+```bash
 cd backend && FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 ../.venv/bin/uvicorn main:app --port 8000
+```
 
-# Terminal 3
+**3. Frontend**
+
+```bash
 cd frontend && npm run dev
 ```
 
-Open <http://localhost:5173>. Use `localhost`, not `127.0.0.1`, so the sign-in cookie reaches the server.
-Every start of the server begins at the sign-in page, and closing the browser signs you out.
+Then open **<http://localhost:5173>**. Use `localhost`, not `127.0.0.1`, or sign-in will not work.
 
-## How a teacher uses it
+All data stays on your computer while you use the emulator.
 
-1. **Setup:** choose or type an exam ID, upload the question paper, and the answer key if you have one.
-   Check every question and mark, pick how strictly written answers are marked (Generous, Balanced or
-   Strict), add your own marking rules if you like, then approve.
-2. **Upload:** add many sheets for the background queue, or mark one now. The queue carries on after a
-   restart. Each sheet is named after its file unless you name it.
-3. **Review:** flagged answers come first, beside the scanned page. Correct the text and marks, write a
-   note when you change a mark, then approve the sheet.
-4. **Results and export:** the spreadsheet is refused until every sheet is approved. You can still
-   download a copy clearly marked NOT FINAL.
+---
 
-### Calibrate with one sheet (optional)
+## How to use it
 
-Mark one sheet first ("Mark this one now"), decide its flagged answers in Review, change any mark you
-disagree with and say why in the note. Then press **Use this sheet to calibrate**. Every written answer
-on that sheet, with your mark and note, is sent with later sheets of the same exam, and Gemini marks to
-your standard. Sheets marked before you calibrated can be marked again with one click (one Gemini
-request each); sheets you have already worked on are never touched. Multiple-choice answers are always
-marked by code from the key. Approving new marks for the exam makes an old calibration stop applying.
+### 1. Setup: the question paper
+1. Choose an exam from the menu, or type a new exam ID.
+2. Upload the question paper, and the answer key if you have one.
+3. Check each question and its marks.
+4. Pick a marking style (Generous, Balanced or Strict) and add your own rules if you want.
+5. Press **Approve**.
 
-### Deleting
+### 2. Upload: the answer sheets
+- Upload many sheets at once and they are marked one by one in the background.
+- Or use **Mark this one now** for a single sheet.
+- The queue carries on after a restart.
 
-Every exam, question paper and answer sheet has a delete button:
+### 3. Review: check the marks
+- Flagged answers are shown first, beside the scanned page.
+- Fix the text or marks if needed, and write a short note when you change a mark.
+- Press **Approve** when the sheet is right.
 
-- **Exam** (exam menu): deletes its paper, approved marks, calibration and every sheet.
-- **Question paper** (Setup): deletes the paper, its approved marks and calibration; the exam name stays.
-  Refused while sheets are marked against it.
-- **Answer sheet** (Upload queue, Review, Results): deletes its marks, review notes, stored pages and
-  queue entry. Deleting the calibration sheet also stops the calibration.
+### 4. Results: download
+- Download the marks spreadsheet once every sheet is approved.
+- Before that, you can download a copy that is clearly marked **NOT FINAL**.
 
-Deletes remove the data from Firestore, the local sheet copies and, outside the emulator, Firebase Storage.
+---
 
-### Why an answer gets flagged
+## Calibration (optional, for better accuracy)
 
-Unreadable, no matching question, Gemini unsure (under `GEMINI_MIN_CONFIDENCE`), quoted evidence not in
-the answer, an impossible mark, an unclear option, no number written, more answers than the paper
-allows, or the sheet could not be read. Optional: partial marks on a question worth
-`GEMINI_HIGH_VALUE_MARKS` or more, and zeros on written answers (`GEMINI_FLAG_ZERO_ON_WRITTEN`).
-A flagged mark counts toward the total as a suggestion until the teacher decides.
+Use this when you want the app to mark the way you do.
 
-An answer with no flag can still be wrong, so spot-check before approving in bulk.
+1. Mark one sheet with **Mark this one now**.
+2. In Review, decide its flagged answers. Change any mark you disagree with and write why.
+3. Press **Use this sheet to calibrate**.
 
-## Request budget
+From then on, every new sheet of that exam is marked using your marks and notes as the example.
 
-- One request per question paper, and one per sheet (two only over 12 pages).
-- Requests are paced under `GEMINI_RPM_LIMIT` and `GEMINI_TPM_LIMIT`, with backoff on 429 and overload.
-- `GEMINI_RUN_CALL_CAP` limits calls in a batch. When reached, the queue waits for Resume.
-- When the daily allowance runs out, the queue waits until midnight Pacific and carries on by itself.
-- Calls, tokens and notional cost are logged per sheet in `backend/gemini_usage/calls.jsonl`.
+- Sheets marked before calibration can be marked again with one click.
+- Sheets you have already checked or changed are never re-marked.
+- Multiple-choice answers are always marked straight from the answer key.
+- If you approve new marks for the question paper, the old calibration stops applying.
+- Deleting the calibration sheet stops the calibration.
+
+---
+
+## Deleting
+
+| What | Where | What gets deleted |
+|---|---|---|
+| Exam | Exam menu | Everything: paper, marks, calibration and all sheets |
+| Question paper | Setup | The paper, its approved marks and calibration. Not allowed while sheets use it. |
+| Answer sheet | Upload, Review or Results | Its marks, notes, scanned pages and queue entry |
+
+Deleted data is removed from the database and from every other place it was stored.
+
+---
+
+## Why an answer gets flagged
+
+- The writing could not be read
+- No matching question, or no question number written
+- Gemini was not confident
+- The quoted answer text is not on the page
+- The mark is not possible for that question
+- An unclear multiple-choice option
+- More answers than the paper allows
+
+A flagged mark counts as a suggestion until you decide. An answer with no flag can still be wrong, so
+spot-check before approving many sheets at once.
+
+---
+
+## Gemini usage
+
+- One request to read a question paper.
+- One request per answer sheet (two if the sheet is over 12 pages).
+- Requests are paced to stay within the free limits.
+- If the daily limit runs out, the queue waits and carries on the next day by itself.
+- Every request is logged in `backend/gemini_usage/calls.jsonl`.
+
+---
 
 ## Tests
 
-Tests use fake Gemini replies, and real calls are blocked. They clear their emulator, so they run on a
-separate one on port 8099 and refuse to use 8080.
+Tests use fake Gemini replies, so they cost nothing. They wipe their database, so they use a
+**separate emulator on port 8099**, never 8080.
 
 ```bash
 java -jar ~/.cache/firebase/emulators/cloud-firestore-emulator-v1.19.8.jar --host 127.0.0.1 --port 8099
@@ -117,15 +184,17 @@ java -jar ~/.cache/firebase/emulators/cloud-firestore-emulator-v1.19.8.jar --hos
 cd backend && ../.venv/bin/python -m pytest tests -q
 ```
 
+---
+
 ## Project layout
 
-| Path | What it holds |
+| Folder or file | What it is |
 |---|---|
-| `backend/services/gemini_client.py` | The only route to Gemini: pacing, retries, caps, cost log |
-| `backend/services/gemini_paper.py` | Question paper to structured questions, totals checks |
-| `backend/services/gemini_sheet.py` | One sheet in one request: read, mark, flag |
-| `backend/services/calibration.py` | One teacher-marked sheet as the example for later sheets |
-| `backend/services/queue_manager.py` | Background queue |
-| `backend/routes/` | API routes |
-| `frontend/src/pages/` | Login, Setup, Upload, Review, Results |
-| `docs/PROGRESS.md` | Decisions, status and known gaps |
+| `backend/services/gemini_client.py` | Talks to Gemini: pacing, retries and usage log |
+| `backend/services/gemini_paper.py` | Reads the question paper |
+| `backend/services/gemini_sheet.py` | Reads and marks one answer sheet |
+| `backend/services/calibration.py` | Calibration from one marked sheet |
+| `backend/services/queue_manager.py` | The background marking queue |
+| `backend/routes/` | The backend API |
+| `frontend/src/pages/` | The pages: Login, Setup, Upload, Review, Results |
+| `docs/PROGRESS.md` | Progress notes and known gaps |
