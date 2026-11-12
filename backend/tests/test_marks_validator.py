@@ -3,7 +3,6 @@ Unit Tests for Examination Marks Validation & Structured Representation Engine
 Covers Patterns A through G as specified in requirements.
 """
 
-import pytest
 from services.marks_validator import (
     parse_section_formula,
     extract_declared_marks_from_text,

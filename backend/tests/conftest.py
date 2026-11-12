@@ -18,8 +18,6 @@ if os.environ["FIRESTORE_EMULATOR_HOST"].rsplit(":", 1)[-1] == "8080":
     raise RuntimeError("Tests must not use the emulator on 8080: it holds the app's real data.")
 os.environ["AUTOGRAD_BLOCK_REAL_GEMINI"] = "1"
 os.environ["TEACHER_PASSWORD"] = "test-password"
-# One request per sheet unless a test switches the second pass on.
-os.environ["GEMINI_DOUBLE_CHECK"] = "false"
 # Sample answers are a few words long; the length tests switch the check on themselves.
 os.environ["GEMINI_WORDS_PER_MARK"] = "0"
 # Tests never touch the real call log, daily count, queue or stored sheets.

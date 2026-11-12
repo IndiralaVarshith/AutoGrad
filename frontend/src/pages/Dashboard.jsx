@@ -1,12 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ArrowRight, ArrowUp, BadgeCheck, ChevronDown, ChevronsUpDown, Clock, Flag, Inbox, RefreshCw, Search } from 'lucide-react';
+import {
+  ArrowDown, ArrowRight, ArrowUp, BadgeCheck, ChevronDown, ChevronsUpDown, Clock, Flag, GraduationCap, Inbox, Loader2, RefreshCw, Search, Trash2,
+} from 'lucide-react';
 import api from '../api';
 import ConfidenceBadge from '../components/ConfidenceBadge';
 import EvidenceTable from '../components/EvidenceTable';
 import ExportButton from '../components/ExportButton';
 import {
-  Button, CountUp, EmptyState, Expand, PageHeader, Pill, Segmented, Skeleton, Tip, cx,
+  Button, CountUp, EmptyState, Expand, PageHeader, Pill, Segmented, Skeleton, Tip, cx, errorText,
 } from '../components/ui';
+import { useFeedback } from '../components/feedback';
 
 /** A flag always wins: a sheet with undecided answers never reads as ready or final. */
 function sheetState(paper) {
@@ -109,7 +112,7 @@ function SortHeader({ label, sortKey, sort, onSort, align = 'left' }) {
   );
 }
 
-function ResultRow({ paper, index, onGoToReview }) {
+function ResultRow({ paper, index, onGoToReview, onDelete, deleting }) {
   const [open, setOpen] = useState(false);
   const [hasOpened, setHasOpened] = useState(false);
   const toggle = () => {
@@ -140,7 +143,16 @@ function ResultRow({ paper, index, onGoToReview }) {
             <ChevronDown size={16} aria-hidden="true" className={cx('transition-transform duration-300', open ? 'rotate-0' : '-rotate-90')} />
           </button>
         </td>
-        <td className="px-4 py-3 font-semibold">{paper.hall_ticket}</td>
+        <td className="px-4 py-3 font-semibold">
+          <span className="flex items-center gap-1.5">
+            {paper.hall_ticket}
+            {paper.calibrated_from && (
+              <Tip text={`Marked to your calibration from ${paper.calibrated_from}`}>
+                <GraduationCap size={14} tabIndex={0} className="text-primary" aria-label={`Marked to your calibration from ${paper.calibrated_from}`} />
+              </Tip>
+            )}
+          </span>
+        </td>
         <td className="px-4 py-3 text-muted">{paper.student_name || 'Not given'}</td>
         <td className="px-4 py-3">
           <div className="flex items-center gap-3">
@@ -155,10 +167,23 @@ function ResultRow({ paper, index, onGoToReview }) {
         </td>
         <td className="px-4 py-3"><StateBadge paper={paper} /></td>
         <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
-          <Button size="sm" variant={flagged ? 'primary' : 'ghost'} onClick={() => onGoToReview?.(paper.hall_ticket)}>
-            {flagged ? 'Review' : 'Open'}
-            <ArrowRight size={14} aria-hidden="true" />
-          </Button>
+          <span className="inline-flex items-center gap-1">
+            <Button size="sm" variant={flagged ? 'primary' : 'ghost'} onClick={() => onGoToReview?.(paper.hall_ticket)}>
+              {flagged ? 'Review' : 'Open'}
+              <ArrowRight size={14} aria-hidden="true" />
+            </Button>
+            <Tip text="Delete this sheet" className="tip-end">
+              <button
+                type="button"
+                className="icon-btn icon-btn-danger size-8"
+                disabled={deleting}
+                onClick={() => onDelete(paper)}
+                aria-label={`Delete the sheet ${paper.hall_ticket}`}
+              >
+                {deleting ? <Loader2 size={15} className="spin" aria-hidden="true" /> : <Trash2 size={15} aria-hidden="true" />}
+              </button>
+            </Tip>
+          </span>
         </td>
       </tr>
       {hasOpened && (
@@ -195,6 +220,8 @@ export default function Dashboard({ examId = '', onGoToReview, onGoToUpload, onR
   const [searchQuery, setSearchQuery] = useState('');
   const [filterStatus, setFilterStatus] = useState('ALL');
   const [sort, setSort] = useState({ key: null, direction: 'asc' });
+  const [deleting, setDeleting] = useState('');
+  const { toast, confirm } = useFeedback();
   const lastPayload = useRef('');
   const examRef = useRef(examId);
   examRef.current = examId;
@@ -239,6 +266,26 @@ export default function Dashboard({ examId = '', onGoToReview, onGoToUpload, onR
     setRefreshing(true);
     await fetchResults();
     setRefreshing(false);
+  };
+
+  const handleDelete = async (paper) => {
+    const goAhead = await confirm({
+      title: `Delete the sheet “${paper.hall_ticket}”?`,
+      body: 'Its marks, review notes and stored pages are deleted. If it is your calibration sheet, the calibration stops too. It cannot be undone.',
+      confirmLabel: 'Delete sheet',
+      danger: true,
+    });
+    if (!goAhead) return;
+    try {
+      setDeleting(paper.hall_ticket);
+      const res = await api.deleteSheet(examId, paper.hall_ticket);
+      toast.success(`Deleted ${paper.hall_ticket}.${res.calibration_removed ? ' Its calibration was removed too.' : ''}`);
+      await fetchResults();
+    } catch (err) {
+      toast.error(errorText(err, 'Could not delete the sheet.'));
+    } finally {
+      setDeleting('');
+    }
   };
 
   const handleSort = (key) => {
@@ -367,7 +414,14 @@ export default function Dashboard({ examId = '', onGoToReview, onGoToUpload, onR
                   </thead>
                   <tbody>
                     {shown.map((paper, index) => (
-                      <ResultRow key={paper.hall_ticket} paper={paper} index={index} onGoToReview={onGoToReview} />
+                      <ResultRow
+                        key={paper.hall_ticket}
+                        paper={paper}
+                        index={index}
+                        onGoToReview={onGoToReview}
+                        onDelete={handleDelete}
+                        deleting={deleting === paper.hall_ticket}
+                      />
                     ))}
                   </tbody>
                 </table>

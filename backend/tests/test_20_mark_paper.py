@@ -7,13 +7,10 @@ Verifies that:
   4. Approved rubric persists to Firestore and is retrieved with total_marks=20.0.
 """
 
-import os
-import pytest
 from services.marks_validator import (
     validate_and_reconcile_exam_structure,
     normalize_rubric_questions_with_structure,
     parse_section_formula,
-    extract_declared_marks_from_text,
 )
 
 

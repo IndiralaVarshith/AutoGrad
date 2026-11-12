@@ -1,7 +1,6 @@
 /**
- * AutoGrade — API Client
- * 
- * Handles all Axios HTTP requests to the FastAPI backend.
+ * AutoGrade API client: every request the pages make to the FastAPI backend.
+ * The session is an HttpOnly cookie, so every call sends credentials.
  */
 
 import axios from 'axios';
@@ -11,218 +10,122 @@ const BASE_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
 const client = axios.create({
   baseURL: BASE_URL,
   withCredentials: true,
-  timeout: 300000, // Legacy setup operations; sheet grading uses a background job.
+  timeout: 300000, // Reading a question paper can take a while; sheets are graded in the background.
 });
 
+const id = (value) => encodeURIComponent(value);
+
 export const api = {
-  authStatus: async () => {
-    const res = await client.get('/auth/status');
-    return res.data;
-  },
+  // ---------------------------------------------------------------- sign-in
+  authStatus: async () => (await client.get('/auth/status')).data,
+  login: async (password) => (await client.post('/auth/login', { password })).data,
+  logout: async () => (await client.post('/auth/logout')).data,
 
-  login: async (password) => {
-    const res = await client.post('/auth/login', { password });
-    return res.data;
-  },
+  // ------------------------------------------------- exams and question papers
+  getExams: async () => (await client.get('/exam')).data,
 
-  logout: async () => {
-    const res = await client.post('/auth/logout');
-    return res.data;
-  },
+  setupExam: async (formData) => (await client.post('/exam/setup', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })).data,
 
-  // Check backend health
-  checkHealth: async () => {
-    const res = await client.get('/');
-    return res.data;
-  },
-
-  // Exam Setup (RAG Rubric proposal)
-  setupExam: async (formData) => {
-    const res = await client.post('/exam/setup', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    });
-    return res.data;
-  },
-
-  // Draft criteria from an answer key. Nothing is approved until the teacher approves it.
+  // Draft marking points from a CSV or text answer key. Nothing is approved here.
   draftCriteria: async (examId, answerKeyFile) => {
     const formData = new FormData();
     formData.append('answer_key', answerKeyFile);
-    const res = await client.post(`/exam/${encodeURIComponent(examId)}/rubric/draft-criteria`, formData, {
+    return (await client.post(`/exam/${id(examId)}/rubric/draft-criteria`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
-    });
-    return res.data;
+    })).data;
   },
 
-  // List all configured exams
-  getExams: async () => {
-    const res = await client.get('/exam');
-    return res.data;
-  },
+  getExamRubric: async (examId) => (await client.get(`/exam/${id(examId)}/rubric`)).data,
 
-  // Get specific exam details
-  getExamDetails: async (examId) => {
-    const res = await client.get(`/exam/${examId}`);
-    return res.data;
-  },
-
-  // Get approved rubric for exam
-  getExamRubric: async (examId) => {
-    const res = await client.get(`/exam/${examId}/rubric`);
-    return res.data;
-  },
-
-  // Rubric Approval
-  approveRubric: async (examId, rubric, docFingerprint = '', genFingerprint = '', totalMarks = null, teacherConfirmed = false, marking = {}) => {
-    const res = await client.post('/exam/rubric/approve', {
+  approveRubric: async (examId, rubric, docFingerprint = '', genFingerprint = '', totalMarks = null, teacherConfirmed = false, marking = {}) => (
+    await client.post('/exam/rubric/approve', {
       exam_id: examId,
-      rubric: rubric,
+      rubric,
       doc_fingerprint: docFingerprint,
       gen_fingerprint: genFingerprint,
       total_marks: totalMarks !== null ? Number(totalMarks) : null,
       teacher_confirmed: teacherConfirmed,
       marking_style: marking.style || '',
       marking_notes: marking.notes || '',
-    });
-    return res.data;
-  },
+    })
+  ).data,
 
-  // Single student evaluation is accepted quickly and processed in the background.
-  getQueueStatus: async (examId) => {
-    const res = await client.get(`/queue/${encodeURIComponent(examId)}`);
-    return res.data;
-  },
+  // Deletes the exam: its paper, approved marks, calibration and every answer sheet.
+  deleteExam: async (examId) => (await client.delete(`/exam/${id(examId)}`)).data,
 
-  resumeQueue: async (examId) => {
-    const res = await client.post(`/queue/${encodeURIComponent(examId)}/resume`);
-    return res.data;
-  },
+  // Deletes only the question paper and its approved marks. Refused while sheets depend on it.
+  deletePaper: async (examId) => (await client.delete(`/exam/${id(examId)}/paper`)).data,
 
-  evaluateSingleStudent: async (formData, onUploadProgress) => {
-    const res = await client.post('/evaluate', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-      timeout: 120000,
-      onUploadProgress,
-    });
-    return res.data;
-  },
+  // ------------------------------------------------------------ answer sheets
+  uploadAnswerSheets: async (formData) => (await client.post('/upload', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })).data,
 
-  getEvaluationJob: async (jobId) => {
-    const res = await client.get(`/evaluate/jobs/${encodeURIComponent(jobId)}`, {
-      timeout: 15000,
-    });
-    return res.data;
-  },
+  evaluateSingleStudent: async (formData, onUploadProgress) => (await client.post('/evaluate', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 120000,
+    onUploadProgress,
+  })).data,
 
-  retryEvaluationJob: async (jobId) => {
-    const res = await client.post(`/evaluate/jobs/${encodeURIComponent(jobId)}/retry`, null, {
-      timeout: 15000,
-    });
-    return res.data;
-  },
+  getEvaluationJob: async (jobId) => (await client.get(`/evaluate/jobs/${id(jobId)}`, { timeout: 15000 })).data,
+  retryEvaluationJob: async (jobId) => (await client.post(`/evaluate/jobs/${id(jobId)}/retry`, null, { timeout: 15000 })).data,
+  cancelEvaluationJob: async (jobId) => (await client.post(`/evaluate/jobs/${id(jobId)}/cancel`, null, { timeout: 15000 })).data,
 
-  cancelEvaluationJob: async (jobId) => {
-    const res = await client.post(`/evaluate/jobs/${encodeURIComponent(jobId)}/cancel`, null, {
-      timeout: 15000,
-    });
-    return res.data;
-  },
+  getQueueStatus: async (examId) => (await client.get(`/queue/${id(examId)}`)).data,
+  resumeQueue: async (examId) => (await client.post(`/queue/${id(examId)}/resume`)).data,
 
-  // Bulk Upload Answer Sheets
-  uploadAnswerSheets: async (formData) => {
-    const res = await client.post('/upload', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    });
-    return res.data;
-  },
+  getExamResults: async (examId) => (await client.get(`/results/${id(examId)}`)).data,
 
-  // Results
-  getExamResults: async (examId) => {
-    const res = await client.get(`/results/${examId}`);
-    return res.data;
-  },
+  // Deletes one sheet everywhere: marks, review notes, stored pages, queue entry.
+  deleteSheet: async (examId, hallTicket) => (await client.delete(`/results/${id(examId)}/${id(hallTicket)}`)).data,
 
-  getStudentResult: async (examId, hallTicket) => {
-    const res = await client.get(`/results/${examId}/${hallTicket}`);
-    return res.data;
-  },
-
-  // Teacher Review actions
-  confirmQuestion: async (examId, hallTicket, questionNumber, subPart = '') => {
-    const res = await client.post('/review/confirm', {
+  // ------------------------------------------------------------------ review
+  confirmQuestion: async (examId, hallTicket, questionNumber, subPart = '') => (
+    await client.post('/review/confirm', {
       exam_id: examId,
       hall_ticket: hallTicket,
       question_number: Number(questionNumber),
       sub_part: subPart,
-    });
-    return res.data;
-  },
+    })
+  ).data,
 
-  editQuestionScore: async (examId, hallTicket, questionNumber, newScore, editReason = '', subPart = '') => {
-    const res = await client.post('/review/edit', {
-      exam_id: examId,
-      hall_ticket: hallTicket,
-      question_number: Number(questionNumber),
-      sub_part: subPart,
-      new_score: Number(newScore),
-      edit_reason: editReason,
-    });
-    return res.data;
-  },
+  saveAnswerEdit: async (payload) => (await client.post('/review/edit', payload)).data,
 
-  saveAnswerEdit: async (payload) => {
-    const res = await client.post('/review/edit', payload);
-    return res.data;
-  },
+  confirmBlanks: async (examId, hallTicket) => (
+    await client.post('/review/confirm-blanks', { exam_id: examId, hall_ticket: hallTicket })
+  ).data,
 
-  confirmBlanks: async (examId, hallTicket) => {
-    const res = await client.post('/review/confirm-blanks', { exam_id: examId, hall_ticket: hallTicket });
-    return res.data;
-  },
+  approveSheet: async (examId, hallTicket, unmatchedChecked = false) => (
+    await client.post('/review/approve', { exam_id: examId, hall_ticket: hallTicket, unmatched_checked: unmatchedChecked })
+  ).data,
 
-  approveSheet: async (examId, hallTicket, unmatchedChecked = false) => {
-    const res = await client.post('/review/approve', {
-      exam_id: examId,
-      hall_ticket: hallTicket,
-      unmatched_checked: unmatchedChecked,
-    });
-    return res.data;
-  },
+  approveUnflagged: async (examId) => (await client.post(`/review/approve-unflagged/${id(examId)}`)).data,
 
-  approveUnflagged: async (examId) => {
-    const res = await client.post(`/review/approve-unflagged/${encodeURIComponent(examId)}`);
-    return res.data;
-  },
+  getReviewSourcePageUrl: (examId, hallTicket, pageNumber) => (
+    `${BASE_URL}/review/source-page/${id(examId)}/${id(hallTicket)}/${Number(pageNumber)}`
+  ),
 
+  // ------------------------------------------------------------- calibration
+  getCalibration: async (examId) => (await client.get(`/calibration/${id(examId)}`)).data,
+
+  // Learns from this marked sheet. Approves it first if every answer is decided.
+  calibrateWithSheet: async (examId, hallTicket, unmatchedChecked = false) => (
+    await client.post(`/calibration/${id(examId)}/sheet/${id(hallTicket)}`, { unmatched_checked: unmatchedChecked })
+  ).data,
+
+  stopCalibration: async (examId) => (await client.delete(`/calibration/${id(examId)}`)).data,
+
+  // Marks again, to the calibration, the sheets the teacher has not touched. One Gemini request each.
+  remarkWithCalibration: async (examId) => (await client.post(`/calibration/${id(examId)}/remark`)).data,
+
+  // ------------------------------------------------------------------ export
   // Refuses with 409 while sheets are not final, unless the marked copy is asked for.
-  downloadExport: async (examId, includeNotFinal = false) => {
-    const res = await client.get(`/export/${encodeURIComponent(examId)}`, {
-      params: includeNotFinal ? { include_not_final: true } : {},
-      responseType: 'blob',
-    });
-    return res;
-  },
-
-  reviewOCRRegion: async (payload) => {
-    const res = await client.post('/review/ocr-region', payload);
-    return res.data;
-  },
-
-  reviewOCRPage: async (payload) => {
-    const res = await client.post('/review/ocr-page', payload);
-    return res.data;
-  },
-
-  regradeValidatedOCR: async (payload) => {
-    const res = await client.post('/review/ocr-regrade', payload);
-    return res.data;
-  },
-
-  getReviewSourcePageUrl: (examId, hallTicket, pageNumber) =>
-    `${BASE_URL}/review/source-page/${encodeURIComponent(examId)}/${encodeURIComponent(hallTicket)}/${Number(pageNumber)}`,
-
-  // Export Download URL
-  getExportUrl: (examId) => `${BASE_URL}/export/${examId}`,
+  downloadExport: async (examId, includeNotFinal = false) => client.get(`/export/${id(examId)}`, {
+    params: includeNotFinal ? { include_not_final: true } : {},
+    responseType: 'blob',
+  }),
 };
 
 export default api;

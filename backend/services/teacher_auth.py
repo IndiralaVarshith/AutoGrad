@@ -2,6 +2,10 @@
 
 Logging in sets a signed, HttpOnly cookie, so page images and downloads work too. With no
 password set, every protected route refuses: the app never runs open by accident.
+
+Sessions belong to one run of the server. Each start makes a new secret, so starting the
+app again always begins at the sign-in page, and the cookie also ends when the browser
+closes.
 """
 
 from __future__ import annotations
@@ -9,10 +13,13 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import secrets
 import time
 
 COOKIE_NAME = "autograde_session"
 SESSION_SECONDS = 12 * 3600
+# New on every start of the server: sessions from an earlier run stop working.
+_RUN_SECRET = secrets.token_hex(16)
 
 
 def _password() -> str:
@@ -29,7 +36,8 @@ def password_matches(attempt: str) -> bool:
 
 
 def _signature(expires: str) -> str:
-    return hmac.new(_password().encode(), f"autograde-session:{expires}".encode(), hashlib.sha256).hexdigest()
+    key = f"{_password()}:{_RUN_SECRET}".encode()
+    return hmac.new(key, f"autograde-session:{expires}".encode(), hashlib.sha256).hexdigest()
 
 
 def new_session(now: float | None = None) -> str:

@@ -1,5 +1,7 @@
 """A local copy of each uploaded sheet, so the review screen can always show its pages.
 
+Deleting a sheet removes this copy and, outside the emulator, its Firebase Storage copy.
+
 File names come from a hash, so an exam or student name can never reach another folder.
 """
 
@@ -36,3 +38,18 @@ def delete(exam_id: str, hall_ticket: str) -> None:
     base = _base(exam_id, hall_ticket)
     for extension in (".pdf", ".png", ".jpg", ".jpeg"):
         (base.parent / f"{base.name}{extension}").unlink(missing_ok=True)
+
+
+def delete_cloud_copies(exam_id: str, hall_ticket: str | None = None) -> int:
+    """Delete the Firebase Storage copies of one sheet, or of a whole exam.
+
+    Nothing to do with the emulator, which never uses Storage. Returns how many went.
+    """
+    bucket = config.get_storage_bucket()
+    if bucket is None:
+        return 0
+    prefix = f"exams/{exam_id}/" + (f"sheets/{hall_ticket}/" if hall_ticket else "")
+    blobs = list(bucket.list_blobs(prefix=prefix))
+    for blob in blobs:
+        blob.delete()
+    return len(blobs)

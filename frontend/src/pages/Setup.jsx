@@ -216,11 +216,11 @@ function QuestionCard({ q, qIdx, index, handlers }) {
   );
 }
 
-export default function Setup({ onExamApproved, onExamIdChange, examId = '' }) {
+export default function Setup({ onExamApproved, onExamIdChange, onPaperDeleted, examId = '' }) {
   const [step, setStep] = useState(1);
   const [questionFile, setQuestionFile] = useState(null);
-  const [textbookFile, setTextbookFile] = useState(null);
   const [paperKeyFile, setPaperKeyFile] = useState(null);
+  const [deletingPaper, setDeletingPaper] = useState(false);
   const [paperType, setPaperType] = useState('MIXED');
   const [markingStyle, setMarkingStyle] = useState('GENEROUS');
   const [markingNotes, setMarkingNotes] = useState('');
@@ -346,9 +346,6 @@ export default function Setup({ onExamApproved, onExamIdChange, examId = '' }) {
       const formData = new FormData();
       formData.append('exam_id', examId.trim());
       formData.append('question_paper', questionFile);
-      if (textbookFile) {
-        formData.append('textbook', textbookFile);
-      }
       formData.append('force_regenerate', forceRegenerate ? 'true' : 'false');
       formData.append('paper_type', paperType);
       if (paperKeyFile) {
@@ -519,6 +516,23 @@ export default function Setup({ onExamApproved, onExamIdChange, examId = '' }) {
     }
   };
 
+  const clearDraft = () => {
+    try {
+      sessionStorage.removeItem(`autograde_setup_${examId.trim()}`);
+    } catch {
+      // ignore
+    }
+    setStep(1);
+    setQuestionFile(null);
+    setPaperKeyFile(null);
+    setRubricQuestions([]);
+    setExtractedSummary(null);
+    setQuestionsChecked(false);
+    setGenFingerprint('');
+    setDocFingerprint('');
+    setHasUnsavedEdits(false);
+  };
+
   // Reset draft to configure a fresh paper
   const handleResetDraft = async () => {
     if (hasUnsavedEdits) {
@@ -530,21 +544,29 @@ export default function Setup({ onExamApproved, onExamIdChange, examId = '' }) {
       });
       if (!goAhead) return;
     }
+    clearDraft();
+  };
+
+  // Deletes the saved paper and its approved marks from the database, not just this draft.
+  const handleDeletePaper = async () => {
+    const goAhead = await confirm({
+      title: `Delete the question paper of “${examId.trim()}”?`,
+      body: 'This deletes the paper, its approved marks and any calibration. Delete the answer sheets first if any were marked. The exam name stays, so you can upload a new paper.',
+      confirmLabel: 'Delete paper',
+      danger: true,
+    });
+    if (!goAhead) return;
     try {
-      sessionStorage.removeItem(`autograde_setup_${examId.trim()}`);
-    } catch {
-      // ignore
+      setDeletingPaper(true);
+      await api.deletePaper(examId.trim());
+      clearDraft();
+      toast.success('Question paper deleted. You can upload a new one.');
+      onPaperDeleted?.();
+    } catch (err) {
+      toast.error(errorText(err, 'Could not delete the question paper.'));
+    } finally {
+      setDeletingPaper(false);
     }
-    setStep(1);
-    setQuestionFile(null);
-    setTextbookFile(null);
-    setPaperKeyFile(null);
-    setRubricQuestions([]);
-    setExtractedSummary(null);
-    setQuestionsChecked(false);
-    setGenFingerprint('');
-    setDocFingerprint('');
-    setHasUnsavedEdits(false);
   };
 
   const displayTotal = extractedSummary?.total_marks !== undefined
@@ -593,33 +615,18 @@ export default function Setup({ onExamApproved, onExamIdChange, examId = '' }) {
               <p className="mt-1.5 text-sm text-muted">{PAPER_TYPE_HINT[paperType]}</p>
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div>
-                <div className="label">Answer key</div>
-                <Dropzone
-                  compact
-                  optional
-                  title="Add an answer key"
-                  hint="Helps draft the marking points"
-                  accept=".pdf,.txt,.png,.jpg,.jpeg"
-                  files={paperKeyFile ? [paperKeyFile] : []}
-                  onFiles={(files) => setPaperKeyFile(files[0] || null)}
-                  onReject={toast.error}
-                />
-              </div>
-              <div>
-                <div className="label">Reference notes</div>
-                <Dropzone
-                  compact
-                  optional
-                  title="Add notes or a textbook"
-                  hint="PDF or image"
-                  accept=".pdf,.jpg,.jpeg,.png"
-                  files={textbookFile ? [textbookFile] : []}
-                  onFiles={(files) => setTextbookFile(files[0] || null)}
-                  onReject={toast.error}
-                />
-              </div>
+            <div>
+              <div className="label">Answer key</div>
+              <Dropzone
+                compact
+                optional
+                title="Add an answer key"
+                hint="Helps draft the marking points and the correct options"
+                accept=".pdf,.txt,.png,.jpg,.jpeg"
+                files={paperKeyFile ? [paperKeyFile] : []}
+                onFiles={(files) => setPaperKeyFile(files[0] || null)}
+                onReject={toast.error}
+              />
             </div>
           </div>
 
@@ -657,7 +664,15 @@ export default function Setup({ onExamApproved, onExamIdChange, examId = '' }) {
           {extractedSummary && (
             <div className="card space-y-4 p-5">
               {extractedSummary.is_approved && (
-                <Callout tone="good" title={`Approved (version ${extractedSummary.version || 1})`}>
+                <Callout
+                  tone="good"
+                  title={`Approved (version ${extractedSummary.version || 1})`}
+                  action={(
+                    <Button size="sm" variant="danger" icon={Trash2} loading={deletingPaper} onClick={handleDeletePaper}>
+                      Delete paper
+                    </Button>
+                  )}
+                >
                   This exam already has approved marks. You can keep them and move on to Upload.
                 </Callout>
               )}
@@ -725,6 +740,7 @@ export default function Setup({ onExamApproved, onExamIdChange, examId = '' }) {
                 <div className="flex flex-wrap gap-2">
                   <Button icon={RefreshCw} loading={loading} onClick={(e) => handleGenerateRubric(e, true)}>Read the paper again</Button>
                   <Button variant="danger" icon={Trash2} onClick={handleResetDraft}>Clear draft and use a different paper</Button>
+                  <Button variant="danger" icon={Trash2} loading={deletingPaper} onClick={handleDeletePaper}>Delete the saved question paper</Button>
                 </div>
               </div>
             </Disclosure>

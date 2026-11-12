@@ -75,7 +75,6 @@ class QuestionGrade(BaseModel):
     final_score: float = 0.0  # counts toward the total; a flagged answer's is its suggestion
     suggested_score: float | None = None  # draft shown to the teacher when flagged
     selected_option: str = ""  # MCQ only: the letter read from the sheet
-    second_opinion: dict | None = None  # the second pass's reading and mark, for the teacher
     blank: bool = False  # no answer was found on the sheet, so 0
     extra: bool = False  # answered beyond what the paper asks; a better answer counts instead
     flag_reason: str = ""  # why this answer needs review
@@ -95,43 +94,6 @@ class QuestionGrade(BaseModel):
     independent_verification: dict | None = None
 
 
-class OCRRegion(BaseModel):
-    """One OCR line with a normalized box on its original rendered page."""
-    region_id: str
-    page_number: int
-    bbox: list[float] = Field(default_factory=list)  # normalized x0, y0, x1, y1
-    extracted_text: str = ""
-    question_number_candidate: int | None = None
-    question_mapping_status: str = "UNRESOLVED"
-    engine: str = ""
-    model_version: str = ""
-    engine_score: float | None = None
-    uncertainty_class: str = "UNCALIBRATED"
-    uncertainty_reason: str = ""
-    validation_status: str = "PENDING"
-    teacher_corrected_text: str | None = None
-    teacher_question_number: int | None = None
-    teacher_sub_part: str = ""
-    validated_at: str = ""
-
-
-class OCRPageResult(BaseModel):
-    """Page-level OCR diagnostics; source page numbering is one-based."""
-    page_number: int
-    width: int = 0
-    height: int = 0
-    image_sha256: str = ""
-    status: str = "UNAVAILABLE"  # PROCESSED | BLANK_CANDIDATE | UNREADABLE | UNAVAILABLE
-    blank_candidate: bool = False
-    quality_flags: list[str] = Field(default_factory=list)
-    regions: list[OCRRegion] = Field(default_factory=list)
-    error: str = ""
-    validation_status: str = "PENDING"
-    teacher_question_number: int | None = None
-    teacher_sub_part: str = ""
-    validated_at: str = ""
-
-
 class PaperResult(BaseModel):
     """Full result for one student's answer sheet."""
     hall_ticket: str
@@ -146,26 +108,20 @@ class PaperResult(BaseModel):
     finality_status: str = "PENDING_VALIDATION"
     source_file_reference: str = ""
     rubric_version: str = ""
-    ocr_pages: list[OCRPageResult] = Field(default_factory=list)
     unmapped_answers: list[dict] = Field(default_factory=list)
     page_readers: list[dict] = Field(default_factory=list)  # which model read each page
     sheet_problems: list[str] = Field(default_factory=list)
-    double_checked: bool = False  # a second, independent pass marked the sheet too
     source_sha256: str = ""  # which file these marks came from
     page_count: int = 0
     teacher_approved: bool = False  # only a teacher's approval makes a sheet final
     gemini_usage: dict = Field(default_factory=dict)  # calls, tokens, notional cost
+    calibration_id: str = ""  # the teacher's calibration this sheet was marked to, if any
+    calibrated_from: str = ""  # the hall ticket of that calibration sheet
 
 
 # =========================================================
 # API REQUEST / RESPONSE SCHEMAS
 # =========================================================
-
-class ExamSetupRequest(BaseModel):
-    """Request body for POST /exam/setup."""
-    exam_id: str
-    max_marks_per_question: dict[int, float] = Field(default_factory=dict)
-
 
 class RubricApproveRequest(BaseModel):
     """Request body for POST /exam/rubric/approve."""
@@ -177,12 +133,6 @@ class RubricApproveRequest(BaseModel):
     total_marks: float | None = None
     marking_style: str = ""  # GENEROUS | BALANCED | STRICT; empty uses the configured default
     marking_notes: str = ""  # the teacher's own marking rules, in plain words
-
-
-class StudentMeta(BaseModel):
-    """Optional student metadata for bulk upload."""
-    hall_ticket: str
-    name: str = ""
 
 
 class ReviewConfirmRequest(BaseModel):
@@ -209,60 +159,3 @@ class ReviewApproveRequest(BaseModel):
     exam_id: str
     hall_ticket: str
     unmatched_checked: bool = False  # the teacher looked at writing that fit no question
-
-
-class OCRRegionReviewRequest(BaseModel):
-    """Teacher validation for one page-level OCR region."""
-    exam_id: str
-    hall_ticket: str
-    page_number: int
-    region_id: str
-    action: str  # ACCEPT | CORRECT | UNREADABLE
-    corrected_text: str = ""
-    question_number: int | None = None
-    sub_part: str = ""
-
-
-class OCRPageReviewRequest(BaseModel):
-    """Teacher disposition for a blank or unreadable page."""
-    exam_id: str
-    hall_ticket: str
-    page_number: int
-    action: str  # ACCEPT_BLANK | UNREADABLE
-    question_number: int | None = None
-    sub_part: str = ""
-
-
-class OCRQuestionRegradeRequest(BaseModel):
-    """Re-run existing grading agents on teacher-validated OCR text."""
-    exam_id: str
-    hall_ticket: str
-    question_number: int
-    sub_part: str = ""
-
-
-# =========================================================
-# INTERNAL PIPELINE SCHEMAS
-# =========================================================
-
-class OCRResult(BaseModel):
-    """Output from the OCR module for one question."""
-    question_number: int
-    extracted_text: str = ""
-    illegible_regions: list[str] = Field(default_factory=list)
-
-
-class CriticVerdict(BaseModel):
-    """Output from the Critic Agent."""
-    verdict: str = "ACCEPT"  # ACCEPT | REJECT
-    challenged_criteria: list[str] = Field(default_factory=list)
-    suggested_score: float = 0.0
-    reason: str = ""
-    model_used: str = ""
-
-
-class MathResult(BaseModel):
-    """Output from the Math Agent."""
-    c_math: float = 1.0
-    symbolic_correct: bool | None = None
-    latex_extracted: str = ""

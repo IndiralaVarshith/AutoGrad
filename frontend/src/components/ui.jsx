@@ -35,8 +35,8 @@ export function PageHeader({ title, subtitle, actions, eyebrow }) {
   return (
     <div className="flex flex-col gap-4 pb-6 sm:flex-row sm:items-end sm:justify-between">
       <div className="min-w-0">
-        {eyebrow && <div className="mb-1 text-[13px] font-semibold text-primary">{eyebrow}</div>}
-        <h1 className="text-[1.75rem] sm:text-[2rem]">{title}</h1>
+        {eyebrow && <div className="mb-1 text-[13px] font-semibold tracking-wide text-primary uppercase">{eyebrow}</div>}
+        <h1 className="text-[2rem] sm:text-[2.4rem]"><span key={title} className="highlight">{title}</span></h1>
         {subtitle && <p className="mt-1.5 max-w-2xl text-muted">{subtitle}</p>}
       </div>
       {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}

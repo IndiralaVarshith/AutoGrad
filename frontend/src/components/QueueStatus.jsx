@@ -1,11 +1,13 @@
-import React from 'react';
-import { ArrowRight, CheckCircle2, CircleDashed, Clock, Flag, Loader2, XCircle } from 'lucide-react';
-import { Button, Callout, Pill, ProgressRing } from './ui';
+import React, { useState } from 'react';
+import { ArrowRight, CheckCircle2, CircleDashed, Clock, Flag, Loader2, Trash2, XCircle } from 'lucide-react';
+import api from '../api';
+import { Button, Callout, Pill, ProgressRing, Tip, errorText } from './ui';
+import { useFeedback } from './feedback';
 
 const WAITING = new Set(['PENDING', 'PROCESSING']);
 const STATUS = {
   PENDING: { text: 'Waiting', tone: 'neutral', icon: Clock },
-  PROCESSING: { text: 'Grading', tone: 'info', icon: Loader2 },
+  PROCESSING: { text: 'Marking', tone: 'info', icon: Loader2 },
   COMPLETE: { text: 'Done', tone: 'good', icon: CheckCircle2 },
   NEEDS_REVIEW: { text: 'Marked, some answers to check', tone: 'warn', icon: Flag },
   FAILED: { text: 'Failed, no marks given', tone: 'bad', icon: XCircle },
@@ -13,7 +15,9 @@ const STATUS = {
   CANCELLED: { text: 'Cancelled', tone: 'neutral', icon: CircleDashed },
 };
 
-export default function QueueStatus({ queue, onResume, onGoToReview }) {
+export default function QueueStatus({ examId, queue, onResume, onGoToReview, onChanged }) {
+  const [deleting, setDeleting] = useState('');
+  const { toast, confirm } = useFeedback();
   const jobs = queue.jobs || [];
   const total = queue.total_jobs || 0;
   const done = total - jobs.filter((job) => WAITING.has(job.status)).length;
@@ -21,12 +25,32 @@ export default function QueueStatus({ queue, onResume, onGoToReview }) {
   const current = jobs.find((job) => job.status === 'PROCESSING');
   const finished = total > 0 && done === total;
 
+  const remove = async (job) => {
+    const goAhead = await confirm({
+      title: `Delete the sheet “${job.hall_ticket}”?`,
+      body: 'Its marks, review notes and stored pages are deleted too. It cannot be undone.',
+      confirmLabel: 'Delete sheet',
+      danger: true,
+    });
+    if (!goAhead) return;
+    try {
+      setDeleting(job.hall_ticket);
+      await api.deleteSheet(examId, job.hall_ticket);
+      toast.success(`Deleted ${job.hall_ticket}.`);
+      onChanged?.();
+    } catch (err) {
+      toast.error(errorText(err, 'Could not delete the sheet.'));
+    } finally {
+      setDeleting('');
+    }
+  };
+
   return (
-    <section className="card rise space-y-4 p-5" aria-label="Grading queue">
+    <section className="card rise space-y-4 p-5" aria-label="Marking queue">
       <div className="flex flex-wrap items-center gap-4">
         <ProgressRing value={percent} label={`${done} of ${total} sheets finished`}>{percent}%</ProgressRing>
         <div className="min-w-0 flex-1">
-          <h2 className="text-lg">{finished ? 'All sheets are graded' : 'Grading your sheets'}</h2>
+          <h2 className="text-xl">{finished ? 'All sheets are marked' : 'Marking your sheets'}</h2>
           <p className="truncate text-sm text-muted">
             {done} of {total} finished
             {current ? ` · now reading ${current.hall_ticket}` : ''}
@@ -50,20 +74,36 @@ export default function QueueStatus({ queue, onResume, onGoToReview }) {
         </Callout>
       )}
 
-      <ul className="max-h-64 divide-y divide-line overflow-y-auto rounded-xl border border-line">
+      <ul className="ruled-list max-h-72 overflow-y-auto">
         {jobs.map((job) => {
           const status = STATUS[job.status] || { text: job.status, tone: 'neutral', icon: CircleDashed };
           return (
             <li key={job.job_id} className="flex items-center justify-between gap-3 px-3.5 py-2.5 text-sm">
               <span className="min-w-0">
-                <span className="block truncate font-medium">{job.hall_ticket}</span>
+                <span className="block truncate font-semibold">{job.hall_ticket}</span>
                 {job.status === 'PROCESSING' && job.stage_detail && (
                   <span className="block truncate text-[13px] text-muted">{job.stage_detail}</span>
                 )}
+                {['FAILED', 'TIMED_OUT'].includes(job.status) && job.error && (
+                  <span className="block truncate text-[13px] text-bad" title={job.error}>{job.error}</span>
+                )}
               </span>
-              <Pill tone={status.tone} icon={status.icon} className={job.status === 'PROCESSING' ? '[&>svg]:animate-spin' : undefined}>
-                {status.text}
-              </Pill>
+              <span className="flex shrink-0 items-center gap-1">
+                <Pill tone={status.tone} icon={status.icon} className={job.status === 'PROCESSING' ? '[&>svg]:animate-spin' : undefined}>
+                  {status.text}
+                </Pill>
+                <Tip text={job.status === 'PROCESSING' ? 'Wait until it finishes' : 'Delete this sheet'} className="tip-end">
+                  <button
+                    type="button"
+                    className="icon-btn icon-btn-danger size-8"
+                    disabled={job.status === 'PROCESSING' || deleting === job.hall_ticket}
+                    onClick={() => remove(job)}
+                    aria-label={`Delete the sheet ${job.hall_ticket}`}
+                  >
+                    {deleting === job.hall_ticket ? <Loader2 size={15} className="spin" aria-hidden="true" /> : <Trash2 size={15} aria-hidden="true" />}
+                  </button>
+                </Tip>
+              </span>
             </li>
           );
         })}

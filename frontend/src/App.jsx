@@ -17,8 +17,8 @@ const STEPS = [
 ];
 
 const LOGO = (
-  <span className="grid size-8 shrink-0 place-items-center rounded-[0.6rem] bg-primary text-on-primary">
-    <GraduationCap size={18} aria-hidden="true" />
+  <span className="logo-badge grid size-9 shrink-0 place-items-center text-on-primary">
+    <GraduationCap size={19} aria-hidden="true" />
   </span>
 );
 
@@ -68,8 +68,8 @@ function StepNav({ currentPage, onChange, status }) {
   const { container, style } = useSlidingThumb(currentPage);
 
   return (
-    <nav ref={container} aria-label="Steps" className="relative hidden items-center rounded-xl bg-sunken p-1 md:flex">
-      <span className="thumb rounded-[0.6rem] bg-surface shadow-soft" style={style} aria-hidden="true" />
+    <nav ref={container} aria-label="Steps" className="tab-strip relative hidden items-center p-1 md:flex">
+      <span className="thumb tab-thumb" style={style} aria-hidden="true" />
       {STEPS.map((step, index) => {
         const active = currentPage === step.id;
         const done = status[step.id]?.done;
@@ -110,7 +110,7 @@ function StepNav({ currentPage, onChange, status }) {
 
 function MobileNav({ currentPage, onChange, status }) {
   return (
-    <nav aria-label="Steps" className="fixed inset-x-0 bottom-0 z-50 grid grid-cols-4 border-t border-line bg-surface pb-[env(safe-area-inset-bottom)] md:hidden">
+    <nav aria-label="Steps" className="notebook-header fixed inset-x-0 bottom-0 z-50 grid grid-cols-4 border-t border-line pb-[env(safe-area-inset-bottom)] md:hidden">
       {STEPS.map((step) => {
         const Icon = step.icon;
         const active = currentPage === step.id;
@@ -205,13 +205,29 @@ export default function App() {
     };
   }, [signedIn, currentExamId, currentPage]);
 
+  // Every sign-in starts at the first step, never in the middle of the work.
+  const handleLogin = () => {
+    handlePageChange('setup');
+    setSignedIn(true);
+  };
+
   const handleLogout = async () => {
     try {
       await api.logout();
     } catch (e) {
       console.warn('Sign out notice:', e);
     }
+    try {
+      sessionStorage.removeItem('autograde_current_page');
+    } catch {
+      // ignore
+    }
     setSignedIn(false);
+  };
+
+  const handleExamDeleted = (deletedId) => {
+    if (deletedId === currentExamId) handleExamIdChange('');
+    setExamListVersion((version) => version + 1);
   };
 
   if (signedIn === null) {
@@ -221,7 +237,7 @@ export default function App() {
       </div>
     );
   }
-  if (!signedIn) return <Login onLoginSuccess={() => setSignedIn(true)} />;
+  if (!signedIn) return <Login onLoginSuccess={handleLogin} />;
 
   const status = {
     setup: { done: progress.rubric },
@@ -238,14 +254,19 @@ export default function App() {
 
   return (
     <div className="flex min-h-dvh flex-col">
-      <header className="sticky top-0 z-50 border-b border-line bg-surface/90 backdrop-blur-md">
+      <header className="notebook-header sticky top-0 z-50">
         <div className="mx-auto flex h-16 max-w-[90rem] items-center gap-3 px-4 sm:px-6">
           <div className="flex items-center gap-2.5">
             {LOGO}
-            <span className="hidden font-display text-lg font-semibold tracking-tight lg:inline">AutoGrade</span>
+            <span className="hidden font-display text-2xl leading-none lg:inline">AutoGrade</span>
           </div>
 
-          <ExamSwitcher value={currentExamId} onChange={handleExamIdChange} refreshKey={`${currentPage}:${examListVersion}`} />
+          <ExamSwitcher
+            value={currentExamId}
+            onChange={handleExamIdChange}
+            refreshKey={`${currentPage}:${examListVersion}`}
+            onExamDeleted={handleExamDeleted}
+          />
 
           <div className="flex-1" />
           <StepNav currentPage={currentPage} onChange={handlePageChange} status={status} />
@@ -273,6 +294,7 @@ export default function App() {
               setExamListVersion((version) => version + 1);
               handlePageChange('upload');
             }}
+            onPaperDeleted={() => setExamListVersion((version) => version + 1)}
           />
         ))}
         {page('upload', (

@@ -9,6 +9,5 @@
 *firebase-adminsdk*.json
 serviceAccountKey.json
 firebase-service-account.json
-test_data/mendeley/
 # Safe to share: points the frontend at local emulators only.
 !frontend/.env.emulator

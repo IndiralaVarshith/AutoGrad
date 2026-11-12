@@ -18,34 +18,9 @@ load_dotenv(dotenv_path=_BACKEND_DIR / ".env")
 load_dotenv()  # fallback to cwd if present
 
 
-def _safe_float_env(name: str, default: float) -> float:
-    try:
-        return float(os.getenv(name, str(default)))
-    except (TypeError, ValueError):
-        return default
-
-
-def _safe_int_env(name: str, default: int) -> int:
-    try:
-        return int(os.getenv(name, str(default)))
-    except (TypeError, ValueError):
-        return default
-
-
 # =========================================================
-# ENVIRONMENT VARIABLES
+# GEMINI
 # =========================================================
-
-
-HANDWRITING_DATASET_ENABLED: bool = os.getenv("HANDWRITING_DATASET_ENABLED", "false").strip().lower() == "true"
-HANDWRITING_DATASET_RETENTION_DAYS: int = max(
-    0, _safe_int_env("HANDWRITING_DATASET_RETENTION_DAYS", 0)
-)
-HANDWRITING_DATASET_SALT: str = os.getenv("HANDWRITING_DATASET_SALT", "")
-HANDWRITING_DATASET_ACCESS_POLICY_CONFIRMED: bool = (
-    os.getenv("HANDWRITING_DATASET_ACCESS_POLICY_CONFIRMED", "false").strip().lower() == "true"
-)
-HANDWRITING_DATASET_VERSION: str = os.getenv("HANDWRITING_DATASET_VERSION", "v1").strip() or "v1"
 
 GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
 GEMINI_REQUEST_TIMEOUT_MS: int = max(
@@ -53,28 +28,29 @@ GEMINI_REQUEST_TIMEOUT_MS: int = max(
 )
 
 
-# --- Gemini-only path: request budget (services/gemini_client.py) ---
+# Request budget (services/gemini_client.py)
 # Which .env entry holds the one key this app uses. Only the name is stored here.
 GEMINI_KEY_ENV_NAME: str = os.getenv("GEMINI_KEY_ENV_NAME", "GEMINI_API_KEY").strip()
-# Stronger model, for flagged answers only. Empty switches it off.
-GEMINI_REVIEW_MODEL: str = os.getenv("GEMINI_REVIEW_MODEL", "gemini-3.8-flash").strip()
 # Paced below the 15 RPM / 250K TPM that AI Studio shows for 3.5 Flash-Lite (2026-11-06).
 GEMINI_RPM_LIMIT: int = max(1, int(os.getenv("GEMINI_RPM_LIMIT", "12")))
 GEMINI_TPM_LIMIT: int = max(1, int(os.getenv("GEMINI_TPM_LIMIT", "200000")))
-# Unconfirmed: 500 and 20 come from users quoting Google's errors on its forum.
+# Unconfirmed: 500 comes from users quoting Google's errors on its forum.
 GEMINI_RPD_LIMIT: int = max(1, int(os.getenv("GEMINI_RPD_LIMIT", "500")))
-GEMINI_REVIEW_RPD_LIMIT: int = max(1, int(os.getenv("GEMINI_REVIEW_RPD_LIMIT", "20")))
 GEMINI_RUN_CALL_CAP: int = max(1, int(os.getenv("GEMINI_RUN_CALL_CAP", "100")))
-GEMINI_REVIEW_CALL_CAP: int = min(15, max(0, int(os.getenv("GEMINI_REVIEW_CALL_CAP", "15"))))
 GEMINI_PAGES_PER_REQUEST: int = max(1, int(os.getenv("GEMINI_PAGES_PER_REQUEST", "12")))
 GEMINI_MAX_OUTPUT_TOKENS: int = max(256, int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "16384")))
+# A question paper whose reply is cut off at the limit is asked for once more, with this much
+# room and a little randomness so a reply stuck repeating itself does not repeat again.
+GEMINI_PAPER_RETRY_OUTPUT_TOKENS: int = max(
+    GEMINI_MAX_OUTPUT_TOKENS, int(os.getenv("GEMINI_PAPER_RETRY_OUTPUT_TOKENS", "32768"))
+)
+GEMINI_PAPER_RETRY_TEMPERATURE: float = float(os.getenv("GEMINI_PAPER_RETRY_TEMPERATURE", "0.4"))
 GEMINI_RETRY_ATTEMPTS: int = max(1, int(os.getenv("GEMINI_RETRY_ATTEMPTS", "5")))
 GEMINI_RETRY_BASE_SECONDS: float = float(os.getenv("GEMINI_RETRY_BASE_SECONDS", "15"))
 GEMINI_RETRY_MAX_WAIT_SECONDS: float = float(os.getenv("GEMINI_RETRY_MAX_WAIT_SECONDS", "90"))
 # Below this, Gemini's own confidence sends an answer to the teacher.
 GEMINI_MIN_CONFIDENCE: float = float(os.getenv("GEMINI_MIN_CONFIDENCE", "0.8"))
-# Partial marks on a question worth this much or more go to the teacher. 0 switches the
-# rule off: the second marking pass decides which marks are in doubt instead.
+# Partial marks on a question worth this much or more go to the teacher. 0 switches the rule off.
 GEMINI_HIGH_VALUE_MARKS: float = float(os.getenv("GEMINI_HIGH_VALUE_MARKS", "0"))
 # True sends every zero on an answer the student did write to the teacher.
 GEMINI_FLAG_ZERO_ON_WRITTEN: bool = (
@@ -89,24 +65,14 @@ GEMINI_MARKING_STYLE: str = (
 )
 if GEMINI_MARKING_STYLE not in ("GENEROUS", "BALANCED", "STRICT"):
     GEMINI_MARKING_STYLE = "GENEROUS"
-# When a student answers more questions than the paper asks, count the best ones and leave
-# the rest out, as teachers do. False sends all of them to the teacher instead.
 # About how many words a full explained answer needs for each mark. An answer far shorter than
 # its marks need cannot earn full marks. 0 turns the length check off.
 GEMINI_WORDS_PER_MARK: float = float(os.getenv("GEMINI_WORDS_PER_MARK", "20") or 0)
-
+# When a student answers more questions than the paper asks, count the best ones and leave
+# the rest out, as teachers do. False sends all of them to the teacher instead.
 GEMINI_COUNT_BEST_ANSWERS: bool = (
     os.getenv("GEMINI_COUNT_BEST_ANSWERS", "true").strip().lower() == "true"
 )
-# Mark every sheet a second time, independently. An answer goes to the teacher when the two
-# passes differ by more than the tolerance. Doubles the requests per sheet.
-GEMINI_DOUBLE_CHECK: bool = os.getenv("GEMINI_DOUBLE_CHECK", "true").strip().lower() == "true"
-# Model for the second pass. Empty uses GEMINI_MODEL again.
-GEMINI_CHECK_MODEL: str = os.getenv("GEMINI_CHECK_MODEL", "").strip()
-# Share of a question's marks the two passes may differ by. Never less than half a mark.
-GEMINI_CHECK_TOLERANCE: float = float(os.getenv("GEMINI_CHECK_TOLERANCE", "0.25"))
-# Second opinions from the stronger model. Off by default; they use its small daily allowance.
-GEMINI_REVIEW_ENABLED: bool = os.getenv("GEMINI_REVIEW_ENABLED", "false").strip().lower() == "true"
 # Largest single file. Gemini refuses inline requests over about 20 MB.
 MAX_UPLOAD_MB: float = float(os.getenv("MAX_UPLOAD_MB", "18"))
 # Largest whole request, for many sheets uploaded together.

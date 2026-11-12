@@ -69,6 +69,11 @@ def get_cached_draft(gen_fingerprint: str) -> dict[str, Any] | None:
     return entry.get("rubric_data")
 
 
+def forget_draft(gen_fingerprint: str) -> None:
+    """Drop a cached draft, so a deleted paper leaves nothing behind in memory."""
+    _draft_cache.pop(gen_fingerprint, None)
+
+
 def store_draft_cache(gen_fingerprint: str, rubric_data: dict[str, Any]) -> None:
     """Cache a freshly generated rubric draft in process memory."""
     _draft_cache[gen_fingerprint] = {

@@ -1,34 +1,12 @@
-"""Question paper parsing against the dataset's paper and answer key. No Firestore or AI."""
+"""Question paper structure checks: marks, sections, figures, duplicates. No Firestore or AI."""
 
 import io
-from pathlib import Path
 
 import pytest
 
 from services.marks_validator import validate_and_reconcile_exam_structure
 from services.rubric_cache import validate_rubric_structure
 from services.paper_intake import apply_review_items
-
-DATASET = Path(__file__).resolve().parents[2] / "test_data" / "mendeley"
-SCAN = Path(__file__).resolve().parents[2] / "test_data" / "question_paper.pdf"
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 @pytest.mark.parametrize("bad_marks", [None, "", "two", True, -1, 0])
@@ -64,8 +42,6 @@ def test_validator_uses_printed_section_formula():
     assert structure.marks_problems == []
 
 
-
-
 def test_section_with_too_few_questions_is_flagged():
     """Real case: a scan prints 'any two, 2x4=8M' but shows only one question group."""
     structure = validate_and_reconcile_exam_structure({
@@ -98,24 +74,10 @@ def test_section_with_or_alternatives_counts_each_group_once():
     assert structure.calculated_maximum_marks == 8.0
 
 
-
-
-
-
-
-
 def _png(image):
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     return buffer.getvalue()
-
-
-
-
-
-
-
-
 
 
 def _q(number, text, sub_part="", **fields):

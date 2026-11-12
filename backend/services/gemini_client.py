@@ -1,8 +1,8 @@
-"""The only route to Gemini on the Gemini-only path.
+"""The only route to Gemini.
 
 Enforces the request budget: pacing under the per-minute limits, backoff on 429,
-a hard cap on calls per run, a separate cap for the stronger review model, a daily
-count that survives restarts, and a per-sheet log of calls, tokens and notional cost.
+a hard cap on calls per run, a daily count that survives restarts, and a per-sheet
+log of calls, tokens and notional cost.
 
 The API key is read here and never logged. Log lines hold counts and identifiers
 only, never prompt or answer content.
@@ -37,7 +37,7 @@ class GeminiError(Exception):
 
 
 class RunCapReached(GeminiError):
-    """The hard cap on calls for this run, or for the review model, was reached."""
+    """The hard cap on calls for this run was reached."""
 
 
 class DailyLimitReached(GeminiError):
@@ -54,6 +54,18 @@ class GeminiCallFailed(GeminiError):
 
 class BadModelResponse(GeminiError):
     """Gemini answered, but not with usable JSON. Not retried: one request per sheet."""
+
+
+class ReplyCutOff(BadModelResponse):
+    """The reply hit the output limit before its JSON was complete.
+
+    Nothing is wrong with the document. The caller may ask once more with more room.
+    text holds what did arrive, for the caller to keep for diagnosis; it is never logged here.
+    """
+
+    def __init__(self, message: str, text: str = "") -> None:
+        super().__init__(message)
+        self.text = text
 
 
 @dataclass
@@ -88,9 +100,7 @@ class RunBudget:
 
     run_id: str
     call_cap: int
-    review_call_cap: int
     calls: int = 0
-    review_calls: int = 0
     per_sheet: dict[str, Usage] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -192,14 +202,10 @@ class GeminiClient:
         run_id: str | None = None,
         *,
         call_cap: int | None = None,
-        review_call_cap: int | None = None,
     ) -> RunBudget:
         return RunBudget(
             run_id=run_id or uuid.uuid4().hex[:12],
             call_cap=config.GEMINI_RUN_CALL_CAP if call_cap is None else call_cap,
-            review_call_cap=(
-                config.GEMINI_REVIEW_CALL_CAP if review_call_cap is None else review_call_cap
-            ),
         )
 
     def run_summary(self, run: RunBudget) -> dict[str, Any]:
@@ -211,9 +217,7 @@ class GeminiClient:
         return {
             "run_id": run.run_id,
             "calls": run.calls,
-            "review_calls": run.review_calls,
             "call_cap": run.call_cap,
-            "review_call_cap": run.review_call_cap,
             "totals": total.as_dict(rate),
             "per_sheet": {name: usage.as_dict(rate) for name, usage in run.per_sheet.items()},
             "pricing_basis": self.pricing_basis(),
@@ -243,22 +247,20 @@ class GeminiClient:
         contents: Any,
         response_schema: Any = None,
         system_instruction: str | None = None,
-        review: bool = False,
         estimated_tokens: int = 0,
         max_output_tokens: int | None = None,
         model: str | None = None,
+        temperature: float = 0.0,
     ) -> GeminiResult:
         """One logical request. Retries only when no answer came back."""
-        model = model or (config.GEMINI_REVIEW_MODEL if review else config.GEMINI_MODEL)
-        if review and not model:
-            raise RunCapReached("No stronger review model is configured.")
+        model = model or config.GEMINI_MODEL
         generation_config = self._generation_config(
-            response_schema, system_instruction, max_output_tokens
+            response_schema, system_instruction, max_output_tokens, temperature
         )
         last_error: Exception | None = None
         for attempt in range(1, config.GEMINI_RETRY_ATTEMPTS + 1):
-            self._reserve_call(run, review)
-            self._check_daily(model, review)
+            self._reserve_call(run)
+            self._check_daily(model)
             self._wait_for_slot(estimated_tokens)
             self._count_daily(model)
             try:
@@ -285,12 +287,15 @@ class GeminiClient:
 
     @staticmethod
     def _generation_config(
-        response_schema: Any, system_instruction: str | None, max_output_tokens: int | None
+        response_schema: Any,
+        system_instruction: str | None,
+        max_output_tokens: int | None,
+        temperature: float = 0.0,
     ) -> Any:
         from google.genai import types
 
         options: dict[str, Any] = {
-            "temperature": 0,
+            "temperature": temperature,
             "max_output_tokens": max_output_tokens or config.GEMINI_MAX_OUTPUT_TOKENS,
         }
         if system_instruction:
@@ -320,9 +325,8 @@ class GeminiClient:
         usage_meta = getattr(response, "usage_metadata", None)
         input_tokens = int(getattr(usage_meta, "prompt_token_count", 0) or 0)
         # Thinking tokens are charged at the output rate.
-        output_tokens = int(getattr(usage_meta, "candidates_token_count", 0) or 0) + int(
-            getattr(usage_meta, "thoughts_token_count", 0) or 0
-        )
+        thinking_tokens = int(getattr(usage_meta, "thoughts_token_count", 0) or 0)
+        output_tokens = int(getattr(usage_meta, "candidates_token_count", 0) or 0) + thinking_tokens
         cost = self.cost_usd(model, input_tokens, output_tokens)
         usage = self._usage_for(run, sheet_id)
         usage.calls += 1
@@ -331,7 +335,7 @@ class GeminiClient:
         finish_reason = self._finish_reason(response)
         self._log(
             run, kind, sheet_id, model, attempt, f"ok finish={finish_reason}",
-            input_tokens, output_tokens, cost,
+            input_tokens, output_tokens, cost, thinking_tokens=thinking_tokens,
         )
         text = getattr(response, "text", None) or ""
         parsed = None
@@ -341,6 +345,12 @@ class GeminiClient:
                 try:
                     parsed = json.loads(text)
                 except (TypeError, ValueError):
+                    if finish_reason == "MAX_TOKENS":
+                        raise ReplyCutOff(
+                            f"The reply from {model} was cut off at the output limit "
+                            f"({output_tokens} tokens, {thinking_tokens} of them thinking).",
+                            text,
+                        ) from None
                     raise BadModelResponse(
                         f"No usable JSON from {model} (finish={finish_reason})."
                     ) from None
@@ -369,15 +379,11 @@ class GeminiClient:
             return run.per_sheet.setdefault(sheet_id, Usage())
 
     @staticmethod
-    def _reserve_call(run: RunBudget, review: bool) -> None:
+    def _reserve_call(run: RunBudget) -> None:
         with run.lock:
             if run.calls >= run.call_cap:
                 raise RunCapReached(f"Run cap of {run.call_cap} calls reached.")
-            if review and run.review_calls >= run.review_call_cap:
-                raise RunCapReached(f"Review cap of {run.review_call_cap} calls reached.")
             run.calls += 1
-            if review:
-                run.review_calls += 1
 
     def _wait_for_slot(self, estimated_tokens: int) -> None:
         """Hold the call until both per-minute limits allow it. Claims the slot under lock."""
@@ -439,8 +445,8 @@ class GeminiClient:
         temporary.write_text(json.dumps(state))
         temporary.replace(self._daily_path())
 
-    def _check_daily(self, model: str, review: bool) -> None:
-        limit = config.GEMINI_REVIEW_RPD_LIMIT if review else config.GEMINI_RPD_LIMIT
+    def _check_daily(self, model: str) -> None:
+        limit = config.GEMINI_RPD_LIMIT
         with self._file_lock:
             state = self._read_daily()
         if model in state["exhausted"] or state["counts"].get(model, 0) >= limit:
@@ -478,6 +484,8 @@ class GeminiClient:
         input_tokens: int,
         output_tokens: int,
         cost: float | None,
+        *,
+        thinking_tokens: int = 0,
     ) -> None:
         record = {
             "at": self._wall_clock().isoformat(),
@@ -489,6 +497,8 @@ class GeminiClient:
             "outcome": outcome,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
+            # Part of output_tokens. Shown apart so a cut-off reply can be told from long thinking.
+            "thinking_tokens": thinking_tokens,
             "notional_cost_usd": None if cost is None else round(cost, 6),
             "notional_cost_inr": None if cost is None else round(cost * config.GEMINI_USD_INR, 4),
             "usd_inr": config.GEMINI_USD_INR,

@@ -19,7 +19,9 @@ from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 
 import config
-from services.gemini_client import BadModelResponse, DailyLimitReached, GeminiError, RunCapReached
+from services.gemini_client import (
+    BadModelResponse, DailyLimitReached, GeminiError, ReplyCutOff, RunCapReached,
+)
 from services.gemini_paper import (
     PAPER_PROMPT_VERSION,
     normal_paper_type,
@@ -41,6 +43,7 @@ from services.upload_limits import read_limited
 from services.rubric_cache import (
     compute_doc_fingerprint,
     compute_generation_fingerprint,
+    forget_draft,
     get_cached_draft,
     store_draft_cache,
     RUBRIC_SCHEMA_VERSION,
@@ -152,8 +155,12 @@ _UNREADABLE_MESSAGE = (
     "Please upload a clearer scan."
 )
 _UNUSABLE_REPLY_MESSAGE = (
-    "The question paper could not be read reliably, so nothing was saved. "
-    "Please upload a clearer scan or check it with the teacher."
+    "Gemini's reply for this question paper could not be used, so nothing was saved. "
+    "Please try again. If it keeps happening, try a clearer scan."
+)
+_CUT_OFF_MESSAGE = (
+    "Gemini did not finish reading this question paper: its reply was cut off twice, so "
+    "nothing was saved. The scan is not the problem. Please try again in a minute."
 )
 _DIFFERENT_PAPER_MESSAGE = (
     "Exam '{exam_id}' already has a different question paper saved. "
@@ -224,6 +231,9 @@ def _gemini_paper(
         )
     except (DailyLimitReached, RunCapReached) as error:
         raise HTTPException(429, f"{error} Nothing was saved.")
+    except ReplyCutOff as error:
+        print(f"[ExamSetup] {error}")
+        raise HTTPException(503, _CUT_OFF_MESSAGE)
     except BadModelResponse:
         raise HTTPException(422, _UNUSABLE_REPLY_MESSAGE)
     except GeminiError as error:
@@ -529,12 +539,54 @@ async def delete_exam(exam_id: str):
         raise HTTPException(503, "The exam could not be fully deleted. Please try again.")
     for hall_ticket in set(removed["hall_tickets"]) | {job.hall_ticket for job in jobs}:
         sheet_store.delete(exam_id, hall_ticket)
+    if removed.get("gen_fingerprint"):
+        forget_draft(removed["gen_fingerprint"])
+    try:
+        sheet_store.delete_cloud_copies(exam_id)
+    except Exception as error:
+        print(f"[ExamDelete] Cloud copies not removed for {exam_id}: {type(error).__name__}")
     return {
         "success": True,
         "exam_id": exam_id,
         "sheets_deleted": len(removed["hall_tickets"]),
         "queued_removed": len(jobs),
     }
+
+
+# =========================================================
+# DELETE /exam/{exam_id}/paper  (Delete only the question paper)
+# =========================================================
+
+@router.delete("/{exam_id}/paper")
+async def delete_question_paper(exam_id: str):
+    """Delete the question paper, its approved marks and calibration. The exam name stays.
+
+    Refused while answer sheets are marked or waiting against it: those marks would lose
+    the paper they were given for. Delete the sheets first, or delete the whole exam.
+    """
+    exam_id = exam_id.strip()
+    if not db_service.is_connected():
+        raise HTTPException(503, "Firestore is unavailable, so nothing was deleted.")
+    if not db_service.get_question_paper(exam_id) and not db_service.get_approved_rubric(exam_id):
+        raise HTTPException(404, f"Exam '{exam_id}' has no question paper to delete.")
+    sheets = {result.get("hall_ticket") for result in db_service.list_exam_results(exam_id)}
+    sheets |= {job.hall_ticket for job in queue_manager.get_exam_jobs(exam_id)}
+    sheets.discard(None)
+    if sheets:
+        raise HTTPException(
+            409,
+            f"Exam '{exam_id}' still has {len(sheets)} answer sheet{'s' if len(sheets) != 1 else ''} "
+            "marked or waiting for this paper. Delete those sheets first, or delete the whole exam. "
+            "Nothing was deleted.",
+        )
+    try:
+        removed = db_service.delete_question_paper(exam_id)
+    except Exception as error:
+        print(f"[PaperDelete] Error: {type(error).__name__}: {error}")
+        raise HTTPException(503, "The question paper could not be fully deleted. Please try again.")
+    if removed.get("gen_fingerprint"):
+        forget_draft(removed["gen_fingerprint"])
+    return {"success": True, "exam_id": exam_id}
 
 
 # =========================================================

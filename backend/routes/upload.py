@@ -1,7 +1,9 @@
 """
 AutoGrade — Upload Routes
 
-POST /upload — Bulk answer sheet upload + queue processing
+POST /upload    — Many answer sheets, graded one at a time in the background queue
+POST /evaluate  — One sheet now, ahead of the queue
+GET  /queue/... — Queue progress, resume and retry
 """
 
 from __future__ import annotations
@@ -13,8 +15,9 @@ import os
 import re
 import time
 import uuid
-from pathlib import Path
 from io import BytesIO
+from pathlib import Path
+from typing import Any
 
 from fastapi import (
     APIRouter, UploadFile, File, Form, HTTPException
@@ -22,9 +25,10 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 from PIL import Image
 
-from config import get_firestore, get_storage_bucket
+from config import get_storage_bucket
 from services.gemini_client import DailyLimitReached, GeminiCallFailed, RunBudget, RunCapReached, get_client
 from services.gemini_paper import rubric_total_problems
+from services.calibration import applies_to, has_teacher_decisions
 from services.gemini_sheet import grade_sheet
 from models.schemas import PaperResult, QuestionRubric
 from services.upload_limits import read_limited
@@ -179,14 +183,19 @@ def _execute_grading_job(job: QueueJob):
 
     file_bytes = Path(file_path).read_bytes()
     check_hash(file_bytes)
+    settings = _marking_settings(job.exam_id, job.rubric_version, job.hall_ticket)
+    calibration_id = (settings.get("calibration") or {}).get("calibration_id", "")
 
-    # A restart or retry after the save must not pay again or undo a teacher's edits.
+    # A restart or retry after the save must not pay again or undo a teacher's edits. The
+    # same file and marks are graded again only to follow a new calibration, and only while
+    # the teacher has not touched the sheet.
     saved = db_service.get_grading_result(job.exam_id, job.hall_ticket) if db_service.is_connected() else None
     if (
         saved
         and job.file_sha256
         and saved.get("source_sha256") == job.file_sha256
         and str(saved.get("rubric_version", "")) == str(job.rubric_version)
+        and (has_teacher_decisions(saved) or saved.get("calibration_id", "") == calibration_id)
     ):
         return PaperResult.model_validate(
             {key: value for key, value in saved.items() if key in PaperResult.model_fields}
@@ -253,7 +262,7 @@ def _execute_grading_job(job: QueueJob):
             source_sha256=job.file_sha256,
             run=_batch_run(job.exam_id),
             on_stage=update_stage,
-            **_marking_settings(job.exam_id, job.rubric_version),
+            **settings,
         )
         # Deleted while it was being graded: the teacher asked for it gone, so keep it gone.
         if queue_manager.get_job(job.job_id) is None:
@@ -276,22 +285,25 @@ def _execute_grading_job(job: QueueJob):
 _batch_runs: dict[str, RunBudget] = {}
 
 
-def _marking_settings(exam_id: str, rubric_version: str) -> dict[str, str]:
-    """How strict this exam's teacher asked the marking to be, from the approved rubric.
+def _marking_settings(exam_id: str, rubric_version: str, hall_ticket: str = "") -> dict[str, Any]:
+    """How this exam's teacher wants sheets marked: strictness, own rules and calibration.
 
     Only the version the sheet was queued against counts. If that cannot be read, the
-    configured default is used rather than another version's rules.
+    configured default is used rather than another version's rules. The calibration sheet
+    itself is never marked against its own example.
     """
+    settings: dict[str, Any] = {}
     try:
         rubric = db_service.get_approved_rubric(exam_id) or {}
+        chosen = db_service.get_calibration(exam_id)
     except Exception:
-        return {}
-    if rubric_version and str(rubric.get("version", "")) != str(rubric_version):
-        return {}
-    return {
-        "marking_style": str(rubric.get("marking_style") or ""),
-        "marking_notes": str(rubric.get("marking_notes") or ""),
-    }
+        return settings
+    if not rubric_version or str(rubric.get("version", "")) == str(rubric_version):
+        settings["marking_style"] = str(rubric.get("marking_style") or "")
+        settings["marking_notes"] = str(rubric.get("marking_notes") or "")
+    if applies_to(chosen, rubric_version) and chosen.get("hall_ticket") != hall_ticket:
+        settings["calibration"] = chosen
+    return settings
 
 
 def _batch_run(exam_id: str) -> RunBudget:
@@ -599,12 +611,6 @@ def retry_failed_job(exam_id: str, hall_ticket: str):
 # HELPERS
 # =========================================================
 
-def _load_rubric(exam_id: str) -> list[QuestionRubric]:
-    """Compatibility helper for routes that only need approved questions."""
-    questions, _, _, _ = _load_rubric_bundle(exam_id)
-    return questions
-
-
 def _load_rubric_bundle(
     exam_id: str,
 ) -> tuple[list[QuestionRubric], float, str, str]:
@@ -697,20 +703,3 @@ def _store_to_firebase(
     except Exception as error:
         _logger.exception("Could not store answer sheet in Firebase Storage")
         raise RuntimeError(f"Firebase Storage upload failed: {error}") from error
-
-
-def _update_queue(exam_id: str, hall_ticket: str, status: str):
-    """Update queue status in Firestore."""
-    try:
-        db = get_firestore()
-        if db is None:
-            return
-
-        db.collection("exams").document(exam_id).collection(
-            "queue"
-        ).document(hall_ticket).set(
-            {"hall_ticket": hall_ticket, "status": status},
-            merge=True,
-        )
-    except Exception as error:
-        print(f"[Upload] Queue update error: {error}")

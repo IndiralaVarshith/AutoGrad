@@ -15,12 +15,11 @@ Also maintains backward-compatibility references for existing UI listeners:
 from __future__ import annotations
 
 import time
-import uuid
 from typing import Any
 from google.cloud import firestore
 from google.cloud.firestore import Client
 
-from config import get_firestore, get_storage_bucket
+from config import get_firestore
 from models.schemas import QuestionRubric, PaperResult
 
 
@@ -497,11 +496,12 @@ class DatabaseService:
             raise RuntimeError("Firestore is unavailable.")
         exam_ref = client.collection("exams").document(exam_id)
         hall_tickets = [doc.id for doc in exam_ref.collection("results").stream()]
+        gen_fingerprint = (self.get_question_paper(exam_id) or {}).get("gen_fingerprint", "")
         documents = self._delete_tree(exam_ref)
         for collection in ("rubrics", "grading_results", "submissions"):
             documents += self._delete_where(client, collection, "exam_id", exam_id)
         print(f"[DB] Deleted exam {exam_id}: {len(hall_tickets)} graded sheets, {documents} documents")
-        return {"hall_tickets": hall_tickets, "documents": documents}
+        return {"hall_tickets": hall_tickets, "documents": documents, "gen_fingerprint": gen_fingerprint}
 
     def delete_result(self, exam_id: str, hall_ticket: str) -> bool:
         """Delete one graded sheet and its review log. Returns whether there was one."""
@@ -519,6 +519,66 @@ class DatabaseService:
         client.collection("grading_results").document(record_id).delete()
         client.collection("submissions").document(record_id).delete()
         print(f"[DB] Deleted graded sheet {record_id}")
+        return existed
+
+    def delete_question_paper(self, exam_id: str) -> dict[str, Any]:
+        """Delete an exam's question paper, every rubric version and its calibration.
+
+        The exam itself stays, empty, so a new paper can be uploaded under the same name.
+        The caller makes sure no answer sheet still depends on the paper.
+        """
+        client = self.db
+        if not client:
+            raise RuntimeError("Firestore is unavailable.")
+        exam_ref = client.collection("exams").document(exam_id)
+        paper = self.get_question_paper(exam_id) or {}
+        documents = 0
+        for name in ("question_paper", "rubric", "calibration"):
+            for doc in exam_ref.collection(name).stream():
+                documents += self._delete_tree(doc.reference)
+        documents += self._delete_where(client, "rubrics", "exam_id", exam_id)
+        if exam_ref.get().exists:
+            exam_ref.set({
+                "status": "CREATED",
+                "approved_rubric_id": None,
+                "rubric_version": None,
+                "total_marks": 0.0,
+                "question_count": 0,
+                "paper_filename": "",
+                "question_paper_fingerprint": "",
+                "updated_at": time.time(),
+            }, merge=True)
+        print(f"[DB] Deleted the question paper of exam {exam_id}: {documents} documents")
+        return {"documents": documents, "gen_fingerprint": paper.get("gen_fingerprint", "")}
+
+    # =========================================================
+    # CALIBRATION (one teacher-marked sheet per exam)
+    # =========================================================
+
+    def _calibration_ref(self, client: Client, exam_id: str):
+        return client.collection("exams").document(exam_id).collection("calibration").document("current")
+
+    def get_calibration(self, exam_id: str) -> dict[str, Any] | None:
+        client = self.db
+        if not client:
+            return None
+        doc = self._calibration_ref(client, exam_id).get()
+        return doc.to_dict() if doc.exists else None
+
+    def save_calibration(self, exam_id: str, calibration: dict[str, Any]) -> None:
+        client = self.db
+        if not client:
+            raise RuntimeError("Firestore is unavailable.")
+        self._calibration_ref(client, exam_id).set(calibration)
+
+    def delete_calibration(self, exam_id: str) -> bool:
+        """Stop using the exam's calibration. Returns whether there was one."""
+        client = self.db
+        if not client:
+            raise RuntimeError("Firestore is unavailable.")
+        ref = self._calibration_ref(client, exam_id)
+        existed = ref.get().exists
+        ref.delete()
         return existed
 
     # =========================================================

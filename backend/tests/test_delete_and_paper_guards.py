@@ -128,3 +128,46 @@ def test_sheets_are_refused_when_the_chosen_marks_changed(client):
     assert response.status_code == 409
     assert "changed since you chose" in response.json()["detail"]
     assert queue_manager.get_exam_jobs("versioned") == []
+
+
+def test_deleting_the_question_paper_keeps_the_exam_name_and_clears_its_marks(client):
+    approved_exam(client, "repaper")
+    db_service.save_calibration("repaper", {"calibration_id": "c1", "hall_ticket": "S1", "examples": [{"answer": "x"}]})
+
+    response = client.delete("/exam/repaper/paper")
+
+    assert response.status_code == 200
+    assert db_service.get_question_paper("repaper") is None
+    assert db_service.get_approved_rubric("repaper") is None
+    assert db_service.get_calibration("repaper") is None
+    assert list(db_service.db.collection("rubrics").where("exam_id", "==", "repaper").stream()) == []
+    exam = db_service.get_exam("repaper")
+    assert exam is not None and exam["question_count"] == 0 and exam["paper_filename"] == ""
+    # A new paper can be uploaded under the same exam name.
+    assert upload(client, "repaper", text=OTHER_PAPER).status_code == 200
+    assert client.delete("/exam/repaper/paper").status_code == 200
+    assert client.delete("/exam/repaper/paper").status_code == 404
+
+
+def test_a_question_paper_with_sheets_is_not_deleted(client):
+    approved_exam(client, "inuse")
+    db_service.save_grading_result("inuse", "S1", dict(SHEET))
+    queue_manager.enqueue("inuse", "S2", "", b"%PDF-1.4 waiting", ".pdf", "application/pdf")
+
+    response = client.delete("/exam/inuse/paper")
+
+    assert response.status_code == 409
+    assert "2 answer sheets" in response.json()["detail"]
+    assert db_service.get_approved_rubric("inuse") is not None
+
+
+def test_deleting_the_calibration_sheet_also_stops_the_calibration(client):
+    approved_exam(client, "calib")
+    db_service.save_grading_result("calib", "S1", dict(SHEET))
+    db_service.save_grading_result("calib", "S2", dict(SHEET))
+    db_service.save_calibration("calib", {"calibration_id": "c1", "hall_ticket": "S1", "examples": [{"answer": "x"}]})
+
+    assert client.delete("/results/calib/S2").json()["calibration_removed"] is False
+    assert db_service.get_calibration("calib") is not None
+    assert client.delete("/results/calib/S1").json()["calibration_removed"] is True
+    assert db_service.get_calibration("calib") is None

@@ -1,73 +1,84 @@
 @import "tailwindcss";
 @import "@fontsource-variable/figtree";
-@import "@fontsource-variable/fraunces";
+@import "@fontsource/kalam/400.css";
+@import "@fontsource/kalam/700.css";
 
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
-/* Light: exam paper and green ink. */
+/* Light: a ruled exercise book, blue ballpoint ink, a red margin and yellow highlighter. */
 :root {
   color-scheme: light;
-  --paper: #f7f4ec;
-  --surface: #fffdf8;
-  --sunken: #f1ede2;
-  --line: #e4decf;
-  --line-strong: #cfc8b6;
-  --ink: #1e2a27;
-  --muted: #5c6863;
-  --primary: #1f6f5c;
-  --primary-strong: #175746;
-  --primary-soft: #e0efe9;
-  --on-primary: #fffdf8;
-  --good: #2c7a4b;
-  --good-soft: #e3f2e7;
-  --warn: #8a5a0b;
-  --warn-soft: #fbf0d9;
-  --warn-line: #ecd6a6;
-  --bad: #b83a26;
-  --bad-soft: #fbe6e1;
-  --bad-line: #f0c4ba;
+  --paper: #fbf8ef;
+  --surface: #fffefa;
+  --sunken: #f4f0e4;
+  --line: #e8e1cf;
+  --line-strong: #d3cab4;
+  --ink: #1d2742;
+  --muted: #5d6478;
+  --primary: #2c55b3;
+  --primary-strong: #234591;
+  --primary-soft: #e5ecfb;
+  --on-primary: #fffefa;
+  --good: #24794a;
+  --good-soft: #e1f3e6;
+  --warn: #855c00;
+  --warn-soft: #fff4c2;
+  --warn-line: #efdb86;
+  --bad: #c03b28;
+  --bad-soft: #fde6e1;
+  --bad-line: #f1c2b7;
   --info: #2a6395;
   --info-soft: #e3eef7;
-  --chart: #08846a;
-  --shadow-sm: 0 1px 2px rgb(60 50 20 / 0.06);
-  --shadow-md: 0 1px 2px rgb(60 50 20 / 0.05), 0 8px 24px -10px rgb(60 50 20 / 0.16);
-  --shadow-lg: 0 2px 6px rgb(60 50 20 / 0.08), 0 24px 56px -16px rgb(60 50 20 / 0.28);
+  --chart: #2c55b3;
+  --rule: rgb(98 135 205 / 0.2);
+  --margin: rgb(214 82 82 / 0.42);
+  --highlight: rgb(255 226 92 / 0.55);
+  --cover: #23345f;
+  --on-cover: #f7f3e6;
+  --shadow-sm: 0 1px 0 rgb(60 50 20 / 0.06), 0 1px 3px rgb(60 50 20 / 0.05);
+  --shadow-md: 0 1px 0 rgb(60 50 20 / 0.05), 0 10px 26px -14px rgb(40 50 90 / 0.2);
+  --shadow-lg: 0 2px 6px rgb(60 50 20 / 0.08), 0 28px 60px -18px rgb(30 40 80 / 0.32);
   --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-/* Dark: a chalkboard. */
+/* Dark: the same exercise book at night, chalk-white ink on slate. */
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --paper: #121e1b;
-  --surface: #1b2c27;
-  --sunken: #16241f;
-  --line: #2c403a;
-  --line-strong: #3f5750;
-  --ink: #eef2e8;
-  --muted: #a5b5ae;
-  --primary: #5cc8a8;
-  --primary-strong: #7ad6ba;
-  --primary-soft: #1f3f36;
-  --on-primary: #0f1f1a;
-  --good: #6fd08f;
-  --good-soft: #1d3a2a;
-  --warn: #eebc5a;
-  --warn-soft: #3a2f16;
-  --warn-line: #5a4920;
-  --bad: #f4897a;
-  --bad-soft: #3f211c;
+  --paper: #161a23;
+  --surface: #1e2330;
+  --sunken: #191e29;
+  --line: #2b3242;
+  --line-strong: #3b4457;
+  --ink: #eef1f7;
+  --muted: #a5aec0;
+  --primary: #8fb0ff;
+  --primary-strong: #abc3ff;
+  --primary-soft: #24304d;
+  --on-primary: #111521;
+  --good: #79d49a;
+  --good-soft: #1b3426;
+  --warn: #f1cd5c;
+  --warn-soft: #393118;
+  --warn-line: #5a4b1f;
+  --bad: #ff8e7c;
+  --bad-soft: #3e201b;
   --bad-line: #643229;
   --info: #84bbe8;
   --info-soft: #1c3244;
-  --chart: #34ab89;
-  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.25);
-  --shadow-md: 0 1px 2px rgb(0 0 0 / 0.25), 0 8px 24px -10px rgb(0 0 0 / 0.5);
-  --shadow-lg: 0 2px 6px rgb(0 0 0 / 0.3), 0 24px 56px -16px rgb(0 0 0 / 0.7);
+  --chart: #8fb0ff;
+  --rule: rgb(150 175 230 / 0.075);
+  --margin: rgb(255 120 120 / 0.22);
+  --highlight: rgb(241 205 92 / 0.28);
+  --cover: #0f1422;
+  --on-cover: #e9ecf5;
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.3);
+  --shadow-md: 0 1px 2px rgb(0 0 0 / 0.3), 0 10px 26px -12px rgb(0 0 0 / 0.55);
+  --shadow-lg: 0 2px 6px rgb(0 0 0 / 0.35), 0 28px 60px -16px rgb(0 0 0 / 0.75);
 }
 
 @theme inline {
   --font-sans: "Figtree Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-display: "Fraunces Variable", Georgia, "Times New Roman", serif;
+  --font-display: "Kalam", "Segoe Print", "Comic Sans MS", cursive;
   --color-paper: var(--paper);
   --color-surface: var(--surface);
   --color-sunken: var(--sunken);
@@ -100,25 +111,34 @@
     -webkit-text-size-adjust: 100%;
   }
 
+  /* Ruled lines every 2rem, and the red margin line of an exercise book on wider screens. */
   body {
+    --margin-x: 0px;
     margin: 0;
     min-height: 100dvh;
     font-family: var(--font-sans);
     font-size: 15px;
     line-height: 1.5;
-    background: var(--paper);
+    background-color: var(--paper);
+    background-image:
+      linear-gradient(90deg, transparent calc(var(--margin-x) - 1px), var(--margin) calc(var(--margin-x) - 1px), var(--margin) calc(var(--margin-x) + 1px), transparent calc(var(--margin-x) + 1px)),
+      repeating-linear-gradient(to bottom, transparent 0, transparent calc(2rem - 1px), var(--rule) calc(2rem - 1px), var(--rule) 2rem);
+    background-position: 0 4rem, 0 4rem;
+    background-repeat: no-repeat, repeat;
     color: var(--ink);
     overflow-x: clip;
     -webkit-font-smoothing: antialiased;
     transition: background-color 0.25s ease, color 0.25s ease;
   }
+  @media (min-width: 640px) {
+    body { --margin-x: 2.75rem; }
+  }
 
   h1, h2, h3 {
     font-family: var(--font-display);
-    font-optical-sizing: auto;
-    font-weight: 560;
-    letter-spacing: -0.012em;
-    line-height: 1.2;
+    font-weight: 700;
+    letter-spacing: 0;
+    line-height: 1.15;
   }
 
   :where(button, a, input, select, textarea, summary, [tabindex]):focus-visible {
@@ -184,8 +204,8 @@
   .card {
     background: var(--surface);
     border: 1px solid var(--line);
-    border-radius: 1rem;
-    box-shadow: var(--shadow-sm);
+    border-radius: 0.9rem;
+    box-shadow: var(--shadow-md);
   }
 
   .input {
@@ -373,6 +393,114 @@
     .dialog[open]::backdrop { background: rgb(15 25 22 / 0); }
   }
 
+  /* Notebook pieces. */
+  .notebook-header {
+    position: relative;
+    background: color-mix(in srgb, var(--surface) 92%, transparent);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--line);
+    box-shadow: 0 2px 0 -1px var(--margin);
+  }
+  /* The spiral binding along the top edge. */
+  .notebook-header::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto;
+    height: 7px;
+    background: radial-gradient(circle at 50% 0, var(--line-strong) 2.5px, transparent 3px) 0 0 / 22px 7px repeat-x;
+    opacity: 0.9;
+    pointer-events: none;
+  }
+  nav.notebook-header::before { display: none; }
+
+  .logo-badge {
+    border-radius: 0.7rem;
+    background: var(--primary);
+    box-shadow: var(--shadow-sm);
+    transform: rotate(-4deg);
+    transition: transform 0.3s var(--ease-out);
+  }
+  .logo-badge:hover { transform: rotate(3deg) scale(1.05); }
+
+  /* The exam in hand reads like a label stuck on the cover. */
+  .exam-tab {
+    border: 1px solid var(--warn-line);
+    border-radius: 0.6rem;
+    background: var(--warn-soft);
+    box-shadow: var(--shadow-sm);
+    transition: transform 0.16s var(--ease-out), box-shadow 0.16s ease;
+  }
+  .exam-tab:hover { transform: translateY(-1px); box-shadow: var(--shadow-md); }
+
+  /* Index tabs for the four steps. */
+  .tab-strip { border-radius: 0.8rem; background: var(--sunken); border: 1px solid var(--line); }
+  .tab-thumb {
+    border-radius: 0.6rem;
+    background: var(--surface);
+    box-shadow: var(--shadow-sm), inset 0 3px 0 var(--primary);
+  }
+
+  .sheet {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 0.9rem;
+  }
+
+  .card-highlight { border-color: var(--primary); box-shadow: var(--shadow-sm), inset 4px 0 0 var(--primary); }
+
+  /* A list on ruled paper: one line per item. */
+  .ruled-list {
+    border: 1px solid var(--line);
+    border-radius: 0.8rem;
+    background: var(--surface);
+  }
+  .ruled-list > li + li { border-top: 1px dashed var(--line-strong); }
+
+  .icon-btn-danger:not(:disabled):hover { background: var(--bad-soft); color: var(--bad); }
+
+  /* A highlighter swipe across the page title when the page opens. */
+  .highlight {
+    background-image: linear-gradient(transparent 58%, var(--highlight) 58%, var(--highlight) 92%, transparent 92%);
+    background-repeat: no-repeat;
+    background-size: 100% 100%;
+    animation: highlight-in 0.7s var(--ease-out) 0.15s both;
+    padding: 0 0.15em;
+    margin: 0 -0.15em;
+    box-decoration-break: clone;
+  }
+
+  /* The sign-in notebook: two pages and a spiral spine. */
+  .notebook {
+    display: grid;
+    grid-template-columns: 1fr;
+    border-radius: 1.1rem;
+    background: var(--cover);
+    padding: 0.6rem;
+    box-shadow: var(--shadow-lg);
+  }
+  @media (min-width: 768px) {
+    .notebook { grid-template-columns: 1fr 1.6rem 1fr; }
+  }
+  .notebook-page {
+    position: relative;
+    min-height: 26rem;
+    padding: 2.4rem 2rem 2rem 2.6rem;
+    background-color: var(--surface);
+    background-image:
+      linear-gradient(90deg, transparent 1.6rem, var(--margin) 1.6rem, var(--margin) calc(1.6rem + 2px), transparent calc(1.6rem + 2px)),
+      repeating-linear-gradient(to bottom, transparent 0, transparent calc(2rem - 1px), var(--rule) calc(2rem - 1px), var(--rule) 2rem);
+    background-position: 0 0, 0 1.25rem;
+    border-radius: 0.7rem;
+  }
+  @media (min-width: 768px) {
+    .notebook-left { border-radius: 0.7rem 0.2rem 0.2rem 0.7rem; }
+    .notebook-right { border-radius: 0.2rem 0.7rem 0.7rem 0.2rem; }
+  }
+  .notebook-right { display: flex; align-items: center; }
+  .notebook-spine {
+    background: radial-gradient(circle at 50% 50%, var(--paper) 0.32rem, var(--line-strong) 0.36rem, transparent 0.42rem) 50% 0.6rem / 1.6rem 1.6rem repeat-y;
+  }
+
   .page-enter { animation: page-in 0.34s var(--ease-out) both; }
   .rise { animation: page-in 0.38s var(--ease-out) both; animation-delay: calc(var(--i, 0) * 40ms); }
   .pop { animation: pop 0.32s var(--ease-out) both; }
@@ -393,6 +521,7 @@
 @keyframes pulse-dot { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.45; transform: scale(0.8); } }
 @keyframes toast-in { from { opacity: 0; transform: translateY(14px) scale(0.97); } to { opacity: 1; transform: none; } }
 @keyframes bar-grow { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+@keyframes highlight-in { from { background-size: 0% 100%; } to { background-size: 100% 100%; } }
 @keyframes shake {
   20% { transform: translateX(-6px); }
   40% { transform: translateX(5px); }

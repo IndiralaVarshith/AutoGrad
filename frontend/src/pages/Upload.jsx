@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ArrowRight, Check, CheckCircle2, ChevronDown, FileText, Layers, Loader2, RotateCcw, Sparkles, X, Zap } from 'lucide-react';
+import { ArrowRight, Check, CheckCircle2, ChevronDown, FileText, GraduationCap, Layers, Loader2, RotateCcw, Sparkles, X, Zap } from 'lucide-react';
 import api from '../api';
 import QueueStatus from '../components/QueueStatus';
 import ConfidenceBadge from '../components/ConfidenceBadge';
@@ -9,28 +9,20 @@ import {
 } from '../components/ui';
 import { useFeedback } from '../components/feedback';
 
+// The stages the server reports for one sheet: one Gemini request reads and marks it.
 const evaluationStages = [
   { id: 'uploading', label: 'Uploading the sheet' },
-  { id: 'extracting_pages', label: 'Preparing the pages' },
-  { id: 'reading_handwriting', label: 'Reading the handwriting' },
-  { id: 'identifying_answers', label: 'Finding each answer' },
-  { id: 'rubric_matching_and_grading', label: 'Marking against the approved marks' },
-  { id: 'verifying', label: 'Checking evidence and sums' },
-  { id: 'calculating', label: 'Adding up the marks' },
-  { id: 'completed', label: 'Finished' },
+  { id: 'saving', label: 'Keeping a copy of the pages' },
+  { id: 'gemini_sheet', label: 'Gemini reads and marks every answer' },
+  { id: 'completed', label: 'Checked, added up and saved' },
 ];
 
 const terminalJobStatuses = new Set(['COMPLETE', 'NEEDS_REVIEW', 'FAILED', 'TIMED_OUT', 'CANCELLED']);
 
 const evaluationStageIndex = (stage) => {
-  if (stage === 'uploading') return 0;
-  if (stage === 'extracting_pages' || stage === 'preprocessing_images') return 1;
-  if (stage === 'reading_handwriting' || stage === 'handwriting_ocr') return 2;
-  if (stage === 'identifying_answers' || stage === 'question_classification' || stage === 'question_answer_extraction') return 3;
-  if (stage === 'rubric_matching_and_grading') return 4;
-  if (['sympy_numerical_verification', 'critic_agent', 'critic_resolver', 'evidence_verification'].includes(stage)) return 5;
-  if (['confidence_calculation', 'final_marks_calculation', 'response_and_firestore_persistence'].includes(stage)) return 6;
-  if (stage === 'completed') return 7;
+  if (['extracting_pages', 'firebase_storage', 'submission_record'].includes(stage)) return 1;
+  if (stage === 'gemini_sheet') return 2;
+  if (stage === 'completed') return 3;
   return 0;
 };
 
@@ -61,7 +53,7 @@ function QuestionReport({ q }) {
           </div>
           {q.criteria?.length > 0 && <EvidenceTable criteria={q.criteria} />}
           <p className="text-[13px] text-muted tabular-nums">
-            Confidence {(q.c_final * 100).toFixed(0)}% · reading {(q.c_ocr * 100).toFixed(0)}% · agreement {(q.c_agree * 100).toFixed(0)}% · evidence {(q.c_evid * 100).toFixed(0)}%
+            Gemini's confidence {Math.round((q.c_final || 0) * 100)}%
             {q.model_used ? ` · ${q.model_used}` : ''}
           </p>
         </div>
@@ -84,6 +76,7 @@ export default function Upload({ examId = '', onGoToDashboard, onGoToReview, onG
   // Approved rubric state
   const [rubricInfo, setRubricInfo] = useState(null);
   const [rubricLoading, setRubricLoading] = useState(false);
+  const [calibration, setCalibration] = useState(null);
 
   // Single student immediate grading result
   const [singleResult, setSingleResult] = useState(null);
@@ -91,6 +84,16 @@ export default function Upload({ examId = '', onGoToDashboard, onGoToReview, onG
   const [evaluationJob, setEvaluationJob] = useState(null);
   const [uploadTransferPercent, setUploadTransferPercent] = useState(null);
   const [pollGeneration, setPollGeneration] = useState(0);
+
+  const refreshQueue = async () => {
+    const id = selectedExamId.trim();
+    if (!id) return;
+    try {
+      setQueue(await api.getQueueStatus(id));
+    } catch {
+      // The next poll tries again.
+    }
+  };
 
   // Live queue progress. It survives a page reload or a backend restart.
   useEffect(() => {
@@ -114,6 +117,20 @@ export default function Upload({ examId = '', onGoToDashboard, onGoToReview, onG
     return () => {
       stopped = true;
       clearInterval(timer);
+    };
+  }, [selectedExamId, active]);
+
+  // Whether new sheets will be marked to the teacher's calibration sheet.
+  useEffect(() => {
+    const id = selectedExamId.trim();
+    setCalibration(null);
+    if (!id || !active) return undefined;
+    let stopped = false;
+    api.getCalibration(id)
+      .then((data) => { if (!stopped) setCalibration(data); })
+      .catch(() => {});
+    return () => {
+      stopped = true;
     };
   }, [selectedExamId, active]);
 
@@ -379,9 +396,26 @@ export default function Upload({ examId = '', onGoToDashboard, onGoToReview, onG
         </Callout>
       )}
 
+      {rubricInfo && (calibration?.active && calibration.current ? (
+        <div className="fade flex flex-wrap items-center gap-3 rounded-xl bg-primary-soft px-4 py-3 text-sm">
+          <GraduationCap size={18} className="shrink-0 text-primary" aria-hidden="true" />
+          <span>
+            New sheets are marked to your calibration from <strong>{calibration.hall_ticket}</strong>
+            {` (${calibration.corrections} ${calibration.corrections === 1 ? 'mark' : 'marks'} you changed${calibration.remarks ? `, ${calibration.remarks} with your notes` : ''}).`}
+          </span>
+        </div>
+      ) : (
+        <Callout tone="info" title="Optional: calibrate with one sheet first">
+          Mark one sheet with “Mark this one now”, check it in Review, write a note on any mark you change,
+          then choose “Use this sheet to calibrate”. Sheets you add after that are marked the way you marked it.
+        </Callout>
+      ))}
+
       {queue?.total_jobs > 0 && (
         <QueueStatus
+          examId={selectedExamId.trim()}
           queue={queue}
+          onChanged={refreshQueue}
           onGoToReview={onGoToReview}
           onResume={async () => {
             try {

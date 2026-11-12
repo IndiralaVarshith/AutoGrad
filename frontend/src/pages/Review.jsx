@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
-  AlertTriangle, ArrowRight, BadgeCheck, CheckCheck, CheckCircle2, ChevronLeft, ChevronRight, Flag, ImageOff, Inbox, Loader2, Maximize, Minus, Plus, Save, ShieldCheck, Sparkles,
+  AlertTriangle, ArrowRight, BadgeCheck, CheckCheck, CheckCircle2, ChevronLeft, ChevronRight, Flag, GraduationCap, ImageOff, Inbox, Loader2, Maximize,
+  Minus, Plus, RotateCcw, Save, ShieldCheck, Sparkles, Trash2,
 } from 'lucide-react';
 import api from '../api';
 import {
@@ -25,7 +26,6 @@ const REASON_TEXT = {
   NUMBER_INFERRED: 'Student wrote no question number',
   ATTEMPT_RULE: 'Answered more than the paper allows',
   SHEET_NOT_READ: 'Gemini could not read this part of the sheet',
-  CHECK_DISAGREED: 'Two separate markings of this answer gave different marks',
 };
 
 const answerKey = (q) => `${q.question_number}:${q.sub_part || ''}`;
@@ -188,13 +188,6 @@ function AnswerEditor({ examId, paper, question, busy, draft, onDecide }) {
         </blockquote>
       )}
 
-      {question.second_opinion && (
-        <div className="rounded-xl bg-info-soft px-3.5 py-2.5 text-sm">
-          <div className="font-semibold text-info">Second marking ({question.second_opinion.model})</div>
-          {question.second_opinion.marks ?? 'No mark'} marks. {question.second_opinion.reason}
-        </div>
-      )}
-
       <div>
         <label htmlFor="student-text" className="label">What the student wrote</label>
         <textarea
@@ -215,6 +208,7 @@ function AnswerEditor({ examId, paper, question, busy, draft, onDecide }) {
       <div>
         <label htmlFor="teacher-note" className="label">Note <span className="font-normal text-muted">(optional)</span></label>
         <input id="teacher-note" value={note} onChange={(e) => setNote(e.target.value)} className="input text-sm" placeholder="Why you changed this mark" />
+        <p className="hint">If you calibrate with this sheet, later sheets follow your note.</p>
       </div>
 
       {error && <p role="alert" className="fade text-sm font-medium text-bad">{error}</p>}
@@ -398,6 +392,64 @@ function QuestionRail({ questions, current, saving, onChoose }) {
   );
 }
 
+/** One marked sheet teaches the app this teacher's marking, for the sheets marked after it. */
+function CalibrationCard({ paper, calibration, ready, busy, onUse, onRemark, onStop }) {
+  const active = Boolean(calibration?.active);
+  const current = active && calibration.current;
+  const isSource = active && calibration.hall_ticket === paper.hall_ticket;
+  const remarkCount = current ? (calibration.can_remark?.length || 0) : 0;
+  const changes = (count) => `${count} ${count === 1 ? 'mark' : 'marks'} you changed`;
+
+  return (
+    <div className={cx('card space-y-3 p-4', isSource && current && 'card-highlight')}>
+      <div className="flex items-start gap-3">
+        <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-primary-soft text-primary">
+          <GraduationCap size={18} aria-hidden="true" />
+        </span>
+        <div className="min-w-0 text-sm">
+          <h3 className="text-xl leading-tight">Calibration</h3>
+          {isSource && current ? (
+            <p className="mt-0.5">
+              This sheet is your calibration: {calibration.answers} written answers, {changes(calibration.corrections)}
+              {calibration.remarks ? `, ${calibration.remarks} with notes` : ''}. New sheets are marked the way you marked it.
+            </p>
+          ) : current ? (
+            <p className="mt-0.5">
+              New sheets are marked to your calibration from <strong>{calibration.hall_ticket}</strong> ({changes(calibration.corrections)}).
+            </p>
+          ) : active ? (
+            <p className="mt-0.5 text-warn">
+              Your calibration from {calibration.hall_ticket} was made with older approved marks, so new sheets do not use it. Choose a sheet again.
+            </p>
+          ) : (
+            <p className="mt-0.5 text-muted">
+              Optional. Decide every flagged answer here, change any mark you disagree with and say why in the note.
+              Then use this sheet to teach the app: sheets marked after it follow your marking.
+            </p>
+          )}
+        </div>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {!(isSource && current) && (
+          <Tip text={ready ? 'Approves this sheet and learns how you marked it' : 'Decide every flagged answer on this sheet first'}>
+            <Button size="sm" variant={current ? 'secondary' : 'primary'} icon={GraduationCap} loading={busy} disabled={!ready} onClick={onUse}>
+              {current ? 'Use this sheet instead' : 'Use this sheet to calibrate'}
+            </Button>
+          </Tip>
+        )}
+        {remarkCount > 0 && (
+          <Tip text="Only sheets you have not touched. One Gemini request each.">
+            <Button size="sm" icon={RotateCcw} onClick={() => onRemark(remarkCount)}>
+              Mark {remarkCount} {remarkCount === 1 ? 'sheet' : 'sheets'} again
+            </Button>
+          </Tip>
+        )}
+        {active && <Button size="sm" variant="ghost" onClick={onStop}>Stop calibration</Button>}
+      </div>
+    </div>
+  );
+}
+
 export default function Review({ examId = '', openRequest = null, onBackToDashboard, onGoToUpload, onResults, active = true }) {
   const [papers, setPapers] = useState([]);
   const [ticket, setTicket] = useState(openRequest?.ticket ?? null);
@@ -409,6 +461,8 @@ export default function Review({ examId = '', openRequest = null, onBackToDashbo
   const { toast, confirm } = useFeedback();
   const [saving, setSaving] = useState({}); // "sheet|question" while its save is on the way
   const [failedDraft, setFailedDraft] = useState(null);
+  const [calibration, setCalibration] = useState(null);
+  const [calibrating, setCalibrating] = useState(false);
   const saveQueue = useRef(Promise.resolve());
 
   const load = useCallback(async () => {
@@ -418,9 +472,13 @@ export default function Review({ examId = '', openRequest = null, onBackToDashbo
       return;
     }
     try {
-      const res = await api.getExamResults(examId);
+      const [res, calibrated] = await Promise.all([
+        api.getExamResults(examId),
+        api.getCalibration(examId).catch(() => null),
+      ]);
       const sorted = [...(res.results || [])].sort((a, b) => sheetRank(a) - sheetRank(b));
       setPapers(sorted);
+      setCalibration(calibrated);
       onResults?.(sorted);
       setError('');
     } catch {
@@ -434,6 +492,7 @@ export default function Review({ examId = '', openRequest = null, onBackToDashbo
   useEffect(() => {
     setLoading(true);
     setPapers([]);
+    setCalibration(null);
     setTicket(null);
     setSelected('');
   }, [examId]);
@@ -538,6 +597,55 @@ export default function Review({ examId = '', openRequest = null, onBackToDashbo
     }
   };
 
+  const remark = async (count) => {
+    const goAhead = await confirm({
+      title: `Mark ${count} ${count === 1 ? 'sheet' : 'sheets'} again to your calibration?`,
+      body: 'Only sheets you have not touched are marked again, one Gemini request each. Their marks are replaced when the new marks arrive.',
+      confirmLabel: 'Mark them again',
+    });
+    if (!goAhead) return;
+    run(() => api.remarkWithCalibration(examId), (r) => [
+      `${r.queued.length} ${r.queued.length === 1 ? 'sheet is' : 'sheets are'} being marked again. Watch the progress on Upload.`,
+      r.kept.length ? `${r.kept.length} you already worked on stay as they are.` : '',
+      r.missing.length ? `${r.missing.length} could not be found: upload ${r.missing.length === 1 ? 'it' : 'them'} again.` : '',
+    ].filter(Boolean).join(' '));
+  };
+
+  const calibrateWithThisSheet = async () => {
+    try {
+      setCalibrating(true);
+      const res = await api.calibrateWithSheet(examId, paper.hall_ticket, unmatchedChecked);
+      await load();
+      toast.success(`Calibrated from ${paper.hall_ticket}: ${res.answers} written answers, ${res.corrections} ${res.corrections === 1 ? 'mark' : 'marks'} you changed.`);
+      if (res.can_remark?.length) await remark(res.can_remark.length);
+    } catch (err) {
+      toast.error(errorText(err, 'Could not use this sheet to calibrate.'));
+    } finally {
+      setCalibrating(false);
+    }
+  };
+
+  const stopCalibrating = async () => {
+    const goAhead = await confirm({
+      title: 'Stop using the calibration?',
+      body: 'Sheets marked from now on use the approved marks only. Marks already given stay as they are.',
+      confirmLabel: 'Stop calibration',
+    });
+    if (goAhead) run(() => api.stopCalibration(examId), () => 'Calibration stopped.');
+  };
+
+  const deleteThisSheet = async () => {
+    const goAhead = await confirm({
+      title: `Delete the sheet “${paper.hall_ticket}”?`,
+      body: 'Its marks, review notes and stored pages are deleted. If it is your calibration sheet, the calibration stops too. It cannot be undone.',
+      confirmLabel: 'Delete sheet',
+      danger: true,
+    });
+    if (!goAhead) return;
+    const gone = paper.hall_ticket;
+    run(() => api.deleteSheet(examId, gone), (r) => `Deleted ${gone}.${r.calibration_removed ? ' Its calibration was removed too.' : ''}`);
+  };
+
   if (loading) {
     return (
       <div className="mx-auto grid max-w-[90rem] gap-4 px-4 py-8 sm:px-6 lg:grid-cols-[11rem_1fr_1fr]" aria-label="Loading sheets">
@@ -578,6 +686,8 @@ export default function Review({ examId = '', openRequest = null, onBackToDashbo
   const at = papers.findIndex((item) => item.hall_ticket === paper.hall_ticket);
   const nextOpen = papers.find((item) => item.finality_status !== 'FINAL' && item.hall_ticket !== paper.hall_ticket);
   const unflaggedSheets = papers.filter((item) => item.finality_status !== 'FINAL' && !item.flagged_count).length;
+  const readyToTeach = !savesPending && (isFinal || canApprove);
+  const isCalibrationSheet = calibration?.active && calibration.hall_ticket === paper.hall_ticket;
 
   return (
     <div className="mx-auto max-w-[90rem] space-y-4 px-4 py-6 sm:px-6">
@@ -604,6 +714,11 @@ export default function Review({ examId = '', openRequest = null, onBackToDashbo
           <button type="button" className="icon-btn" disabled={at >= papers.length - 1} onClick={() => chooseSheet(papers[at + 1].hall_ticket)} aria-label="Next sheet">
             <ChevronRight size={18} aria-hidden="true" />
           </button>
+          <Tip text="Delete this sheet">
+            <button type="button" className="icon-btn icon-btn-danger" disabled={savesPending} onClick={deleteThisSheet} aria-label={`Delete the sheet ${paper.hall_ticket}`}>
+              <Trash2 size={17} aria-hidden="true" />
+            </button>
+          </Tip>
         </div>
 
         <div className="min-w-44 flex-1">
@@ -616,7 +731,13 @@ export default function Review({ examId = '', openRequest = null, onBackToDashbo
           <ProgressBar value={questions.length ? (decided / questions.length) * 100 : 0} label="Answers decided on this sheet" />
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {isCalibrationSheet && <Pill tone="primary" icon={GraduationCap}>Calibration sheet</Pill>}
+          {!isCalibrationSheet && paper.calibrated_from && (
+            <Tip text={`Marked to your calibration from ${paper.calibrated_from}`}>
+              <span tabIndex={0}><Pill tone="primary" icon={GraduationCap}>Calibrated</Pill></span>
+            </Tip>
+          )}
           {isFinal ? <Pill tone="good" icon={BadgeCheck}>Final</Pill> : <Pill tone="warn">Not final</Pill>}
           <Button
             size="sm"
@@ -759,6 +880,16 @@ export default function Review({ examId = '', openRequest = null, onBackToDashbo
               </Button>
             )}
           </div>
+
+          <CalibrationCard
+            paper={paper}
+            calibration={calibration}
+            ready={readyToTeach}
+            busy={calibrating}
+            onUse={calibrateWithThisSheet}
+            onRemark={remark}
+            onStop={stopCalibrating}
+          />
 
           {isFinal && !nextOpen && onBackToDashboard && (
             <Button className="w-full" variant="primary" onClick={onBackToDashboard}>

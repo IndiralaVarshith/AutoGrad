@@ -23,10 +23,10 @@ async def login(request: LoginRequest, response: Response):
     if not teacher_auth.password_matches(request.password):
         await asyncio.sleep(1)  # Slows down password guessing.
         raise HTTPException(401, "That password is not right.")
+    # No max_age: the cookie ends with the browser. The session also ends when the server restarts.
     response.set_cookie(
         teacher_auth.COOKIE_NAME,
         teacher_auth.new_session(),
-        max_age=teacher_auth.SESSION_SECONDS,
         httponly=True,
         samesite="lax",
     )

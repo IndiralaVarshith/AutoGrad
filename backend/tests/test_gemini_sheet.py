@@ -15,12 +15,10 @@ from services.gemini_sheet import (
     MCQ_INSTRUCTIONS,
     McqSheet,
     SheetExtraction,
-    apply_double_check,
     sheet_instructions,
     grade_readings,
     grade_sheet,
     rubric_for_prompt,
-    second_opinions,
 )
 
 
@@ -184,32 +182,22 @@ def test_impossible_point_marks_are_flagged_never_clipped(points):
     assert g.flag_reason == "INVALID_MARK" and g.final_score == 0 and g.suggested_score is None
 
 
-def test_deductions_are_taken_off_the_points_and_shown_as_corrections():
-    text = "The Mugal empire was founded by Babur in 1626"
-    points = [{"n": 1, "marks": 1, "quote": "founded by Babur"}, {"n": 2, "marks": 1, "quote": "in 1626"}]
-    deductions = [
-        {"reason": 'Spelling: "Mugal" should be "Mughal"', "marks": 0.5, "quote": "Mugal"},
-        {"reason": "Wrong date: 1626 should be 1526", "marks": 0.5, "quote": "1626"},
-    ]
-    g = grade_one([pointed(2, 1, 1)], answer(text=text, points=points, deductions=deductions))[0]["2"]
-    assert g.routing == "AUTO_ACCEPT" and g.final_score == 1.0
-    assert [c.marks_awarded for c in g.criteria] == [1, 1, -0.5, -0.5]
-    assert g.criteria[2].criterion.startswith("Taken off: Spelling") and g.criteria[2].quote_verified
-
-
-def test_deductions_never_take_an_answer_below_zero():
-    points = [{"n": 1, "marks": 0.5, "quote": "an answer"}]
-    deductions = [{"reason": "Wrong fact", "marks": 1, "quote": "an answer"}]
+def test_there_is_no_negative_marking_even_if_gemini_sends_deductions():
+    # An older reply shape: a point marked 0, then the same mistake "taken off" again.
+    points = [{"n": 1, "marks": 1, "quote": "an answer"}, {"n": 2, "marks": 0, "quote": ""}]
+    deductions = [{"reason": "Wrong condition", "marks": 1, "quote": "an answer"}]
     g = grade_one([pointed(2, 1, 1)], answer(points=points, deductions=deductions))[0]["2"]
-    assert g.final_score == 0 and g.flag_reason == ""
+    assert g.final_score == 1.0 and g.routing == "AUTO_ACCEPT"
+    assert [c.marks_awarded for c in g.criteria] == [1, 0]
+    assert not any("Taken off" in c.criterion for c in g.criteria)
 
 
-@pytest.mark.parametrize("taken", [0, -0.5, 0.3, 5])
-def test_impossible_deductions_are_flagged(taken):
-    points = [{"n": 1, "marks": 1, "quote": "an answer"}]
-    deductions = [{"reason": "x", "marks": taken, "quote": "an answer"}]
-    g = grade_one([pointed(2, 1, 1)], answer(points=points, deductions=deductions))[0]["2"]
-    assert g.flag_reason == "INVALID_MARK" and g.final_score == 0
+def test_gemini_is_not_asked_for_deductions():
+    from services.gemini_sheet import SheetAnswer
+    assert "deductions" not in SheetAnswer.model_fields
+    for style in ("GENEROUS", "BALANCED", "STRICT"):
+        text = sheet_instructions([written()], style)
+        assert "There is no negative marking" in text and "deductions" not in text
 
 
 def long_question(marks=4.0, text="Explain the causes of the French Revolution"):
@@ -233,7 +221,15 @@ def test_a_one_line_answer_to_a_four_mark_question_cannot_earn_full_marks(length
     g = grade_one([long_question()], reply)[0]["2"]
     # 12 of about 80 words: far too short, so a generous marker gives at most half.
     assert g.final_score == 2.0 and g.routing == "AUTO_ACCEPT"
-    assert g.criteria[-1].marks_awarded == -2.0 and "far shorter than" in g.criteria[-1].criterion
+    # The cap lowers the point itself: the rows add up to the mark and none is negative.
+    assert [c.marks_awarded for c in g.criteria] == [2.0] and "far shorter than" in g.criteria[0].rationale
+
+
+def test_a_length_cap_lowers_the_last_points_first_and_never_below_zero(length_on):
+    text = words(12)
+    points = [{"n": 1, "marks": 2, "quote": text}, {"n": 2, "marks": 1, "quote": text}, {"n": 3, "marks": 1, "quote": text}]
+    g = grade_one([pointed(2, 2, 1, 1)], answer(text=text, marks=4.0, points=points))[0]["2"]
+    assert g.final_score == 2.0 and [c.marks_awarded for c in g.criteria] == [2, 0, 0]
 
 
 @pytest.mark.parametrize("style,length,cap", [
@@ -242,10 +238,33 @@ def test_a_one_line_answer_to_a_four_mark_question_cannot_earn_full_marks(length
     ("STRICT", "SHORT", 2.0), ("STRICT", "HALF", 2.0), ("STRICT", "VERY_SHORT", 1.0),
 ])
 def test_geminis_length_judgement_caps_marks_by_style(length_on, style, length, cap):
-    reply = answer(text=words(90), marks=4.0, quote=words(90), length=length)
+    # 70 of about 80 words: the count does not prove it full, so Gemini's judgement decides.
+    reply = answer(text=words(70), marks=4.0, quote=words(70), length=length)
     readings = [(SheetExtraction.model_validate({"readable": True, "answers": [reply]}), 0)]
     grades, _ = grade_readings([long_question()], readings, [], "m", style)
     assert grades[0].final_score == cap
+
+
+@pytest.mark.parametrize("style", ["GENEROUS", "BALANCED", "STRICT"])
+def test_an_answer_as_long_as_its_marks_need_is_never_cut_for_length(length_on, style):
+    # Found on a real sheet: 44 to 66 words for a 2 mark answer, called SHORT, halved under Strict.
+    reply = answer(number=2, text=words(50), marks=2.0, quote=words(50), length="SHORT")
+    readings = [(SheetExtraction.model_validate({"readable": True, "answers": [reply]}), 0)]
+    grades, _ = grade_readings([long_question(marks=2.0)], readings, [], "m", style)
+    assert grades[0].final_score == 2.0
+
+
+@pytest.mark.parametrize("question,text", [
+    # Found on real maths sheets: a full proof is few words, so it was capped at half.
+    ("Show that the points A(-1,-2), B(4,3), C(2,5) and D(-3,0) form a rectangle",
+     "AB = sqrt((4+1)^2+(3+2)^2) = sqrt(50) BC = sqrt(8) CD = sqrt(50) AD = sqrt(8) "
+     "AC = sqrt(58) BD = sqrt(58) opposite sides and diagonals are equal so ABCD is a rectangle"),
+    ("Work out the area of the triangle with base 6 and height 4",
+     "A = 1/2 x b x h = 1/2 x 6 x 4 = 12 sq units"),
+])
+def test_working_in_symbols_is_not_cut_for_length(length_on, question, text):
+    reply = answer(text=text, marks=4.0, quote=text, length="NOT_APPLICABLE")
+    assert grade_one([long_question(text=question)], reply)[0]["2"].final_score == 4.0
 
 
 def test_a_full_length_answer_keeps_its_marks(length_on):
@@ -279,6 +298,18 @@ def test_low_marks_are_not_raised_and_one_mark_questions_are_not_checked(length_
 def test_the_rubric_tells_gemini_how_long_a_full_answer_is(length_on):
     sent = json.loads(rubric_for_prompt([long_question(), long_question(marks=1.0)]))
     assert sent[0]["expected_words"] == 80 and "expected_words" not in sent[1]
+
+
+def test_a_quote_that_joins_two_phrases_with_dots_is_found():
+    # Found on real sheets: both phrases were in the answer, but the joined quote was not.
+    text = "1) since 1989 governments were coalitions. 2) parties came together. 7) Many coalitions did not last their full time."
+    for joined in ("since 1989 governments were coalitions... Many coalitions did not last their full time",
+                   "since 1989 governments were coalitions … Many coalitions did not last"):
+        points = [{"n": 1, "marks": 2, "quote": joined}]
+        g = grade_one([pointed(2, 2)], answer(text=text, points=points))[0]["2"]
+        assert g.flag_reason == "" and g.criteria[0].quote_verified
+    invented = [{"n": 1, "marks": 2, "quote": "since 1989 governments were coalitions... parties became dictators"}]
+    assert grade_one([pointed(2, 2)], answer(text=text, points=invented))[0]["2"].flag_reason == "EVIDENCE_NOT_FOUND"
 
 
 def test_a_point_whose_quote_is_not_in_the_answer_is_flagged():
@@ -512,91 +543,6 @@ def test_a_student_who_answers_every_question_gets_the_best_ones_counted():
     assert not any(g.flag_reason for g in grades.values())
 
 
-# ------------------------------------------------------------- the second marking pass
-
-def checked(first, second, rubric=None):
-    rubric = rubric or [written(marks=4)]
-    grades = grade_readings(rubric, [reading(*first)], [], "m")[0]
-    check = grade_readings(rubric, [reading(*second)], [], "m2")[0]
-    apply_double_check(rubric, grades, check)
-    return {f"{g.question_number}{g.sub_part}": g for g in grades}
-
-
-def test_passes_that_agree_leave_the_first_mark_alone():
-    g = checked([answer(marks=3.0)], [answer(marks=2.0, text="read a little differently")])["2"]
-    assert g.routing == "AUTO_ACCEPT" and g.final_score == 3  # 1 of 4 marks apart is allowed.
-    assert g.second_opinion["marks"] == 2 and g.second_opinion["model"] == "m2"
-
-
-def test_passes_that_disagree_send_the_answer_to_the_teacher():
-    g = checked([answer(marks=3.0)], [answer(marks=1.5)])["2"]
-    assert g.flag_reason == "CHECK_DISAGREED" and g.routing == "FLAGGED"
-    assert g.final_score == 3 and g.suggested_score == 3 and g.second_opinion["marks"] == 1.5
-
-
-def test_half_a_mark_apart_is_never_a_disagreement():
-    g = checked([answer(marks=1.0)], [answer(marks=0.5)], [written(marks=1)])["2"]
-    assert g.routing == "AUTO_ACCEPT" and g.final_score == 1
-
-
-def test_an_answer_only_one_pass_found_goes_to_the_teacher():
-    g = checked([answer(marks=3.0)], [])["2"]
-    assert g.flag_reason == "CHECK_DISAGREED" and g.suggested_score == 3
-    g = checked([], [answer(marks=3.0)])["2"]
-    assert g.flag_reason == "CHECK_DISAGREED" and g.routing == "FLAGGED"
-    assert g.suggested_score == 3 and g.extracted_text == "an answer here" and not g.blank
-
-
-def test_the_check_compares_extra_answers_by_their_marks_not_by_which_one_counted():
-    rubric = [written(4, choice_group="g"), written(5, choice_group="g")]
-    first = [answer(4, marks=2.0), answer(5, marks=1.5)]
-    second = [answer(4, marks=1.5), answer(5, marks=2.0)]  # The other answer wins here.
-    grades = checked(first, second, rubric)
-    assert grades["4"].routing == "AUTO_ACCEPT" and grades["4"].final_score == 2 and grades["5"].extra
-
-
-def test_a_blank_both_passes_agree_on_stays_zero():
-    g = checked([], [])["2"]
-    assert g.blank and g.routing == "AUTO_ACCEPT" and g.final_score == 0
-
-
-def test_the_check_adds_to_a_flag_and_never_clears_one():
-    g = checked([answer(marks=3.0, read=0.2)], [answer(marks=3.0)])["2"]
-    assert g.flag_reason == "LOW_CONFIDENCE" and g.routing == "FLAGGED"
-    g = checked([answer(unreadable=True, text="", marks=None)], [answer(marks=3.0)])["2"]
-    assert g.flag_reason == "UNREADABLE" and g.routing == "MANUAL" and g.final_score == 0
-
-
-def test_the_check_leaves_mcq_answers_to_the_code():
-    g = checked([mcq_answer(letter="B")], [mcq_answer(letter="A")], [mcq()])["1"]
-    assert g.routing == "AUTO_ACCEPT" and g.final_score == 1
-
-
-def test_sheet_is_marked_twice_when_the_check_is_on(client_for, monkeypatch):
-    monkeypatch.setattr(config, "GEMINI_DOUBLE_CHECK", True)
-    client, fake = client_for(good_reply(mcq_answer(), answer()), good_reply(mcq_answer(), answer(marks=0.0)))
-    result = sheet(client)
-    assert len(fake.calls) == 2 and result.double_checked
-    assert result.total_score == 3 and result.flagged_count == 1 and result.status == "NEEDS_REVIEW"
-    assert result.gemini_usage["calls"] == 2
-
-
-def test_second_pass_can_use_another_model(client_for, monkeypatch):
-    monkeypatch.setattr(config, "GEMINI_DOUBLE_CHECK", True)
-    monkeypatch.setattr(config, "GEMINI_CHECK_MODEL", "another-model")
-    client, fake = client_for(good_reply(mcq_answer(), answer()), good_reply(mcq_answer(), answer()))
-    result = sheet(client)
-    assert [call[0] for call in fake.calls] == [config.GEMINI_MODEL, "another-model"]
-    assert result.status == "COMPLETE" and result.double_checked
-
-
-def test_a_bad_second_reply_leaves_the_first_pass_unchecked(client_for, monkeypatch):
-    monkeypatch.setattr(config, "GEMINI_DOUBLE_CHECK", True)
-    client, _ = client_for(good_reply(mcq_answer(), answer()), reply("not json"))
-    result = sheet(client)
-    assert result.total_score == 3 and not result.double_checked and result.status == "COMPLETE"
-
-
 def test_twelve_pages_one_request_thirteen_pages_two(client_for):
     client, fake = client_for(good_reply(mcq_answer(), answer()))
     sheet(client, pages=12)
@@ -638,24 +584,6 @@ def test_daily_limit_raises_so_the_queue_can_pause(client_for, monkeypatch):
         sheet(client)
 
 
-def test_second_opinion_changes_nothing_and_stops_at_the_cap(client_for):
-    flagged = answer(read=0.2)
-    client, fake = client_for(
-        good_reply(mcq_answer(), flagged, answer(number=3, read=0.2)),
-        good_reply(answer(marks=1.0, text="better reading")),
-    )
-    rubric = [mcq(), written(), written(3)]
-    run = client.new_run(review_call_cap=1)
-    result = sheet(client, rubric=rubric, run=run)
-    assert len(fake.calls) == 1  # Off by default.
-    second_opinions(result, pdf(2), ".pdf", rubric, client, run)
-    assert len(fake.calls) == 2 and fake.calls[1][0] == config.GEMINI_REVIEW_MODEL
-    g2, g3 = (next(q for q in result.questions if q.question_number == n) for n in (2, 3))
-    assert g2.second_opinion["marks"] == 1.0 and g2.second_opinion["read_text"] == "better reading"
-    assert g2.routing == "FLAGGED" and g2.final_score == 2 and g2.suggested_score == 2
-    assert g3.second_opinion is None and g3.routing == "FLAGGED"
-
-
 def test_queue_job_grades_and_saves_on_the_emulator(client_for, monkeypatch, tmp_path):
     if not db_service.is_connected():
         pytest.skip("The Firestore emulator is not connected.")
@@ -692,7 +620,7 @@ def test_each_marking_style_has_its_own_rules_and_generous_is_the_default():
     assert "vague or general line" in strict and "find it" in strict
     # The leniency rules belong to the kinder styles only.
     assert "any wording" in generous and "any wording" not in strict
-    assert "deductions" in strict and "Spelling and grammar lose no marks" not in strict
+    assert "never below 0" in strict and "Spelling and grammar lose no marks" not in strict
     assert "partly there or vague" in balanced
     assert sheet_instructions([written()]) == generous == sheet_instructions([written()], "nonsense")
 
@@ -717,7 +645,6 @@ def test_mcq_questions_send_only_their_letters_to_gemini():
 
 
 def test_mcq_only_paper_uses_the_short_prompt_and_small_reply(client_for, monkeypatch):
-    monkeypatch.setattr(config, "GEMINI_DOUBLE_CHECK", True)  # Nothing written, so no second pass.
     seen = []
     client, fake = client_for(reply({"readable": True, "answers": [
         {"question_number": 1, "selected_option": "B", "read_confidence": 0.95},
@@ -726,7 +653,7 @@ def test_mcq_only_paper_uses_the_short_prompt_and_small_reply(client_for, monkey
     generate = client.generate
     monkeypatch.setattr(client, "generate", lambda run, **kw: seen.append(kw) or generate(run, **kw))
     result = sheet(client, rubric=[mcq(1), mcq(2), mcq(3)])
-    assert len(fake.calls) == 1 and not result.double_checked
+    assert len(fake.calls) == 1
     assert seen[0]["response_schema"] is McqSheet and seen[0]["system_instruction"] == MCQ_INSTRUCTIONS
     by_number = {q.question_number: q for q in result.questions}
     assert by_number[1].final_score == 1 and by_number[1].routing == "AUTO_ACCEPT"
@@ -734,15 +661,65 @@ def test_mcq_only_paper_uses_the_short_prompt_and_small_reply(client_for, monkey
     assert by_number[3].flag_reason == "UNCLEAR_OPTION" and by_number[3].routing == "MANUAL"
 
 
-def test_the_exams_marking_style_reaches_both_passes(client_for, monkeypatch):
-    monkeypatch.setattr(config, "GEMINI_DOUBLE_CHECK", True)
+def test_the_exams_marking_style_reaches_the_one_request(client_for, monkeypatch):
     seen = []
-    client, _ = client_for(good_reply(answer()), good_reply(answer()))
+    client, fake = client_for(good_reply(answer()), good_reply(answer()))
     generate = client.generate
     monkeypatch.setattr(client, "generate", lambda run, **kw: seen.append(kw) or generate(run, **kw))
-    grade_sheet(
+    result = grade_sheet(
         exam_id="e", hall_ticket="s1", student_name="", file_bytes=pdf(1), extension=".pdf",
         rubric_list=[written()], client=client, marking_style="strict", marking_notes="Cut for spelling.",
     )
-    assert len(seen) == 2
-    assert all("strict board examiner" in kw["system_instruction"] and "Cut for spelling." in kw["system_instruction"] for kw in seen)
+    assert len(seen) == 1 and len(fake.calls) == 1 and result.gemini_usage["calls"] == 1
+    assert "strict board examiner" in seen[0]["system_instruction"]
+    assert "Cut for spelling." in seen[0]["system_instruction"]
+
+
+# ------------------------------------------------------------ calibration from one sheet
+
+CALIBRATION = {
+    "calibration_id": "cal-1",
+    "hall_ticket": "MARKED-1",
+    "rubric_version": "1",
+    "examples": [
+        {"question_number": 2, "sub_part": "", "max_marks": 2.0, "answer": "lemon looks big due to water",
+         "app_marks": 1.0, "teacher_marks": 2.0, "remark": "Water acting as a lens is enough", "changed": True},
+        {"question_number": 1, "sub_part": "", "max_marks": 1.0, "answer": "B",
+         "app_marks": 1.0, "teacher_marks": 1.0, "remark": "", "changed": False},
+    ],
+}
+
+
+def test_a_calibrated_sheet_sends_the_teachers_example_with_each_written_question(client_for, monkeypatch):
+    seen = []
+    client, fake = client_for(good_reply(mcq_answer(), answer()))
+    generate = client.generate
+    monkeypatch.setattr(client, "generate", lambda run, **kw: seen.append(kw) or generate(run, **kw))
+    result = grade_sheet(
+        exam_id="e", hall_ticket="s2", student_name="", file_bytes=pdf(1), extension=".pdf",
+        rubric_list=[mcq(), written()], client=client, calibration=CALIBRATION,
+    )
+    assert len(fake.calls) == 1
+    sent = json.loads(seen[0]["contents"][1])
+    example = sent[1]["teacher_example"]
+    assert example == {
+        "answer": "lemon looks big due to water", "teacher_marks": 2.0, "app_marks": 1.0,
+        "teacher_remark": "Water acting as a lens is enough",
+    }
+    assert "teacher_example" not in sent[0]  # Multiple choice is marked by code, never calibrated.
+    assert "teacher_example" in seen[0]["system_instruction"]
+    assert result.calibration_id == "cal-1" and result.calibrated_from == "MARKED-1"
+
+
+def test_without_calibration_nothing_extra_is_sent(client_for, monkeypatch):
+    seen = []
+    client, _ = client_for(good_reply(answer()))
+    generate = client.generate
+    monkeypatch.setattr(client, "generate", lambda run, **kw: seen.append(kw) or generate(run, **kw))
+    result = grade_sheet(
+        exam_id="e", hall_ticket="s3", student_name="", file_bytes=pdf(1), extension=".pdf",
+        rubric_list=[written()], client=client,
+    )
+    assert "teacher_example" not in seen[0]["contents"][1]
+    assert "teacher_example" not in seen[0]["system_instruction"]
+    assert result.calibration_id == "" and result.calibrated_from == ""

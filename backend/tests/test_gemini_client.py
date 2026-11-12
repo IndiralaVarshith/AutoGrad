@@ -199,20 +199,13 @@ def test_hard_cap_stops_calls_and_retries(make, monkeypatch):
     assert len(transport.models) == 2
 
 
-def test_review_model_only_on_request_and_capped_at_fifteen(make, monkeypatch):
+def test_every_call_uses_the_one_configured_model(make, monkeypatch):
     monkeypatch.setattr(config, "GEMINI_RPM_LIMIT", 6000)
     client, transport, _ = make()
-    run = client.new_run(review_call_cap=15)
-    ask(client, run)
-    assert transport.models == [config.GEMINI_MODEL]
-    for _ in range(15):
-        ask(client, run, review=True)
-    assert transport.models[1:] == [config.GEMINI_REVIEW_MODEL] * 15
-    with pytest.raises(RunCapReached):
-        ask(client, run, review=True)
-    assert len(transport.models) == 16
-    ask(client, run)  # Normal calls carry on.
-    assert config.GEMINI_REVIEW_CALL_CAP <= 15
+    run = client.new_run()
+    for _ in range(3):
+        ask(client, run)
+    assert transport.models == [config.GEMINI_MODEL] * 3 and run.calls == 3
 
 
 def test_other_client_errors_are_not_retried(make):
@@ -226,6 +219,18 @@ def test_unusable_json_is_not_sent_again(make):
     client, transport, _ = make(reply(text="not json"))
     with pytest.raises(BadModelResponse):
         ask(client, client.new_run(), response_schema={"type": "object"})
+    assert len(transport.models) == 1
+
+
+def test_a_reply_cut_off_at_the_limit_is_told_apart_from_bad_json(make):
+    from services.gemini_client import ReplyCutOff
+
+    cut = reply(text='{"ok": tr', output_tokens=16000, thoughts=369)
+    cut.candidates = [SimpleNamespace(finish_reason=SimpleNamespace(name="MAX_TOKENS"))]
+    client, transport, _ = make(cut)
+    with pytest.raises(ReplyCutOff) as raised:
+        ask(client, client.new_run(), response_schema={"type": "object"})
+    assert isinstance(raised.value, BadModelResponse) and "16369 tokens" in str(raised.value)
     assert len(transport.models) == 1
 
 

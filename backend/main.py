@@ -2,11 +2,13 @@
 AutoGrade — FastAPI Application Entry Point
 
 Wires all modular routes:
-- /exam    : Exam setup and rubric approval
-- /upload  : Bulk answer sheet upload and queue processing
-- /results : Fetching graded paper results from Firestore
-- /review  : Teacher confirmation and manual score overrides
-- /export  : Excel spreadsheet export
+- /auth        : Teacher sign-in with the shared password
+- /exam        : Question paper, approved marks, deleting an exam or its paper
+- /upload      : Answer sheets and the background grading queue
+- /results     : Graded sheets, and deleting one
+- /review      : Teacher decisions and sheet approval
+- /calibration : One teacher-marked sheet that later sheets are marked to
+- /export      : Excel spreadsheet export
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Import route modules
-from routes import auth, exam, upload, results, review, export
+from routes import auth, calibration, exam, export, results, review, upload
 from services import teacher_auth
 import config
 from config import (
@@ -91,6 +93,7 @@ app.include_router(exam.router)
 app.include_router(upload.router)
 app.include_router(results.router)
 app.include_router(review.router)
+app.include_router(calibration.router)
 app.include_router(export.router)
 
 
@@ -116,6 +119,7 @@ def root():
             "student_result": "GET /results/{exam_id}/{hall_ticket}",
             "review_confirm": "POST /review/confirm",
             "review_edit": "POST /review/edit",
+            "calibration": "GET|POST|DELETE /calibration/{exam_id}",
             "export_excel": "GET /export/{exam_id}",
         },
     }
@@ -129,10 +133,3 @@ def health_check():
         "provider": "gemini",
         "firestore_emulator": bool(os.getenv("FIRESTORE_EMULATOR_HOST", "").strip()),
     }
-
-
-# =========================================================
-# LEGACY / ROOT UI COMPATIBILITY ROUTES
-# =========================================================
-
-

@@ -12,10 +12,9 @@
   },
   "dependencies": {
     "@fontsource-variable/figtree": "^5.3.0",
-    "@fontsource-variable/fraunces": "^5.3.0",
+    "@fontsource/kalam": "^5.2.8",
     "@tailwindcss/vite": "^4.3.3",
     "axios": "^1.20.0",
-    "firebase": "^13.0.0",
     "lucide-react": "^1.59.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",

@@ -357,6 +357,84 @@ def test_unreadable_paper_saves_nothing(app_client):
     assert response.status_code == 422 and "Blank pages" in response.text
 
 
+def _cut_off():
+    reply = gemini_reply(CLEAN)
+    reply.text = reply.text[:40]
+    reply.candidates = [SimpleNamespace(finish_reason=SimpleNamespace(name="MAX_TOKENS"))]
+    return reply
+
+
+def _paper_app(monkeypatch, tmp_path, outcomes):
+    if not db_service.is_connected():
+        pytest.skip("The Firestore emulator is not connected.")
+    monkeypatch.setattr(config, "GEMINI_RPM_LIMIT", 6000)
+    rubric_cache._draft_cache.clear()
+    sent = []
+
+    def transport(model, contents, generation_config):
+        sent.append(generation_config)
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    fake = GeminiClient(transport, usage_dir=tmp_path, sleep=lambda _s: None)
+    monkeypatch.setattr(gemini_paper, "get_client", lambda: fake)
+    app = FastAPI()
+    app.include_router(exam_route.router)
+    return TestClient(app), sent
+
+
+def test_a_cut_off_paper_reply_is_asked_for_again_with_more_room(monkeypatch, tmp_path):
+    client, sent = _paper_app(monkeypatch, tmp_path, [_cut_off(), gemini_reply(CLEAN)])
+    response = upload(client, "exam-cut1")
+    assert response.status_code == 200 and response.json()["saved"] is True
+    assert len(sent) == 2
+    assert sent[0].temperature == 0 and sent[0].max_output_tokens == config.GEMINI_MAX_OUTPUT_TOKENS
+    assert sent[1].temperature == config.GEMINI_PAPER_RETRY_TEMPERATURE > 0
+    assert sent[1].max_output_tokens == config.GEMINI_PAPER_RETRY_OUTPUT_TOKENS
+
+
+def test_the_retry_tells_gemini_to_keep_fields_short(monkeypatch, tmp_path):
+    client, sent = _paper_app(monkeypatch, tmp_path, [_cut_off(), gemini_reply(CLEAN)])
+    assert upload(client, "exam-cut4").status_code == 200
+    assert "never finished" not in sent[0].system_instruction
+    assert "never finished" in sent[1].system_instruction
+    assert "Never write your reasoning" in sent[0].system_instruction
+
+
+def test_a_scanned_paper_with_no_text_layer_skips_the_printed_text_check():
+    import fitz
+
+    from services.gemini_paper import embedded_text
+    with fitz.open() as document:
+        document.new_page()
+        document.new_page()
+        scanned = document.tobytes()
+    assert embedded_text(scanned, ".pdf") == ""
+    # With no text to check against, a marks quote is not reported as missing from the paper.
+    paper = paper_from_extraction(extraction([question(1, marks=1.0, evidence="4X1= 4m")]), "")
+    assert not any("not found on the paper" in p for p in paper["problems"])
+
+
+def test_a_paper_cut_off_twice_saves_nothing_and_does_not_blame_the_scan(monkeypatch, tmp_path):
+    client, sent = _paper_app(monkeypatch, tmp_path, [_cut_off(), _cut_off()])
+    response = upload(client, "exam-cut2")
+    assert response.status_code == 503 and len(sent) == 2
+    assert "cut off" in response.text and "scan is not the problem" in response.text
+    assert db_service.get_question_paper("exam-cut2") is None
+
+
+def test_the_retry_keeps_the_usual_limit_if_the_model_refuses_a_larger_one(monkeypatch, tmp_path):
+    from google.genai import errors
+
+    refused = errors.ClientError(400, {"error": {"message": "max_output_tokens too large"}})
+    client, sent = _paper_app(monkeypatch, tmp_path, [_cut_off(), refused, gemini_reply(CLEAN)])
+    response = upload(client, "exam-cut3")
+    assert response.status_code == 200 and len(sent) == 3
+    assert sent[2].max_output_tokens == config.GEMINI_MAX_OUTPUT_TOKENS and sent[2].temperature > 0
+
+
 def test_quota_stop_saves_nothing_and_says_why(app_client, monkeypatch):
     client, _, _ = app_client
 

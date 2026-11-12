@@ -9,15 +9,16 @@ from __future__ import annotations
 
 import re
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 import config
-from services.gemini_client import GeminiClient, RunBudget, get_client
+from services.gemini_client import GeminiCallFailed, GeminiClient, ReplyCutOff, RunBudget, get_client
 from services.paper_intake import apply_review_items
 
-PAPER_PROMPT_VERSION = "gemini-paper-v3"
+PAPER_PROMPT_VERSION = "gemini-paper-v4"
 
 
 class QuestionFormat(str, Enum):
@@ -130,7 +131,16 @@ Draft rubric:
 - If a key's entry conflicts with the paper, keep the paper's question and say so in unclear_items.
 - These are drafts. A teacher approves them later.
 
-If something is unclear, say so in unclear_items rather than guessing."""
+If something is unclear, say so in unclear_items rather than guessing.
+
+Keep the reply short:
+- Copy question text in full. Every other text, each marking point and each unclear_items entry,
+  is one plain sentence of at most 30 words.
+- Never write your reasoning, doubts or second thoughts inside the reply. Decide, write one short
+  unclear_items line if needed, and move on to the next question.
+- A question that depends on a figure, diagram or graph you cannot read clearly is still returned
+  with its printed marks and has_figure true. Its marking point can be "Correct answer as shown
+  in the figure (teacher to confirm)"."""
 
 
 PAPER_TYPES = ("MCQ", "WRITTEN", "MIXED")
@@ -634,7 +644,33 @@ def embedded_text(data: bytes, extension: str) -> str:
     import pymupdf
 
     with pymupdf.open(stream=data, filetype="pdf") as document:
-        return "\n".join(page.get_text() for page in document)
+        text = "\n".join(page.get_text() for page in document)
+    # A scan has no text layer: only line breaks come back, and nothing can be checked against it.
+    return text if text.strip() else ""
+
+
+_AFTER_CUT_OFF = """
+
+Your last reply for this paper never finished: one field kept repeating the same doubt until
+the reply ran out of room. This time keep every field to one short sentence, put any doubt in
+a single unclear_items line, and finish the JSON."""
+
+
+def _keep_cut_off_reply(error: ReplyCutOff, label: str) -> None:
+    """Keep a cut-off paper reply on this machine, so the cause can be seen.
+
+    It holds the question paper's text only, never a student's work. The folder is git-ignored.
+    """
+    try:
+        folder = Path(config.GEMINI_USAGE_DIR)
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / "cut_off_paper_reply.txt"
+        mode = "w" if label == "first try" else "a"
+        with path.open(mode) as handle:
+            handle.write(f"===== {label}: {error} =====\n{error.text}\n")
+        print(f"[Paper] {error} Reply kept in {path}. It ends: ...{error.text[-160:]!r}")
+    except OSError:
+        pass
 
 
 def read_question_paper(
@@ -654,14 +690,37 @@ def read_question_paper(
     contents: list[Any] = ["QUESTION PAPER:", _document_part(data, extension)]
     if answer_key:
         contents += ["ANSWER KEY:", _document_part(answer_key, answer_key_extension)]
-    result = client.generate(
-        run,
-        kind="question_paper",
+    request = dict(
         sheet_id="question_paper",
         contents=contents,
         response_schema=PaperExtraction,
         system_instruction=PAPER_INSTRUCTIONS + _PAPER_TYPE_HINT.get(paper_type, ""),
     )
+    try:
+        result = client.generate(run, kind="question_paper", **request)
+    except ReplyCutOff as first:
+        _keep_cut_off_reply(first, "first try")
+        # The paper is fine: the reply ran out of room, or got stuck repeating itself.
+        # The same request at temperature 0 would be cut off the same way, so this one
+        # try gets more room and a little randomness. A second cut-off is raised.
+        retry = dict(
+            request,
+            temperature=config.GEMINI_PAPER_RETRY_TEMPERATURE,
+            system_instruction=request["system_instruction"] + _AFTER_CUT_OFF,
+        )
+        try:
+            result = client.generate(
+                run, kind="question_paper_retry",
+                max_output_tokens=config.GEMINI_PAPER_RETRY_OUTPUT_TOKENS, **retry,
+            )
+        except ReplyCutOff as second:
+            _keep_cut_off_reply(second, "second try")
+            raise
+        except GeminiCallFailed as error:
+            if error.transient:
+                raise
+            # The model refused the larger limit: keep the usual one.
+            result = client.generate(run, kind="question_paper_retry", **retry)
     extraction = (
         result.parsed
         if isinstance(result.parsed, PaperExtraction)

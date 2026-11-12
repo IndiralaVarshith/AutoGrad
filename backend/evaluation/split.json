@@ -1,5 +1,0 @@
-{
-  "seed": 20261105,
-  "method": "Sort the 50 sheets by teacher total, take one at random from each band of 5.",
-  "tune": ["Student_4", "Student_6", "Student_7", "Student_11", "Student_19", "Student_21", "Student_26", "Student_36", "Student_43", "Student_49"]
-}

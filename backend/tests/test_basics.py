@@ -77,10 +77,19 @@ def test_changing_the_password_ends_old_sessions(monkeypatch):
     assert not teacher_auth.session_is_valid(token)
 
 
-def test_cookie_is_http_only():
+def test_restarting_the_server_ends_old_sessions(monkeypatch):
+    token = teacher_auth.new_session()
+    assert teacher_auth.session_is_valid(token)
+    # What a fresh start of the server does: a new secret for this run.
+    monkeypatch.setattr(teacher_auth, "_RUN_SECRET", "a-later-run")
+    assert not teacher_auth.session_is_valid(token)
+
+
+def test_cookie_is_http_only_and_ends_with_the_browser():
     response = TestClient(main.app).post("/auth/login", json={"password": "test-password"})
     cookie = response.headers["set-cookie"].lower()
     assert "httponly" in cookie and "samesite=lax" in cookie
+    assert "max-age" not in cookie and "expires" not in cookie
 
 
 @pytest.mark.parametrize("origin,allowed", [
@@ -143,7 +152,7 @@ def test_requirements_are_pinned_and_have_no_local_models():
 
 def test_secrets_stay_out_of_git():
     ignored = (BACKEND / ".gitignore").read_text()
-    for name in (".env", "queue_data/", "gemini_usage/", "evaluation/runs/"):
+    for name in (".env", "queue_data/", "gemini_usage/", "firebase-service-account.json"):
         assert name in ignored
 
 
