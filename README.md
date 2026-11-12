@@ -190,7 +190,7 @@ Service accounts → Generate new private key).
 ### 2. Create both services
 1. Push this repository to GitHub.
 2. In Render, choose **New → Blueprint** and pick this repository. It creates
-   `autograde-backend` and `autograde-frontend`.
+   `autograde-backend` and `autograde` (the frontend).
 3. Fill in the secret values when asked:
 
    | Setting | What to put |
@@ -204,9 +204,9 @@ Service accounts → Generate new private key).
 ### 3. Check the backend address
 The frontend forwards `/api` to `https://autograde-backend-26z3.onrender.com`. If Render gave the backend a
 different address (shown at the top of its page), put that address in `render.yaml` under
-`autograde-frontend` → `routes` → `destination`, keeping the `/*` at the end, then commit and push.
+`autograde` → `routes` → `destination`, keeping the `/*` at the end, then commit and push.
 
-Then open the frontend's address (`https://autograde-frontend.onrender.com` or similar) and sign in.
+Then open the frontend's address (`https://autograde.onrender.com` or similar) and sign in.
 
 ### Good to know
 - **Free plan limits:** the backend sleeps after about 15 minutes with no visits, and the first visit

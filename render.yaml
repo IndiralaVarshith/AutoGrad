@@ -27,7 +27,7 @@ services:
   # Frontend: a free static site. Requests to /api/... are forwarded to the backend, so the
   # site has one address and the sign-in cookie works in every browser.
   - type: web
-    name: autograde-frontend
+    name: autograde
     runtime: static
     buildCommand: cd frontend && npm ci && npm run build
     staticPublishPath: ./frontend/dist
