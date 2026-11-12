@@ -7,6 +7,7 @@ import asyncio
 from fastapi import APIRouter, Cookie, HTTPException, Response
 from pydantic import BaseModel
 
+import config
 from services import teacher_auth
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
@@ -29,6 +30,7 @@ async def login(request: LoginRequest, response: Response):
         teacher_auth.new_session(),
         httponly=True,
         samesite="lax",
+        secure=config.COOKIE_SECURE,
     )
     return {"signed_in": True}
 

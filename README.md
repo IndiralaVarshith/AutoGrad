@@ -171,6 +171,58 @@ spot-check before approving many sheets at once.
 
 ---
 
+## Put it online (Render)
+
+Both parts go on [Render](https://render.com/), set up together by `render.yaml`:
+
+- **Backend:** one Docker server, on Render's free plan.
+- **Frontend:** a free static site. It forwards every `/api/...` request to the backend, so the site
+  has one address and sign-in works in every browser.
+
+Before you start: online, the data is stored in your real Firebase project, not on your computer.
+Use a paid Gemini key for real students' sheets (see "Important: real student data" above).
+
+### 1. Firebase
+In the [Firebase console](https://console.firebase.google.com/) for your project, make sure
+**Firestore** and **Storage** are turned on. You need the service account JSON file (Project settings →
+Service accounts → Generate new private key).
+
+### 2. Create both services
+1. Push this repository to GitHub.
+2. In Render, choose **New → Blueprint** and pick this repository. It creates
+   `autograde-backend` and `autograde-frontend`.
+3. Fill in the secret values when asked:
+
+   | Setting | What to put |
+   |---|---|
+   | `GEMINI_API_KEY` | Your Gemini key |
+   | `TEACHER_PASSWORD` | The sign-in password |
+   | `FIREBASE_SERVICE_ACCOUNT_JSON` | The whole contents of the service account JSON file |
+
+4. When the backend is live, open `https://autograde-backend.onrender.com/health`. It should say `healthy`.
+
+### 3. Check the backend address
+The frontend forwards `/api` to `https://autograde-backend.onrender.com`. If Render gave the backend a
+different address (shown at the top of its page), put that address in `render.yaml` under
+`autograde-frontend` → `routes` → `destination`, keeping the `/*` at the end, then commit and push.
+
+Then open the frontend's address (`https://autograde-frontend.onrender.com` or similar) and sign in.
+
+### Good to know
+- **Free plan limits:** the backend sleeps after about 15 minutes with no visits, and the first visit
+  after that takes about a minute to wake it. It has no disk, so when it sleeps or redeploys, sheets
+  still waiting in the queue are lost and everyone is signed out. Keep the page open while sheets are
+  being marked: the page checks the queue, which keeps the server awake.
+- **For real use:** in `render.yaml` change the backend's `plan` to `starter` and add a disk
+  (`name: autograde-data`, `mountPath: /data`, `sizeGB: 1`). It then stays awake and keeps queued
+  sheets. This costs about $7 a month and needs a card. Keep it on one instance.
+- Each request through the static site takes a little longer (a few hundred milliseconds). Marking
+  happens in the background, so this hardly shows.
+- If a big batch of sheets fails to upload, upload fewer sheets at a time.
+- Restarting or redeploying the backend signs everyone out.
+
+---
+
 ## Tests
 
 Tests use fake Gemini replies, so they cost nothing. They wipe their database, so they use a

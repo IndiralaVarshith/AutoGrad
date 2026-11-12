@@ -1,0 +1,15 @@
+# Secrets never go into the image: the host passes them in as environment variables.
+.env
+.env.*
+*.env
+firebase-service-account.json
+*firebase-adminsdk*.json
+serviceAccountKey.json
+
+# Local data and run output.
+queue_data/
+gemini_usage/
+__pycache__/
+*.pyc
+.pytest_cache/
+tests/

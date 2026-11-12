@@ -77,6 +77,8 @@ GEMINI_COUNT_BEST_ANSWERS: bool = (
 MAX_UPLOAD_MB: float = float(os.getenv("MAX_UPLOAD_MB", "18"))
 # Largest whole request, for many sheets uploaded together.
 MAX_REQUEST_MB: float = float(os.getenv("MAX_REQUEST_MB", "500"))
+# true when the site is served over HTTPS (deployed): the sign-in cookie is then sent only over HTTPS.
+COOKIE_SECURE: bool = os.getenv("COOKIE_SECURE", "false").strip().lower() == "true"
 # Queue state and sheets kept for review. Not the system temp folder, which can be wiped.
 QUEUE_DATA_DIR: str = os.getenv("QUEUE_DATA_DIR", str(_BACKEND_DIR / "queue_data"))
 # How long the whole queue waits when Gemini says it is overloaded.

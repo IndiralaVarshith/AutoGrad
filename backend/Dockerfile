@@ -1,30 +1,28 @@
-# AutoGrade Backend — Google Cloud Run Dockerfile
-FROM python:3.11-slim
+# AutoGrade backend: one always-on container.
+# Run exactly one instance with one worker: the marking queue and sign-in sessions live in this process.
+FROM python:3.14-slim
 
-# Avoid prompts from debian
-ENV DEBIAN_FRONTEND=noninteractive
-ENV PYTHONUNBUFFERED=1
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
 
-# Install system dependencies for PyMuPDF and Pillow
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
-    libgl1 \
     libglib2.0-0 \
     libgomp1 \
-    curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install -r requirements.txt
 
-# Copy source code
 COPY . .
 
-# Google Cloud Run expects container to listen on $PORT (default 8080)
-ENV PORT=8080
-EXPOSE 8080
+# Queued sheets and the usage log go on a persistent disk mounted at /data.
+ENV QUEUE_DATA_DIR=/data/queue_data \
+    GEMINI_USAGE_DIR=/data/gemini_usage \
+    PORT=8000
+EXPOSE 8000
 
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT}"]
+CMD ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port ${PORT} --workers 1 --proxy-headers --forwarded-allow-ips='*'"]

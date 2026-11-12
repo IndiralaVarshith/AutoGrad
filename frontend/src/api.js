@@ -5,7 +5,9 @@
 
 import axios from 'axios';
 
-const BASE_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+// Locally the backend runs on port 8000. A deployed build calls /api on its own site, which
+// Render forwards to the backend (see render.yaml), so the sign-in cookie stays first-party.
+const BASE_URL = import.meta.env.VITE_BACKEND_URL || (import.meta.env.PROD ? '/api' : 'http://localhost:8000');
 
 const client = axios.create({
   baseURL: BASE_URL,
