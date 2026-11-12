@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { BarChart3, Check, ClipboardCheck, FileUp, GraduationCap, LogOut, Moon, NotebookPen, Sun } from 'lucide-react';
+import { BarChart3, Check, ClipboardCheck, FileUp, LogOut, Moon, NotebookPen, Sun } from 'lucide-react';
 import api from './api';
 import Login from './pages/Login';
 import Setup from './pages/Setup';
@@ -7,6 +7,7 @@ import Upload from './pages/Upload';
 import Dashboard from './pages/Dashboard';
 import Review from './pages/Review';
 import ExamSwitcher from './components/ExamSwitcher';
+import Logo from './components/Logo';
 import { Tip, cx, useSlidingThumb } from './components/ui';
 
 const STEPS = [
@@ -16,11 +17,7 @@ const STEPS = [
   { id: 'dashboard', label: 'Results', hint: 'See the scores and export the spreadsheet', icon: BarChart3 },
 ];
 
-const LOGO = (
-  <span className="logo-badge grid size-9 shrink-0 place-items-center text-on-primary">
-    <GraduationCap size={19} aria-hidden="true" />
-  </span>
-);
+const LOGO = <Logo size={36} />;
 
 function storedPage() {
   try {

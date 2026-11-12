@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
-import { ArrowRight, Check, Eye, EyeOff, GraduationCap } from 'lucide-react';
+import { ArrowRight, Check, Eye, EyeOff } from 'lucide-react';
 import api from '../api';
 import { Button, errorText } from '../components/ui';
+import Logo from '../components/Logo';
 
 const STEPS = [
   'Add the question paper and approve its marks',
-  'Upload the answer sheets: one Gemini request each',
+  'Upload the answer sheets: each one is read and marked for you',
   'Check the flagged answers beside the scanned page',
   'Optional: calibrate with one sheet you marked',
   'Approve. Only then is a sheet final',
@@ -59,9 +60,7 @@ export default function Login({ onLoginSuccess }) {
         <section className="notebook-page notebook-right">
           <form onSubmit={handleSubmit} className="mx-auto w-full max-w-sm">
             <div className="mb-8 flex items-center gap-3">
-              <span className="logo-badge grid size-11 place-items-center text-on-primary">
-                <GraduationCap size={23} aria-hidden="true" />
-              </span>
+              <Logo size={46} />
               <span className="font-display text-3xl leading-none">AutoGrade</span>
             </div>
 

@@ -182,7 +182,7 @@ function QuestionCard({ q, qIdx, index, handlers }) {
             ))}
           </div>
           {q.suggested_option && !q.correct_option && (
-            <Pill tone="warn">Gemini suggests {q.suggested_option}. Please confirm.</Pill>
+            <Pill tone="warn">AutoGrade suggests {q.suggested_option}. Please confirm.</Pill>
           )}
           {!q.correct_option && !q.suggested_option && <Pill>Not set</Pill>}
         </div>
@@ -249,7 +249,7 @@ function PaperProgress({ fileSize }) {
       <p className="mt-1.5 flex justify-between gap-3 text-[13px] text-muted tabular-nums">
         <span>
           {slow
-            ? 'Taking longer than usual: Gemini may be busy, and it keeps trying.'
+            ? 'Taking longer than usual: the reading service may be busy, and it keeps trying.'
             : elapsed < expected ? `About ${left} ${left === 1 ? 'second' : 'seconds'} left` : 'Almost done'}
         </span>
         <span>{Math.floor(elapsed)} s</span>

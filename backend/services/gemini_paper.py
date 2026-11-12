@@ -531,7 +531,7 @@ def paper_from_extraction(extraction: PaperExtraction, paper_text: str = "") -> 
     sections = [section.model_dump() for section in extraction.sections]
     known = {section["section_id"].strip(): section for section in sections}
     records: list[dict[str, Any]] = []
-    problems: list[str] = [f"Gemini was unsure: {item}" for item in extraction.unclear_items if item.strip()]
+    problems: list[str] = [f"AutoGrade was unsure: {item}" for item in extraction.unclear_items if item.strip()]
     seen: set[tuple[int, str]] = set()
     for question in extraction.questions:
         section = known.get(question.section_id.strip(), {})
@@ -550,7 +550,7 @@ def paper_from_extraction(extraction: PaperExtraction, paper_text: str = "") -> 
         # Gemini's own doubts about marks the printed formula has now settled are not repeated.
         problems = [
             p for p in problems
-            if not (p.startswith("Gemini was unsure:") and re.search(r"\bmarks?\b", p, re.IGNORECASE)
+            if not (p.startswith("AutoGrade was unsure:") and re.search(r"\bmarks?\b", p, re.IGNORECASE)
                     and any(f"Q{n}" in note for note in formula_notes for n in re.findall(r"\d+", p)[:1]))
         ]
 
@@ -738,7 +738,7 @@ def read_question_paper(
         paper["needs_teacher_review"] = True
     if result.finish_reason not in ("STOP", ""):
         paper["problems"].append(
-            f"Gemini's reply stopped early ({result.finish_reason}), so questions may be missing."
+            f"The reading stopped early ({result.finish_reason}), so questions may be missing."
         )
         paper["needs_teacher_review"] = True
     return paper

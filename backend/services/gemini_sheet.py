@@ -934,7 +934,7 @@ def grade_sheet(
     if on_stage:
         on_stage(
             "gemini_sheet",
-            "Gemini is reading and marking the sheet"
+            "AutoGrade is reading and marking the sheet"
             + (" to your calibration" if examples else ""),
         )
     readings, problems, model = _read_parts(

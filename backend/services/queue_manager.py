@@ -421,7 +421,7 @@ class BatchQueueManager:
                 # Overload hits every sheet alike, so spending calls on the next one is waste.
                 pause = config.GEMINI_OVERLOAD_PAUSE_SECONDS
                 self._requeue(next_job, "waiting_for_gemini", str(e), count_attempt=True)
-                self._pause(time.time() + pause, f"Gemini is busy. Trying again in {pause / 60:g} minutes.")
+                self._pause(time.time() + pause, f"The marking service is busy. Trying again in {pause / 60:g} minutes.")
             else:
                 self.update_job_status(
                     next_job.job_id,
@@ -429,7 +429,7 @@ class BatchQueueManager:
                     error_message=str(e),
                     error_code=type(e).__name__,
                     current_stage="failed",
-                    stage_detail="Gemini could not finish this sheet. No marks were given. It can be retried.",
+                    stage_detail="AutoGrade could not finish this sheet. No marks were given. It can be retried.",
                 )
         except JobCancelled as e:
             self.update_job_status(

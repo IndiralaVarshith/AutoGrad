@@ -15,17 +15,17 @@ const REASON_TEXT = {
   UNREADABLE: 'Could not be read',
   UNMATCHED: 'Did not match a question',
   MISSING: 'No answer found',
-  LOW_CONFIDENCE: 'Gemini was unsure',
-  PARTIAL_HIGH_VALUE: 'Partial marks: Gemini is less reliable on these',
+  LOW_CONFIDENCE: 'AutoGrade was unsure',
+  PARTIAL_HIGH_VALUE: 'Partial marks: AutoGrade is less reliable on these',
   ZERO_ON_WRITTEN: 'Zero on an answer the student did write',
   EVIDENCE_NOT_FOUND: 'Quoted evidence is not in the answer',
-  INVALID_MARK: 'Gemini gave an impossible mark',
+  INVALID_MARK: 'AutoGrade gave an impossible mark',
   UNCLEAR_OPTION: 'Option choice is unclear',
   NO_KEY: 'No approved key for this question',
   DUPLICATE_ANSWER: 'Answered more than once',
   NUMBER_INFERRED: 'Student wrote no question number',
   ATTEMPT_RULE: 'Answered more than the paper allows',
-  SHEET_NOT_READ: 'Gemini could not read this part of the sheet',
+  SHEET_NOT_READ: 'AutoGrade could not read this part of the sheet',
 };
 
 const answerKey = (q) => `${q.question_number}:${q.sub_part || ''}`;
@@ -69,7 +69,7 @@ function MarkPicker({ value, max, suggested, onChange }) {
             >
               {mark}
               {suggested === mark && !chosen && (
-                <span className="absolute -top-1 -right-1 size-2.5 rounded-full border-2 border-surface bg-warn" aria-label="Gemini's suggestion" />
+                <span className="absolute -top-1 -right-1 size-2.5 rounded-full border-2 border-surface bg-warn" aria-label="AutoGrade's suggestion" />
               )}
             </button>
           );
@@ -96,7 +96,7 @@ function MarkPicker({ value, max, suggested, onChange }) {
       {suggested !== null && suggested !== undefined && whole.includes(Number(suggested)) && (
         <p className="hint flex items-center gap-1.5">
           <span className="size-2 rounded-full bg-warn" aria-hidden="true" />
-          The dot shows Gemini's suggestion of {suggested}.
+          The dot shows AutoGrade's suggestion of {suggested}.
         </p>
       )}
     </div>
@@ -161,9 +161,9 @@ function AnswerEditor({ examId, paper, question, busy, draft, onDecide }) {
           {needsDecision
             ? <Pill tone="warn" icon={Flag}>Needs your decision</Pill>
             : <Pill tone="good" icon={CheckCircle2}>Decided</Pill>}
-          <Tip text="How sure Gemini said it was. This does not reliably predict accuracy, so unflagged marks can still be wrong.">
+          <Tip text="How sure AutoGrade was. This does not reliably predict accuracy, so unflagged marks can still be wrong.">
             <span tabIndex={0} className="cursor-help rounded text-[13px] text-muted underline decoration-dotted underline-offset-2 tabular-nums">
-              Gemini's confidence: {Math.round((question.c_final || 0) * 100)}%
+              AutoGrade's confidence: {Math.round((question.c_final || 0) * 100)}%
             </span>
           </Tip>
         </div>
@@ -183,7 +183,7 @@ function AnswerEditor({ examId, paper, question, busy, draft, onDecide }) {
 
       {quote && (
         <blockquote className="border-l-2 border-line-strong pl-3 text-sm">
-          <span className="block text-[13px] font-semibold text-muted">Evidence Gemini quoted</span>
+          <span className="block text-[13px] font-semibold text-muted">Evidence AutoGrade quoted</span>
           {quote}
         </blockquote>
       )}
@@ -226,7 +226,7 @@ function AnswerEditor({ examId, paper, question, busy, draft, onDecide }) {
               draft: { text, marks, note },
             })}
           >
-            Accept Gemini's {question.suggested_score}
+            Accept AutoGrade's {question.suggested_score}
           </Button>
         )}
       </div>
@@ -438,7 +438,7 @@ function CalibrationCard({ paper, calibration, ready, busy, onUse, onRemark, onS
           </Tip>
         )}
         {remarkCount > 0 && (
-          <Tip text="Only sheets you have not touched. One Gemini request each.">
+          <Tip text="Only sheets you have not touched are marked again.">
             <Button size="sm" icon={RotateCcw} onClick={() => onRemark(remarkCount)}>
               Mark {remarkCount} {remarkCount === 1 ? 'sheet' : 'sheets'} again
             </Button>
@@ -600,7 +600,7 @@ export default function Review({ examId = '', openRequest = null, onBackToDashbo
   const remark = async (count) => {
     const goAhead = await confirm({
       title: `Mark ${count} ${count === 1 ? 'sheet' : 'sheets'} again to your calibration?`,
-      body: 'Only sheets you have not touched are marked again, one Gemini request each. Their marks are replaced when the new marks arrive.',
+      body: 'Only sheets you have not touched are marked again. Their marks are replaced when the new marks arrive.',
       confirmLabel: 'Mark them again',
     });
     if (!goAhead) return;

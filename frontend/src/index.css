@@ -413,14 +413,12 @@
   }
   nav.notebook-header::before { display: none; }
 
-  .logo-badge {
-    border-radius: 0.7rem;
-    background: var(--primary);
-    box-shadow: var(--shadow-sm);
+  .logo-mark {
+    filter: drop-shadow(0 1px 1px rgb(0 0 0 / 0.12));
     transform: rotate(-4deg);
     transition: transform 0.3s var(--ease-out);
   }
-  .logo-badge:hover { transform: rotate(3deg) scale(1.05); }
+  .logo-mark:hover { transform: rotate(2deg) scale(1.05); }
 
   /* The exam in hand reads like a label stuck on the cover. */
   .exam-tab {

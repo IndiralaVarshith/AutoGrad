@@ -13,7 +13,7 @@ import { useFeedback } from '../components/feedback';
 const evaluationStages = [
   { id: 'uploading', label: 'Uploading the sheet' },
   { id: 'saving', label: 'Keeping a copy of the pages' },
-  { id: 'gemini_sheet', label: 'Gemini reads and marks every answer' },
+  { id: 'gemini_sheet', label: 'AutoGrade reads and marks every answer' },
   { id: 'completed', label: 'Checked, added up and saved' },
 ];
 
@@ -53,7 +53,7 @@ function QuestionReport({ q }) {
           </div>
           {q.criteria?.length > 0 && <EvidenceTable criteria={q.criteria} />}
           <p className="text-[13px] text-muted tabular-nums">
-            Gemini's confidence {Math.round((q.c_final || 0) * 100)}%
+            AutoGrade's confidence {Math.round((q.c_final || 0) * 100)}%
             {q.model_used ? ` · ${q.model_used}` : ''}
           </p>
         </div>

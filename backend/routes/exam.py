@@ -155,11 +155,11 @@ _UNREADABLE_MESSAGE = (
     "Please upload a clearer scan."
 )
 _UNUSABLE_REPLY_MESSAGE = (
-    "Gemini's reply for this question paper could not be used, so nothing was saved. "
+    "AutoGrade could not use what it read from this question paper, so nothing was saved. "
     "Please try again. If it keeps happening, try a clearer scan."
 )
 _CUT_OFF_MESSAGE = (
-    "Gemini did not finish reading this question paper: its reply was cut off twice, so "
+    "AutoGrade did not finish reading this question paper: the reading was cut off twice, so "
     "nothing was saved. The scan is not the problem. Please try again in a minute."
 )
 _DIFFERENT_PAPER_MESSAGE = (
@@ -238,7 +238,7 @@ def _gemini_paper(
         raise HTTPException(422, _UNUSABLE_REPLY_MESSAGE)
     except GeminiError as error:
         print(f"[ExamSetup] Gemini failed: {error}")
-        raise HTTPException(503, "Gemini could not read the paper, so nothing was saved. Try again.")
+        raise HTTPException(503, "AutoGrade could not read the paper, so nothing was saved. Try again.")
     if paper.get("unreadable"):
         reasons = "; ".join(paper.get("unclear_items") or []) or "No questions were found."
         raise HTTPException(422, _UNREADABLE_MESSAGE.format(reasons=reasons))
