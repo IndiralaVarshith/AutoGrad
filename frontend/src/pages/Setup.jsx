@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { ArrowLeft, ArrowRight, Check, CheckCircle2, Minus, Plus, RefreshCw, ShieldCheck, Sparkles, Trash2, X } from 'lucide-react';
 import api from '../api';
 import {
-  Button, Callout, CountUp, Disclosure, Dropzone, FoldingCallout, Pill, PageHeader, Segmented, Tip, cx, errorText,
+  Button, Callout, CountUp, Disclosure, Dropzone, FoldingCallout, Pill, PageHeader, ProgressBar, Segmented, Tip, cx, errorText,
 } from '../components/ui';
 import { useFeedback } from '../components/feedback';
 
@@ -213,6 +213,48 @@ function QuestionCard({ q, qIdx, index, handlers }) {
           : <Pill tone="warn">Points add up to {criteriaSum}, but the question is worth {Number(q.max_marks)}</Pill>}
       </div>
     </article>
+  );
+}
+
+/**
+ * Reading a paper is one Gemini request, which reports no progress of its own. The
+ * percentage is an estimate from the file size and how long papers usually take
+ * (3 to 12 seconds); it never reaches 100% until the reply is really back.
+ */
+function PaperProgress({ fileSize }) {
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    const started = performance.now();
+    const timer = setInterval(() => setElapsed((performance.now() - started) / 1000), 200);
+    return () => clearInterval(timer);
+  }, []);
+
+  // About 7 seconds for a printed paper, more for a large scan.
+  const expected = 7 + Math.min(20, (fileSize / 1048576) * 3);
+  const percent = Math.min(97, Math.round(97 * (1 - Math.exp((-2.3 * elapsed) / expected))));
+  const left = Math.max(1, Math.round(expected - elapsed));
+  const slow = elapsed > expected * 1.6;
+
+  return (
+    <div className="fade rounded-xl bg-primary-soft px-4 py-3" role="status" aria-live="polite">
+      <div className="flex items-center justify-between gap-3 text-sm font-semibold text-primary">
+        <span className="flex items-center gap-2">
+          <Sparkles size={16} aria-hidden="true" />
+          Reading your paper
+        </span>
+        <span className="text-lg tabular-nums">{percent}%</span>
+      </div>
+      <ProgressBar value={percent} label="Reading the question paper" className="mt-2.5 bg-surface" />
+      <p className="mt-1.5 flex justify-between gap-3 text-[13px] text-muted tabular-nums">
+        <span>
+          {slow
+            ? 'Taking longer than usual: Gemini may be busy, and it keeps trying.'
+            : elapsed < expected ? `About ${left} ${left === 1 ? 'second' : 'seconds'} left` : 'Almost done'}
+        </span>
+        <span>{Math.floor(elapsed)} s</span>
+      </p>
+    </div>
   );
 }
 
@@ -631,13 +673,7 @@ export default function Setup({ onExamApproved, onExamIdChange, onPaperDeleted, 
           </div>
 
           {loading && (
-            <div className="fade rounded-xl bg-primary-soft px-4 py-3" role="status">
-              <div className="flex items-center gap-2 text-sm font-semibold text-primary">
-                <Sparkles size={16} aria-hidden="true" />
-                Reading your paper. This usually takes a few seconds.
-              </div>
-              <div className="indeterminate mt-2.5 h-1.5 rounded-full bg-surface" aria-hidden="true" />
-            </div>
+            <PaperProgress fileSize={questionFile?.size || 0} />
           )}
 
           <div className="flex flex-wrap items-center justify-between gap-3">
