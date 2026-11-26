@@ -1,0 +1,1318 @@
+{
+ "source": "AutoGrade paper reader on Question.pdf + answerkey.txt",
+ "problems": [],
+ "questions": [
+  {
+   "question_number": 1,
+   "sub_part": "",
+   "question_text": "Which of the following is an assumption of Linear Regression?",
+   "question_type": "THEORY",
+   "question_format": "MCQ",
+   "options": [
+    {
+     "label": "A",
+     "text": "High multicollinearity"
+    },
+    {
+     "label": "B",
+     "text": "Little or no autocorrelation"
+    },
+    {
+     "label": "C",
+     "text": "Heteroscedasticity"
+    },
+    {
+     "label": "D",
+     "text": "All of the mentioned"
+    }
+   ],
+   "max_marks": 1.0,
+   "marks": 1.0,
+   "marks_evidence": "(1 Mark Each)",
+   "section": "I",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "Select the most appropriate answer from the given options.",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Selects the correct option",
+     "max_marks": 1.0
+    }
+   ],
+   "correct_option": "B",
+   "suggested_option": "B"
+  },
+  {
+   "question_number": 2,
+   "sub_part": "",
+   "question_text": "In a perfectly fitted regression model, the sum of residuals (errors) should be:",
+   "question_type": "THEORY",
+   "question_format": "MCQ",
+   "options": [
+    {
+     "label": "A",
+     "text": "Maximum"
+    },
+    {
+     "label": "B",
+     "text": "Minimum"
+    },
+    {
+     "label": "C",
+     "text": "Zero"
+    },
+    {
+     "label": "D",
+     "text": "Unknown"
+    }
+   ],
+   "max_marks": 1.0,
+   "marks": 1.0,
+   "marks_evidence": "(1 Mark Each)",
+   "section": "I",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "Select the most appropriate answer from the given options.",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Selects the correct option",
+     "max_marks": 1.0
+    }
+   ],
+   "correct_option": "C",
+   "suggested_option": "C"
+  },
+  {
+   "question_number": 3,
+   "sub_part": "",
+   "question_text": "Which distance metric is specifically used for categorical variables or strings of equal length?",
+   "question_type": "THEORY",
+   "question_format": "MCQ",
+   "options": [
+    {
+     "label": "A",
+     "text": "Hamming Distance"
+    },
+    {
+     "label": "B",
+     "text": "Euclidean Distance"
+    },
+    {
+     "label": "C",
+     "text": "Manhattan Distance"
+    },
+    {
+     "label": "D",
+     "text": "Minkowski Distance"
+    }
+   ],
+   "max_marks": 1.0,
+   "marks": 1.0,
+   "marks_evidence": "(1 Mark Each)",
+   "section": "I",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "Select the most appropriate answer from the given options.",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Selects the correct option",
+     "max_marks": 1.0
+    }
+   ],
+   "correct_option": "A",
+   "suggested_option": "A"
+  },
+  {
+   "question_number": 4,
+   "sub_part": "",
+   "question_text": "Supervised learning can be split into which two main categories?",
+   "question_type": "THEORY",
+   "question_format": "MCQ",
+   "options": [
+    {
+     "label": "A",
+     "text": "Classification"
+    },
+    {
+     "label": "B",
+     "text": "Regression"
+    },
+    {
+     "label": "C",
+     "text": "Both A & B"
+    },
+    {
+     "label": "D",
+     "text": "None of the mentioned"
+    }
+   ],
+   "max_marks": 1.0,
+   "marks": 1.0,
+   "marks_evidence": "(1 Mark Each)",
+   "section": "I",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "Select the most appropriate answer from the given options.",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Selects the correct option",
+     "max_marks": 1.0
+    }
+   ],
+   "correct_option": "C",
+   "suggested_option": "C"
+  },
+  {
+   "question_number": 5,
+   "sub_part": "",
+   "question_text": "Which of the following is an ensemble learning method based on decision trees?",
+   "question_type": "THEORY",
+   "question_format": "MCQ",
+   "options": [
+    {
+     "label": "A",
+     "text": "Support Vector Machine"
+    },
+    {
+     "label": "B",
+     "text": "Random Forest"
+    },
+    {
+     "label": "C",
+     "text": "K-Nearest Neighbors"
+    },
+    {
+     "label": "D",
+     "text": "Logistic Regression"
+    }
+   ],
+   "max_marks": 1.0,
+   "marks": 1.0,
+   "marks_evidence": "(1 Mark Each)",
+   "section": "I",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "Select the most appropriate answer from the given options.",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Selects the correct option",
+     "max_marks": 1.0
+    }
+   ],
+   "correct_option": "B",
+   "suggested_option": "B"
+  },
+  {
+   "question_number": 6,
+   "sub_part": "",
+   "question_text": "The process of combining multiple classifiers to improve prediction (e.g., Bagging or Boosting) is called:",
+   "question_type": "THEORY",
+   "question_format": "MCQ",
+   "options": [
+    {
+     "label": "A",
+     "text": "Voting"
+    },
+    {
+     "label": "B",
+     "text": "Clustering"
+    },
+    {
+     "label": "C",
+     "text": "Dimensionality Reduction"
+    },
+    {
+     "label": "D",
+     "text": "Feature Engineering"
+    }
+   ],
+   "max_marks": 1.0,
+   "marks": 1.0,
+   "marks_evidence": "(1 Mark Each)",
+   "section": "I",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "Select the most appropriate answer from the given options.",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Selects the correct option",
+     "max_marks": 1.0
+    }
+   ],
+   "correct_option": "A",
+   "suggested_option": "A"
+  },
+  {
+   "question_number": 7,
+   "sub_part": "",
+   "question_text": "In a Confusion Matrix, what is the value of the error for a perfect classifier?",
+   "question_type": "THEORY",
+   "question_format": "MCQ",
+   "options": [
+    {
+     "label": "A",
+     "text": "Zero"
+    },
+    {
+     "label": "B",
+     "text": "One"
+    },
+    {
+     "label": "C",
+     "text": "0.5"
+    },
+    {
+     "label": "D",
+     "text": "Depends on the dataset"
+    }
+   ],
+   "max_marks": 1.0,
+   "marks": 1.0,
+   "marks_evidence": "(1 Mark Each)",
+   "section": "I",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "Select the most appropriate answer from the given options.",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Selects the correct option",
+     "max_marks": 1.0
+    }
+   ],
+   "correct_option": "A",
+   "suggested_option": "A"
+  },
+  {
+   "question_number": 8,
+   "sub_part": "",
+   "question_text": "Which visualization tool is most effective for identifying correlations between two continuous variables?",
+   "question_type": "THEORY",
+   "question_format": "MCQ",
+   "options": [
+    {
+     "label": "A",
+     "text": "Bar Chart"
+    },
+    {
+     "label": "B",
+     "text": "Box Plot"
+    },
+    {
+     "label": "C",
+     "text": "Scatter Plot"
+    },
+    {
+     "label": "D",
+     "text": "Histogram"
+    }
+   ],
+   "max_marks": 1.0,
+   "marks": 1.0,
+   "marks_evidence": "(1 Mark Each)",
+   "section": "I",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "Select the most appropriate answer from the given options.",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Selects the correct option",
+     "max_marks": 1.0
+    }
+   ],
+   "correct_option": "C",
+   "suggested_option": "C"
+  },
+  {
+   "question_number": 9,
+   "sub_part": "",
+   "question_text": "In a scatter plot, individual data observations are represented as:",
+   "question_type": "THEORY",
+   "question_format": "MCQ",
+   "options": [
+    {
+     "label": "A",
+     "text": "Points"
+    },
+    {
+     "label": "B",
+     "text": "Lines"
+    },
+    {
+     "label": "C",
+     "text": "Bars"
+    },
+    {
+     "label": "D",
+     "text": "Areas"
+    }
+   ],
+   "max_marks": 1.0,
+   "marks": 1.0,
+   "marks_evidence": "(1 Mark Each)",
+   "section": "I",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "Select the most appropriate answer from the given options.",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Selects the correct option",
+     "max_marks": 1.0
+    }
+   ],
+   "correct_option": "A",
+   "suggested_option": "A"
+  },
+  {
+   "question_number": 10,
+   "sub_part": "",
+   "question_text": "Which measure of central tendency is most sensitive to outliers?",
+   "question_type": "THEORY",
+   "question_format": "MCQ",
+   "options": [
+    {
+     "label": "A",
+     "text": "Median"
+    },
+    {
+     "label": "B",
+     "text": "Mean"
+    },
+    {
+     "label": "C",
+     "text": "Mode"
+    },
+    {
+     "label": "D",
+     "text": "Range"
+    }
+   ],
+   "max_marks": 1.0,
+   "marks": 1.0,
+   "marks_evidence": "(1 Mark Each)",
+   "section": "I",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "Select the most appropriate answer from the given options.",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Selects the correct option",
+     "max_marks": 1.0
+    }
+   ],
+   "correct_option": "B",
+   "suggested_option": "B"
+  },
+  {
+   "question_number": 11,
+   "sub_part": "",
+   "question_text": "In regression analysis, the output (dependent variable) is typically:",
+   "question_type": "THEORY",
+   "question_format": "MCQ",
+   "options": [
+    {
+     "label": "A",
+     "text": "A category"
+    },
+    {
+     "label": "B",
+     "text": "A real number"
+    },
+    {
+     "label": "C",
+     "text": "A boolean"
+    },
+    {
+     "label": "D",
+     "text": "An image"
+    }
+   ],
+   "max_marks": 1.0,
+   "marks": 1.0,
+   "marks_evidence": "(1 Mark Each)",
+   "section": "I",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "Select the most appropriate answer from the given options.",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Selects the correct option",
+     "max_marks": 1.0
+    }
+   ],
+   "correct_option": "B",
+   "suggested_option": "B"
+  },
+  {
+   "question_number": 12,
+   "sub_part": "",
+   "question_text": "The process of identifying the most relevant variables to use in a model is known as:",
+   "question_type": "THEORY",
+   "question_format": "MCQ",
+   "options": [
+    {
+     "label": "A",
+     "text": "Data cleaning"
+    },
+    {
+     "label": "B",
+     "text": "Column dropping"
+    },
+    {
+     "label": "C",
+     "text": "Feature selection"
+    },
+    {
+     "label": "D",
+     "text": "Normalization"
+    }
+   ],
+   "max_marks": 1.0,
+   "marks": 1.0,
+   "marks_evidence": "(1 Mark Each)",
+   "section": "I",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "Select the most appropriate answer from the given options.",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Selects the correct option",
+     "max_marks": 1.0
+    }
+   ],
+   "correct_option": "C",
+   "suggested_option": "C"
+  },
+  {
+   "question_number": 13,
+   "sub_part": "",
+   "question_text": "Which technique is used to predict a continuous numerical value?",
+   "question_type": "THEORY",
+   "question_format": "MCQ",
+   "options": [
+    {
+     "label": "A",
+     "text": "Classification"
+    },
+    {
+     "label": "B",
+     "text": "Regression"
+    },
+    {
+     "label": "C",
+     "text": "Clustering"
+    },
+    {
+     "label": "D",
+     "text": "Association"
+    }
+   ],
+   "max_marks": 1.0,
+   "marks": 1.0,
+   "marks_evidence": "(1 Mark Each)",
+   "section": "I",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "Select the most appropriate answer from the given options.",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Selects the correct option",
+     "max_marks": 1.0
+    }
+   ],
+   "correct_option": "B",
+   "suggested_option": "B"
+  },
+  {
+   "question_number": 14,
+   "sub_part": "",
+   "question_text": "Analysis that involves data points collected or recorded at specific time intervals is called:",
+   "question_type": "THEORY",
+   "question_format": "MCQ",
+   "options": [
+    {
+     "label": "A",
+     "text": "Linear Analysis"
+    },
+    {
+     "label": "B",
+     "text": "Binary Analysis"
+    },
+    {
+     "label": "C",
+     "text": "Time Series"
+    },
+    {
+     "label": "D",
+     "text": "Discrete Analysis"
+    }
+   ],
+   "max_marks": 1.0,
+   "marks": 1.0,
+   "marks_evidence": "(1 Mark Each)",
+   "section": "I",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "Select the most appropriate answer from the given options.",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Selects the correct option",
+     "max_marks": 1.0
+    }
+   ],
+   "correct_option": "C",
+   "suggested_option": "C"
+  },
+  {
+   "question_number": 15,
+   "sub_part": "",
+   "question_text": "Which of the following is actually a classification algorithm despite its name?",
+   "question_type": "THEORY",
+   "question_format": "MCQ",
+   "options": [
+    {
+     "label": "A",
+     "text": "Linear Regression"
+    },
+    {
+     "label": "B",
+     "text": "Logistic Regression"
+    },
+    {
+     "label": "C",
+     "text": "Multiple Regression"
+    },
+    {
+     "label": "D",
+     "text": "Polynomial Regression"
+    }
+   ],
+   "max_marks": 1.0,
+   "marks": 1.0,
+   "marks_evidence": "(1 Mark Each)",
+   "section": "I",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "Select the most appropriate answer from the given options.",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Selects the correct option",
+     "max_marks": 1.0
+    }
+   ],
+   "correct_option": "B",
+   "suggested_option": "B"
+  },
+  {
+   "question_number": 16,
+   "sub_part": "",
+   "question_text": "Hyperparameters are best described as:",
+   "question_type": "THEORY",
+   "question_format": "MCQ",
+   "options": [
+    {
+     "label": "A",
+     "text": "Data labels"
+    },
+    {
+     "label": "B",
+     "text": "Input features"
+    },
+    {
+     "label": "C",
+     "text": "Parameters of the ML algorithm set before training"
+    },
+    {
+     "label": "D",
+     "text": "The final weights of a model"
+    }
+   ],
+   "max_marks": 1.0,
+   "marks": 1.0,
+   "marks_evidence": "(1 Mark Each)",
+   "section": "I",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "Select the most appropriate answer from the given options.",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Selects the correct option",
+     "max_marks": 1.0
+    }
+   ],
+   "correct_option": "C",
+   "suggested_option": "C"
+  },
+  {
+   "question_number": 17,
+   "sub_part": "",
+   "question_text": "(True/False): Logistic regression is used for predicting continuous outcomes.",
+   "question_type": "THEORY",
+   "question_format": "MCQ",
+   "options": [
+    {
+     "label": "A",
+     "text": "True"
+    },
+    {
+     "label": "B",
+     "text": "False"
+    }
+   ],
+   "max_marks": 1.0,
+   "marks": 1.0,
+   "marks_evidence": "(1 Mark Each)",
+   "section": "I",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "Select the most appropriate answer from the given options.",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Selects the correct option",
+     "max_marks": 1.0
+    }
+   ],
+   "correct_option": "B",
+   "suggested_option": "B"
+  },
+  {
+   "question_number": 18,
+   "sub_part": "",
+   "question_text": "In a confusion matrix, where are the \"Correct Predictions\" located?",
+   "question_type": "THEORY",
+   "question_format": "MCQ",
+   "options": [
+    {
+     "label": "A",
+     "text": "In the first row"
+    },
+    {
+     "label": "B",
+     "text": "In the upper diagonal"
+    },
+    {
+     "label": "C",
+     "text": "Along the main diagonal"
+    },
+    {
+     "label": "D",
+     "text": "In the last column"
+    }
+   ],
+   "max_marks": 1.0,
+   "marks": 1.0,
+   "marks_evidence": "(1 Mark Each)",
+   "section": "I",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "Select the most appropriate answer from the given options.",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Selects the correct option",
+     "max_marks": 1.0
+    }
+   ],
+   "correct_option": "C",
+   "suggested_option": "C"
+  },
+  {
+   "question_number": 19,
+   "sub_part": "",
+   "question_text": "What is the formula for Precision?",
+   "question_type": "THEORY",
+   "question_format": "MCQ",
+   "options": [
+    {
+     "label": "A",
+     "text": "TP / (TP + FN)"
+    },
+    {
+     "label": "B",
+     "text": "TP / (TP + FP)"
+    },
+    {
+     "label": "C",
+     "text": "TN / (TN + FP)"
+    },
+    {
+     "label": "D",
+     "text": "(TP + TN) / Total"
+    }
+   ],
+   "max_marks": 1.0,
+   "marks": 1.0,
+   "marks_evidence": "(1 Mark Each)",
+   "section": "I",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "Select the most appropriate answer from the given options.",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Selects the correct option",
+     "max_marks": 1.0
+    }
+   ],
+   "correct_option": "B",
+   "suggested_option": "B"
+  },
+  {
+   "question_number": 20,
+   "sub_part": "",
+   "question_text": "In Support Vector Machines (SVM), the data points closest to the hyperplane that help define the margin are called:",
+   "question_type": "THEORY",
+   "question_format": "MCQ",
+   "options": [
+    {
+     "label": "A",
+     "text": "Outliers"
+    },
+    {
+     "label": "B",
+     "text": "Support vectors"
+    },
+    {
+     "label": "C",
+     "text": "Clusters"
+    },
+    {
+     "label": "D",
+     "text": "Centroids"
+    }
+   ],
+   "max_marks": 1.0,
+   "marks": 1.0,
+   "marks_evidence": "(1 Mark Each)",
+   "section": "I",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "Select the most appropriate answer from the given options.",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Selects the correct option",
+     "max_marks": 1.0
+    }
+   ],
+   "correct_option": "B",
+   "suggested_option": "B"
+  },
+  {
+   "question_number": 21,
+   "sub_part": "",
+   "question_text": "Define Supervised Learning.",
+   "question_type": "THEORY",
+   "question_format": "SHORT_ANSWER",
+   "options": [],
+   "max_marks": 2.0,
+   "marks": 2.0,
+   "marks_evidence": "(2 Marks Each)",
+   "section": "II",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Define supervised learning as training on labeled data with known inputs and outputs.",
+     "max_marks": 2.0
+    }
+   ],
+   "correct_option": "",
+   "suggested_option": ""
+  },
+  {
+   "question_number": 22,
+   "sub_part": "",
+   "question_text": "Evaluation Case Study: A model (M1) achieves 99% accuracy on the training set but only 30% accuracy on the testing set. What is happening to this model?",
+   "question_type": "THEORY",
+   "question_format": "SHORT_ANSWER",
+   "options": [],
+   "max_marks": 2.0,
+   "marks": 2.0,
+   "marks_evidence": "(2 Marks Each)",
+   "section": "II",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Identify the issue as overfitting where the model fails to generalize.",
+     "max_marks": 2.0
+    }
+   ],
+   "correct_option": "",
+   "suggested_option": ""
+  },
+  {
+   "question_number": 23,
+   "sub_part": "",
+   "question_text": "What is Regression Analysis?",
+   "question_type": "THEORY",
+   "question_format": "SHORT_ANSWER",
+   "options": [],
+   "max_marks": 2.0,
+   "marks": 2.0,
+   "marks_evidence": "(2 Marks Each)",
+   "section": "II",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Define regression as a statistical process for estimating relationships between dependent and independent variables.",
+     "max_marks": 2.0
+    }
+   ],
+   "correct_option": "",
+   "suggested_option": ""
+  },
+  {
+   "question_number": 24,
+   "sub_part": "",
+   "question_text": "List and elucidate two major challenges in Machine Learning.",
+   "question_type": "THEORY",
+   "question_format": "SHORT_ANSWER",
+   "options": [],
+   "max_marks": 2.0,
+   "marks": 2.0,
+   "marks_evidence": "(2 Marks Each)",
+   "section": "II",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "List two challenges such as data quality, missing values, overfitting, or underfitting.",
+     "max_marks": 2.0
+    }
+   ],
+   "correct_option": "",
+   "suggested_option": ""
+  },
+  {
+   "question_number": 25,
+   "sub_part": "",
+   "question_text": "List any two major real-world applications of Data Science.",
+   "question_type": "THEORY",
+   "question_format": "SHORT_ANSWER",
+   "options": [],
+   "max_marks": 2.0,
+   "marks": 2.0,
+   "marks_evidence": "(2 Marks Each)",
+   "section": "II",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Provide two real-world applications like healthcare prediction or fraud detection.",
+     "max_marks": 2.0
+    }
+   ],
+   "correct_option": "",
+   "suggested_option": ""
+  },
+  {
+   "question_number": 26,
+   "sub_part": "",
+   "question_text": "Distinguish between Structured and Semi-structured data.",
+   "question_type": "THEORY",
+   "question_format": "SHORT_ANSWER",
+   "options": [],
+   "max_marks": 2.0,
+   "marks": 2.0,
+   "marks_evidence": "(2 Marks Each)",
+   "section": "II",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Explain structured data as row/column format and semi-structured as having markers but no grid.",
+     "max_marks": 2.0
+    }
+   ],
+   "correct_option": "",
+   "suggested_option": ""
+  },
+  {
+   "question_number": 27,
+   "sub_part": "",
+   "question_text": "Describe methods used to detect and handle outliers in a dataset.",
+   "question_type": "THEORY",
+   "question_format": "SHORT_ANSWER",
+   "options": [],
+   "max_marks": 2.0,
+   "marks": 2.0,
+   "marks_evidence": "(2 Marks Each)",
+   "section": "II",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Mention detection methods like Z-score/IQR and handling methods like trimming or imputation.",
+     "max_marks": 2.0
+    }
+   ],
+   "correct_option": "",
+   "suggested_option": ""
+  },
+  {
+   "question_number": 28,
+   "sub_part": "",
+   "question_text": "What is Data Pre-processing?",
+   "question_type": "THEORY",
+   "question_format": "SHORT_ANSWER",
+   "options": [],
+   "max_marks": 2.0,
+   "marks": 2.0,
+   "marks_evidence": "(2 Marks Each)",
+   "section": "II",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Define as cleaning and transforming raw data for machine learning models.",
+     "max_marks": 2.0
+    }
+   ],
+   "correct_option": "",
+   "suggested_option": ""
+  },
+  {
+   "question_number": 29,
+   "sub_part": "",
+   "question_text": "Why is Data Normalization required for the K-Nearest Neighbors (K-NN) algorithm?",
+   "question_type": "THEORY",
+   "question_format": "SHORT_ANSWER",
+   "options": [],
+   "max_marks": 2.0,
+   "marks": 2.0,
+   "marks_evidence": "(2 Marks Each)",
+   "section": "II",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Explain that K-NN is distance-based and larger scales dominate calculations.",
+     "max_marks": 2.0
+    }
+   ],
+   "correct_option": "",
+   "suggested_option": ""
+  },
+  {
+   "question_number": 30,
+   "sub_part": "",
+   "question_text": "How are continuous attributes discretized? Give an example.",
+   "question_type": "THEORY",
+   "question_format": "SHORT_ANSWER",
+   "options": [],
+   "max_marks": 2.0,
+   "marks": 2.0,
+   "marks_evidence": "(2 Marks Each)",
+   "section": "II",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Explain binning or interval grouping with a valid example.",
+     "max_marks": 2.0
+    }
+   ],
+   "correct_option": "",
+   "suggested_option": ""
+  },
+  {
+   "question_number": 31,
+   "sub_part": "",
+   "question_text": "What does the 'K' represent in the K-Means clustering algorithm?",
+   "question_type": "THEORY",
+   "question_format": "SHORT_ANSWER",
+   "options": [],
+   "max_marks": 2.0,
+   "marks": 2.0,
+   "marks_evidence": "(2 Marks Each)",
+   "section": "II",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Define K as the predefined number of clusters.",
+     "max_marks": 2.0
+    }
+   ],
+   "correct_option": "",
+   "suggested_option": ""
+  },
+  {
+   "question_number": 32,
+   "sub_part": "",
+   "question_text": "Name three common Hyperparameters in Machine Learning algorithms.",
+   "question_type": "THEORY",
+   "question_format": "SHORT_ANSWER",
+   "options": [],
+   "max_marks": 2.0,
+   "marks": 2.0,
+   "marks_evidence": "(2 Marks Each)",
+   "section": "II",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "List three hyperparameters like learning rate, max depth, or number of estimators.",
+     "max_marks": 2.0
+    }
+   ],
+   "correct_option": "",
+   "suggested_option": ""
+  },
+  {
+   "question_number": 33,
+   "sub_part": "",
+   "question_text": "Define Gradient Descent.",
+   "question_type": "THEORY",
+   "question_format": "SHORT_ANSWER",
+   "options": [],
+   "max_marks": 2.0,
+   "marks": 2.0,
+   "marks_evidence": "(2 Marks Each)",
+   "section": "II",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Define as an optimization algorithm to minimize cost functions.",
+     "max_marks": 2.0
+    }
+   ],
+   "correct_option": "",
+   "suggested_option": ""
+  },
+  {
+   "question_number": 34,
+   "sub_part": "",
+   "question_text": "Classifier Comparison: Compare three SVM classifiers based on their margins and boundaries.",
+   "question_type": "THEORY",
+   "question_format": "SHORT_ANSWER",
+   "options": [],
+   "max_marks": 2.0,
+   "marks": 2.0,
+   "marks_evidence": "(2 Marks Each)",
+   "section": "II",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Discuss margin maximization and boundary separation.",
+     "max_marks": 2.0
+    }
+   ],
+   "correct_option": "",
+   "suggested_option": ""
+  },
+  {
+   "question_number": 35,
+   "sub_part": "",
+   "question_text": "Explain how the Radial Basis Function (RBF) Kernel works in SVM.",
+   "question_type": "THEORY",
+   "question_format": "SHORT_ANSWER",
+   "options": [],
+   "max_marks": 2.0,
+   "marks": 2.0,
+   "marks_evidence": "(2 Marks Each)",
+   "section": "II",
+   "section_attempt_count": null,
+   "section_max_marks": null,
+   "attempt_instruction": "",
+   "choice_group": "",
+   "choice_alternative": "",
+   "is_or_choice": false,
+   "has_figure": false,
+   "figure_page": null,
+   "criteria": [
+    {
+     "description": "Explain transformation to higher-dimensional space for non-linear boundaries.",
+     "max_marks": 2.0
+    }
+   ],
+   "correct_option": "",
+   "suggested_option": ""
+  }
+ ]
+}

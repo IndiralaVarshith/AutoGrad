@@ -1,0 +1,154 @@
+{
+ "13": [
+  {
+   "question_number": 13,
+   "sub_part": "",
+   "question_text": "Russian Unified State Exam (EGE) mathematics, task 13: trigonometric / exponential equation with root selection (parts a, b). The problem statement is written at the top of the student's solution or is implied by it. Mark the whole solution against the official criteria:\n- 2 балла: Обоснованно получены верные ответы в обоих пунктах\n- 1 балл: Обоснованно получен верный ответ в пункте а) ИЛИ получены неверные ответы из-за вычислительной ошибки, но при этом имеется верная последовательность всех шагов решения обоих пунктов\n- 0 баллов: Решение не соответствует ни одному из критериев, перечисленных выше",
+   "max_marks": 2.0,
+   "criteria": [
+    {
+     "description": "Part a): correct answer, obtained with justification",
+     "max_marks": 1.0
+    },
+    {
+     "description": "Part b): correct roots selected on the given interval, with justification",
+     "max_marks": 1.0
+    }
+   ],
+   "question_format": "LONG_ANSWER",
+   "section": "EGE"
+  }
+ ],
+ "14": [
+  {
+   "question_number": 14,
+   "sub_part": "",
+   "question_text": "Russian Unified State Exam (EGE) mathematics, task 14: stereometry: a) proof, b) computation. The problem statement is written at the top of the student's solution or is implied by it. Mark the whole solution against the official criteria:\n- 3 балла: Имеется верное доказательство утверждения пункта а и обоснованно получен верный ответ в пункте б\n- 2 балла: Обоснованно получен верный ответ в пункте б\nИЛИ\nимеется верное доказательство утверждения пункта а и при обоснованном решении пункта б получен неверный ответ из-за арифметической ошибки\n- 1 балл: Имеется верное доказательство утверждения пункта а,\nИЛИ\nпри обоснованном решении пункта б получен неверный ответ из-за арифметической ошибки,\nИЛИ\nобоснованно получен верный ответ в пункте б с использованием утверждения пункта а, при этом пункт а не выполнен\n- 0 баллов: Решение не соответствует ни одному из критериев, перечисленных выше",
+   "max_marks": 3.0,
+   "criteria": [
+    {
+     "description": "Part a): correct proof of the statement",
+     "max_marks": 1.0
+    },
+    {
+     "description": "Part b): correct answer obtained with justification",
+     "max_marks": 2.0
+    }
+   ],
+   "question_format": "LONG_ANSWER",
+   "section": "EGE"
+  }
+ ],
+ "15": [
+  {
+   "question_number": 15,
+   "sub_part": "",
+   "question_text": "Russian Unified State Exam (EGE) mathematics, task 15: inequality. The problem statement is written at the top of the student's solution or is implied by it. Mark the whole solution against the official criteria:\n- 2 балла: Обоснованно получен верный ответ\n- 1 балл: Обоснованно получен ответ, отличающийся от верного из-за вычислительной ошибки, но при этом имеется верная последовательность всех шагов решения\n- 0 баллов: Решение не соответствует ни одному из критериев, перечисленных выше",
+   "max_marks": 2.0,
+   "criteria": [
+    {
+     "description": "Correct sequence of all solution steps (method)",
+     "max_marks": 1.0
+    },
+    {
+     "description": "Correct final answer, justified",
+     "max_marks": 1.0
+    }
+   ],
+   "question_format": "LONG_ANSWER",
+   "section": "EGE"
+  }
+ ],
+ "16": [
+  {
+   "question_number": 16,
+   "sub_part": "",
+   "question_text": "Russian Unified State Exam (EGE) mathematics, task 16: financial mathematics (economic word problem). The problem statement is written at the top of the student's solution or is implied by it. Mark the whole solution against the official criteria:\n- 2 балла: Обоснованно получен верный ответ\n- 1 балл: Верно построена математическая модель\n- 0 баллов: Решение не соответствует ни одному из критериев, перечисленных выше",
+   "max_marks": 2.0,
+   "criteria": [
+    {
+     "description": "Correct mathematical model of the problem",
+     "max_marks": 1.0
+    },
+    {
+     "description": "Correct answer obtained with justification",
+     "max_marks": 1.0
+    }
+   ],
+   "question_format": "LONG_ANSWER",
+   "section": "EGE"
+  }
+ ],
+ "17": [
+  {
+   "question_number": 17,
+   "sub_part": "",
+   "question_text": "Russian Unified State Exam (EGE) mathematics, task 17: planimetry: a) proof, b) computation. The problem statement is written at the top of the student's solution or is implied by it. Mark the whole solution against the official criteria:\n- 3 балла: Имеется верное доказательство утверждения пункта а и обоснованно получен верный ответ в пункте б\n- 2 балла: Обоснованно получен верный ответ в пункте б ИЛИ имеется верное доказательство утверждения пункта а и при обоснованном решении пункта б получен неверный ответ из-за арифметической ошибки\n- 1 балл: Имеется верное доказательство утверждения пункта а, ИЛИ при обоснованном решении пункта б получен неверный ответ из-за арифметической ошибки, ИЛИ обоснованно получен верный ответ в пункте б с использованием утверждения пункта а, при этом пункт а не выполнен\n- 0 баллов: Решение не соответствует ни одному из критериев, перечисленных выше",
+   "max_marks": 3.0,
+   "criteria": [
+    {
+     "description": "Part a): correct proof of the statement",
+     "max_marks": 1.0
+    },
+    {
+     "description": "Part b): correct answer obtained with justification",
+     "max_marks": 2.0
+    }
+   ],
+   "question_format": "LONG_ANSWER",
+   "section": "EGE"
+  }
+ ],
+ "18": [
+  {
+   "question_number": 18,
+   "sub_part": "",
+   "question_text": "Russian Unified State Exam (EGE) mathematics, task 18: equation or system with a parameter. The problem statement is written at the top of the student's solution or is implied by it. Mark the whole solution against the official criteria:\n- 4 балла: Обоснованно получен верный ответ\n- 3 балла: С помощью верного рассуждения получено множество значений параметра, отличающееся от искомого только исключением граничных точек или включением точек, не входящих в ответ\n- 2 балла: С помощью верного рассуждения получен промежуток множества значений параметра, возможно, с включением граничных точек ИЛИ получен неверный ответ из-за вычислительной ошибки, но при этом верно выполнены все шаги решения\n- 1 балл: Получены корни уравнения и задача верно сведена к исследованию полученных корней при условии (условиях)\n- 0 баллов: Решение не соответствует ни одному из критериев, перечисленных выше",
+   "max_marks": 4.0,
+   "criteria": [
+    {
+     "description": "Roots found and the problem correctly reduced to studying them under the conditions",
+     "max_marks": 1.0
+    },
+    {
+     "description": "Correct reasoning gives an interval of the parameter values",
+     "max_marks": 1.0
+    },
+    {
+     "description": "Set of values correct except possibly boundary points",
+     "max_marks": 1.0
+    },
+    {
+     "description": "Fully correct, justified answer",
+     "max_marks": 1.0
+    }
+   ],
+   "question_format": "LONG_ANSWER",
+   "section": "EGE"
+  }
+ ],
+ "19": [
+  {
+   "question_number": 19,
+   "sub_part": "",
+   "question_text": "Russian Unified State Exam (EGE) mathematics, task 19: number theory (parts a, b, c). The problem statement is written at the top of the student's solution or is implied by it. Mark the whole solution against the official criteria:\n- 4 балла: Обоснованно получены верные ответы в пунктах а, б и в\n- 3 балла: Обоснованно получен верный ответ в пункте в и обоснованно получен верный ответ в пункте а или б\n- 2 балла: Обоснованно получены верные ответы в пунктах а и б ИЛИ обоснованно получен верный ответ в пункте в\n- 1 балл: Обоснованно получен верный ответ в пункте а или б\n- 0 баллов: Решение не соответствует ни одному из критериев, перечисленных выше",
+   "max_marks": 4.0,
+   "criteria": [
+    {
+     "description": "Part a): correct justified answer",
+     "max_marks": 1.0
+    },
+    {
+     "description": "Part b): correct justified answer",
+     "max_marks": 1.0
+    },
+    {
+     "description": "Part c): correct justified answer",
+     "max_marks": 2.0
+    }
+   ],
+   "question_format": "LONG_ANSWER",
+   "section": "EGE"
+  }
+ ]
+}
