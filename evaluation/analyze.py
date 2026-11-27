@@ -235,21 +235,22 @@ def asap_human_agreement() -> dict:
     return out
 
 
-def asap() -> dict | None:
-    run_dir = RUNS / "asap" / "default"
+def asap(condition: str = "default") -> dict | None:
+    run_dir = RUNS / "asap" / condition
     files = {p.stem: p for p in run_dir.glob("*.json")} if run_dir.exists() else {}
     if not files:
         return None
     gold = ds.asap_ground_truth()
     passage = ds.asap_passage()
-    out = {"answers": len(files), "of": len(gold)}
+    style = "STRICT" if condition == "strict" else "GENEROUS"
+    out = {"answers": len(files), "of": len(gold), "style": style}
     for name in ("full", "no_length_cap", "raw_llm"):
         pred, gl, flagged = [], [], []
         per_prompt = defaultdict(lambda: ([], []))
         for sid, path in sorted(files.items()):
             g0 = gold[sid]
             rubric = ds.asap_rubric(g0["prompt"], passage)
-            grades, readings, data = grade(rubric, path, name="no_length_cap" if name == "no_length_cap" else "full")
+            grades, readings, data = grade(rubric, path, style=style, name="no_length_cap" if name == "no_length_cap" else "full")
             if name == "raw_llm":
                 p = raw_marks(readings, rubric).get(1, 0.0)
             else:
@@ -285,7 +286,7 @@ def asap() -> dict | None:
 
 def main():
     results = {"mendeley_default": mendeley("default"), "mendeley_calibrated": mendeley("calibrated"),
-               "checkmat": checkmat(), "asap": asap()}
+               "checkmat": checkmat(), "asap_default": asap("default"), "asap_strict": asap("strict")}
     save_json(REPORTS / "results.json", results)
     lines = ["# AutoGrade evaluation results", ""]
     for key, label in (("mendeley_default", "Mendeley, 40 held-out sheets, default (Generous)"),
@@ -327,9 +328,10 @@ def main():
                   f"Median time {c['median_seconds']} s; mean tokens {c['mean_input_tokens']:.0f} in, {c['mean_output_tokens']:.0f} out."]
         lines += ["", f"Flags: {fmt(fq['flag_rate'], True)} flagged; {fmt(fq['recall_of_wrong'], True)} of wrong marks flagged; "
                   f"unflagged exact {fmt(fq['unflagged_exact'], True)} (n={fq['unflagged_n']})", ""]
-    r = results["asap"]
-    if r:
-        lines += ["## Handwritten ASAP short answers (prompts 3 and 4, marks 0–2)", "",
+    for key, label in (("asap_default", "default (Generous)"), ("asap_strict", "Strict marking style")):
+      r = results[key]
+      if r:
+        lines += [f"## Handwritten ASAP short answers (prompts 3 and 4, marks 0–2), {label}", "",
                   f"Answers scored: {r['answers']} of {r['of']}. AutoGrade's half marks are rounded up to whole marks, "
                   "as ASAP marks are whole numbers.", "",
                   "| System | n | Exact | Within 1 mark | MAE | QWK |", "|---|---|---|---|---|---|"]

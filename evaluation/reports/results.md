@@ -59,31 +59,60 @@ Half marks given by AutoGrade: 0 of 122. Median time 5.6 s; mean tokens 1789 in,
 
 Flags: 45.1% flagged; 51.5% of wrong marks flagged; unflagged exact 50.7% (n=67)
 
-## Handwritten ASAP short answers (prompts 3 and 4, marks 0–2)
+## Handwritten ASAP short answers (prompts 3 and 4, marks 0–2), default (Generous)
 
-Answers scored: 238 of 349. AutoGrade's half marks are rounded up to whole marks, as ASAP marks are whole numbers.
+Answers scored: 349 of 349. AutoGrade's half marks are rounded up to whole marks, as ASAP marks are whole numbers.
 
 | System | n | Exact | Within 1 mark | MAE | QWK |
 |---|---|---|---|---|---|
-| AutoGrade full | 238 | 38.7% | 94.1% | 0.672 | 0.375 |
-| AutoGrade no_length_cap | 238 | 38.7% | 94.1% | 0.672 | 0.375 |
-| AutoGrade raw_llm | 238 | 38.7% | 94.1% | 0.672 | 0.375 |
-| Constant (most common mark per prompt) | 238 | 56.3% | 100.0% | 0.437 | 0.000 |
+| AutoGrade full | 349 | 38.7% | 94.3% | 0.670 | 0.376 |
+| AutoGrade no_length_cap | 349 | 38.7% | 94.3% | 0.670 | 0.376 |
+| AutoGrade raw_llm | 349 | 38.7% | 94.3% | 0.670 | 0.376 |
+| Constant (most common mark per prompt) | 349 | 55.9% | 100.0% | 0.441 | 0.000 |
 | Human marker 1 vs marker 2 (ASAP training answers) | 2415 | 80.2% | 99.9% | 0.199 | 0.752 |
 
 Per prompt (exact / QWK):
 
 | Prompt | n | AutoGrade full | no length cap | Humans |
 |---|---|---|---|---|
-| 3 | 119 | 47.9% / 0.420 | 47.9% / 0.420 | 79.0% / 0.744 |
-| 4 | 119 | 29.4% / 0.312 | 29.4% / 0.312 | 81.6% / 0.740 |
+| 3 | 185 | 45.4% / 0.430 | 45.4% / 0.430 | 79.0% / 0.744 |
+| 4 | 164 | 31.1% / 0.309 | 31.1% / 0.309 | 81.6% / 0.740 |
 
 AutoGrade (full) against the human mark, all answers scored:
 
 | Human mark | AutoGrade 0 | AutoGrade 1 | AutoGrade 2 |
 |---|---|---|---|
-| 0 | 18 | 34 | 14 |
-| 1 | 0 | 37 | 97 |
-| 2 | 0 | 1 | 37 |
+| 0 | 26 | 53 | 20 |
+| 1 | 0 | 56 | 139 |
+| 2 | 0 | 2 | 53 |
 
-Flags (not counting 'number inferred'): 1.3% flagged; 2.1% of wrong marks flagged; precision 100.0%; unflagged exact 39.1% (n=235)
+Flags (not counting 'number inferred'): 1.1% flagged; 1.9% of wrong marks flagged; precision 100.0%; unflagged exact 39.1% (n=345)
+
+## Handwritten ASAP short answers (prompts 3 and 4, marks 0–2), Strict marking style
+
+Answers scored: 349 of 349. AutoGrade's half marks are rounded up to whole marks, as ASAP marks are whole numbers.
+
+| System | n | Exact | Within 1 mark | MAE | QWK |
+|---|---|---|---|---|---|
+| AutoGrade full | 349 | 59.9% | 99.1% | 0.410 | 0.544 |
+| AutoGrade no_length_cap | 349 | 44.1% | 96.8% | 0.590 | 0.452 |
+| AutoGrade raw_llm | 349 | 44.1% | 96.8% | 0.590 | 0.452 |
+| Constant (most common mark per prompt) | 349 | 55.9% | 100.0% | 0.441 | 0.000 |
+| Human marker 1 vs marker 2 (ASAP training answers) | 2415 | 80.2% | 99.9% | 0.199 | 0.752 |
+
+Per prompt (exact / QWK):
+
+| Prompt | n | AutoGrade full | no length cap | Humans |
+|---|---|---|---|---|
+| 3 | 185 | 62.7% / 0.587 | 50.8% / 0.500 | 79.0% / 0.744 |
+| 4 | 164 | 56.7% / 0.449 | 36.6% / 0.390 | 81.6% / 0.740 |
+
+AutoGrade (full) against the human mark, all answers scored:
+
+| Human mark | AutoGrade 0 | AutoGrade 1 | AutoGrade 2 |
+|---|---|---|---|
+| 0 | 32 | 64 | 3 |
+| 1 | 0 | 128 | 67 |
+| 2 | 0 | 6 | 49 |
+
+Flags (not counting 'number inferred'): 2.0% flagged; 2.9% of wrong marks flagged; precision 57.1%; unflagged exact 60.2% (n=342)
