@@ -354,126 +354,61 @@ CHECKMAT_SHORT = {13: "Equations (trig / exponential)", 14: "3D geometry", 15: "
                   17: "2D geometry", 18: "Equation with a parameter", 19: "Number theory"}
 
 
+def short_table(rows, close):
+    out = [f"| Who marked | Same mark | {close} | Agreement (0–1) |", "|---|---|---|---|"]
+    for name, a in rows:
+        out.append(f"| {name} | {pct(a['exact'])} | {pct(a['within_step'])} | {fmt(a['qwk'], digits=2)} |")
+    return out
+
+
 def main():
     results = {"mendeley_default": mendeley("default"), "mendeley_calibrated": mendeley("calibrated"),
                "checkmat": checkmat(), "asap_default": asap("default"), "asap_strict": asap("strict")}
     save_json(REPORTS / "results.json", results)
-    lines = list(HOW_TO_READ)
-    md, mc, cm = results["mendeley_default"], results["mendeley_calibrated"], results["checkmat"]
+    md, cm = results["mendeley_default"], results["checkmat"]
     ag, ast = results["asap_default"], results["asap_strict"]
 
-    # ---- summary
-    lines += ["## Summary", "",
-              "| Test | What students wrote | AutoGrade: same mark as the teacher | Lazy marker | A second human teacher |",
-              "|---|---|---|---|---|"]
-    if md:
-        lines.append(f"| 1. English exam (Mendeley) | Written answers, 0–2 marks | {pct(md['full']['written']['exact'])} "
-                     f"| {pct(md['constant']['written']['exact'])} | not available |")
-    if cm:
-        lines.append(f"| 2. Russian maths exam (CHECK-MAT) | Full maths solutions, 0–4 marks | {pct(cm['full']['all']['exact'])} "
-                     f"| {pct(cm['constant']['exact'])} | not available |")
-    if ast:
-        lines.append(f"| 3. Reading answers (handwritten ASAP), Strict style | Short answers, 0–2 marks | {pct(ast['full']['all']['exact'])} "
-                     f"| {pct(ast['constant']['exact'])} | {pct(ast['human']['all']['exact'])} |")
-    lines += [""]
-    if md:
-        lines.append(f"- **Multiple-choice answers:** AutoGrade read the letter the student chose correctly "
-                     f"{pct(md['full']['mcq_letter_accuracy'])} of the time ({md['full']['mcq_n']} answers).")
-        lines.append(f"- **Whole-sheet totals:** on average {fmt(md['full']['total_mae'], digits=1)} marks away from the teacher's "
-                     f"total out of 50, and they rise and fall with the teacher's totals (score {fmt(md['full']['total_pearson'], digits=2)}, "
-                     f"where 1 = perfectly together).")
-    if ag and ast:
-        lines.append(f"- **Marking style matters a lot:** on the reading answers, Strict style matched the teacher "
-                     f"{pct(ast['full']['all']['exact'])} of the time, against {pct(ag['full']['all']['exact'])} for the default Generous style.")
-    lines.append("- **Weak spot:** AutoGrade's double-check requests catch only a small share of its wrong marks.")
-    lines += [""]
+    lines = ["# AutoGrade vs real teachers", "",
+             "AutoGrade marked real students' answers without seeing the teachers' marks. "
+             "Then we checked how often it agreed.", "",
+             "- **Same mark:** how often AutoGrade gave exactly the teacher's mark.",
+             "- **Close:** right, or only a little off.",
+             "- **Agreement (0–1):** does it tell good answers from bad? 0 = guessing, 0.75 = as good as a second teacher.",
+             "- **Lazy marker:** gives everyone the most common mark without reading. AutoGrade must beat it.", ""]
 
-    # ---- 1. Mendeley
     if md:
-        lines += ["## 1. English exam (Mendeley dataset)", "",
-                  f"A Data Science exam: 20 multiple-choice questions and 15 written answers worth 2 marks each, on "
-                  f"{md['sheets']} student sheets that were never used while building AutoGrade. Half marks are allowed.", ""]
-        lines += table_head("At most ½ mark off")
-        lines.append(row("AutoGrade, as used in the app", md["full"]["written"]))
-        if mc:
-            lines.append(row("AutoGrade after learning from one teacher-marked sheet", mc["full"]["written"]))
-        lines.append(row("AutoGrade without the length rule", md["no_length_cap"]["written"]))
-        lines.append(row("The AI's own mark, without AutoGrade's checks", md["raw_llm"]["written"]))
-        lines.append(row("Lazy marker (everyone gets the most common mark)", md["constant"]["written"]))
         f = md["full"]
-        lines += ["", f"**Multiple-choice:** {pct(f['mcq_letter_accuracy'])} of the letters students chose were read correctly "
-                  f"({f['mcq_n']} answers). The marks then come straight from the answer key.", "",
-                  f"**Whole-sheet totals:** on average {fmt(f['total_mae'], digits=1)} marks away from the teacher's total out of 50; "
-                  f"they move together with the teacher's totals at {fmt(f['total_pearson'], digits=2)} (1 = perfectly).", "",
-                  flags_line(f["flags"], "more than ½ mark off"), "",
-                  "**In short:** multiple-choice and totals are reliable. For single written answers AutoGrade gets the exact "
-                  "mark a little less often than the lazy marker, but it is closer on average and does tell good "
-                  "answers from bad ones (agreement score about 0.6, against 0 for the lazy marker). Without the length "
-                  "rule it matches the teacher a little more often. Learning from one marked sheet did not help.", ""]
+        lines += ["## 1. English exam (40 sheets)", ""]
+        lines += short_table([("AutoGrade", f["written"]), ("Lazy marker", md["constant"]["written"])], "Close (±½)")
+        lines += ["", f"- Multiple-choice letters read correctly: **{pct(f['mcq_letter_accuracy'])}**",
+                  f"- Sheet totals: about **{fmt(f['total_mae'], digits=1)} marks** off out of 50", ""]
 
-    # ---- 2. CHECK-MAT
     if cm:
-        lines += ["## 2. Russian maths exam (CHECK-MAT dataset)", "",
-                  f"{cm['solutions']} handwritten solutions to the Russian state exam (tasks 13–19), marked by official "
-                  "examiners from 0 to 4 using the official marking rules. Only whole marks.", ""]
-        lines += table_head("At most 1 mark off")
-        lines.append(row("AutoGrade, as used in the app", cm["full"]["all"]))
-        lines.append(row("The AI's own mark, without AutoGrade's checks", cm["raw_llm"]["all"]))
-        lines.append(row("Lazy marker (most common mark for each task)", cm["constant"]))
-        for model, a in sorted(cm["published_baselines"].items()):
-            lines.append(row(f"OpenAI {model.split('/')[-1]} (score published by the dataset's authors)", a))
-        lines += ["", "By task:", "", "| Task | Topic | Solutions | Same mark as the examiner | Agreement score |", "|---|---|---|---|---|"]
-        for t, a in cm["full"]["per_task"].items():
-            lines.append(f"| {t} | {CHECKMAT_SHORT.get(int(t), '')} | {a['n']} | {pct(a['exact'])} | {fmt(a['qwk'], digits=2)} |")
-        c = cm["cost"]
-        lines += ["", f"**Speed:** about {c['median_seconds']:.0f} seconds per solution.", "",
-                  flags_line(cm["full"]["flags"], "any mark different from the examiner's"), "",
-                  "**In short:** long maths proofs are the hardest case. AutoGrade's marks follow the solution quality "
-                  "better than the lazy marker (agreement 0.43 against 0.32), but it gets the exact mark right less often "
-                  "than a stronger published model. Its double-check requests are useful here: they catch about half of the wrong marks.", ""]
+        lines += ["## 2. Russian maths exam (122 solutions)", ""]
+        rows = [("AutoGrade", cm["full"]["all"]), ("Lazy marker (per task)", cm["constant"])]
+        rows += [(f"OpenAI {m.split('/')[-1]} (published)", a) for m, a in sorted(cm["published_baselines"].items())]
+        lines += short_table(rows, "Close (±1)")
+        lines += [""]
 
-    # ---- 3. ASAP
     if ag or ast:
         base = ast or ag
-        lines += ["## 3. Reading answers (handwritten ASAP dataset)", "",
-                  f"{base['answers']} handwritten answers to two reading questions about one newspaper article, each marked "
-                  "0, 1 or 2 by trained markers. Only whole marks.", "",
-                  "- Question 3: how are pandas and koalas alike, and how are they different from pythons?",
-                  "- Question 4: why does the word \"invasive\" matter to the article?", ""]
-        lines += table_head("At most 1 mark off")
+        lines += ["## 3. Reading answers (349 answers)", ""]
+        rows = []
         if ag:
-            lines.append(row("AutoGrade, Generous style (the app's default)", ag["full"]["all"]))
+            rows.append(("AutoGrade, Generous style", ag["full"]["all"]))
         if ast:
-            lines.append(row("AutoGrade, Strict style", ast["full"]["all"]))
-            lines.append(row("AutoGrade, Strict style, without the length rule", ast["no_length_cap"]["all"]))
-            lines.append(row("The AI's own mark (Strict), without AutoGrade's checks", ast["raw_llm"]["all"]))
-        lines.append(row("Lazy marker (most common mark for each question)", base["constant"]))
-        lines.append(row("A second human teacher (2,415 answers marked twice)", base["human"]["all"]))
-        lines += ["", "By question (same mark as the teacher):", "",
-                  "| Question | Answers | Generous | Strict | Two human teachers |", "|---|---|---|---|---|"]
-        for q in (3, 4):
-            g = ag["full"]["per_prompt"].get(q) if ag else None
-            st = ast["full"]["per_prompt"].get(q) if ast else None
-            h = base["human"][q]
-            n = (st or g)["n"]
-            lines.append(f"| {q} | {n} | {pct(g['exact']) if g else '—'} | {pct(st['exact']) if st else '—'} | {pct(h['exact'])} |")
-        for res, label in ((ag, "Generous style"), (ast, "Strict style")):
-            if not res:
-                continue
-            lines += ["", f"Where AutoGrade's marks went, {label} (rows: the teacher's mark; columns: AutoGrade's mark):", "",
-                      "| Teacher gave | AutoGrade gave 0 | AutoGrade gave 1 | AutoGrade gave 2 |", "|---|---|---|---|"]
-            for h in (0, 1, 2):
-                cnt = res["full"]["confusion"].get(str(h), {})
-                lines.append(f"| {h} | {cnt.get('0', 0)} | {cnt.get('1', 0)} | {cnt.get('2', 0)} |")
-        if ast:
-            lines += ["", flags_line(ast["full"]["flags"], "any mark different from the teacher's") +
-                      " (Requests caused only by the page having no question number written on it are not counted.)"]
-        lines += ["", "**In short:** the default Generous style gives too many marks (it often gave 2 where the teacher gave 1). "
-                  "Strict style fixes much of this and beats the lazy marker, but two human teachers still agree with each "
-                  "other more often than AutoGrade agrees with them. Here the length rule helps.", ""]
+            rows.append(("AutoGrade, Strict style", ast["full"]["all"]))
+        rows += [("Lazy marker", base["constant"]), ("A second human teacher", base["human"]["all"])]
+        lines += short_table(rows, "Close (±1)")
+        lines += [""]
 
-    lines += GLOSSARY
-    (REPORTS / "results.md").write_text("\n".join(lines))
+    lines += ["## What it means", "",
+              "- **Strong:** multiple-choice reading and sheet totals.",
+              "- **Moderate:** written answers. Rarely far off, but the exact mark is right only about half the time.",
+              "- **Strict style is much better** than Generous on written answers.",
+              "- **Weak:** the double-check requests miss most wrong marks.", "",
+              "Full numbers for the paper: `results.json`."]
+    (REPORTS / "results.md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
 
 
