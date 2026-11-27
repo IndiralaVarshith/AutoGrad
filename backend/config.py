@@ -77,6 +77,11 @@ GEMINI_COUNT_BEST_ANSWERS: bool = (
 MAX_UPLOAD_MB: float = float(os.getenv("MAX_UPLOAD_MB", "18"))
 # Files in one request above this many MB go through Gemini's file upload instead.
 GEMINI_INLINE_LIMIT_MB: float = float(os.getenv("GEMINI_INLINE_LIMIT_MB", "12"))
+# Answer sheets sent together in one zip file: the largest zip, the most it may unpack to, and
+# the most sheets in it.
+MAX_ZIP_MB: float = float(os.getenv("MAX_ZIP_MB", "300"))
+MAX_ZIP_UNPACKED_MB: float = float(os.getenv("MAX_ZIP_UNPACKED_MB", "1000"))
+MAX_ZIP_SHEETS: int = max(1, int(os.getenv("MAX_ZIP_SHEETS", "300")))
 # Largest whole request, for many sheets uploaded together.
 MAX_REQUEST_MB: float = float(os.getenv("MAX_REQUEST_MB", "500"))
 # true when the site is served over HTTPS (deployed): the sign-in cookie is then sent only over HTTPS.

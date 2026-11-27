@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ArrowRight, Check, CheckCircle2, ChevronDown, FileText, GraduationCap, Layers, Loader2, RotateCcw, Sparkles, X, Zap } from 'lucide-react';
 import api from '../api';
+import { expandZips } from '../unzipSheets';
 import QueueStatus from '../components/QueueStatus';
 import ConfidenceBadge from '../components/ConfidenceBadge';
 import EvidenceTable from '../components/EvidenceTable';
@@ -219,8 +220,19 @@ export default function Upload({ examId = '', onGoToDashboard, onGoToReview, onG
     };
   }, [evaluationJobId, pollGeneration]);
 
-  const handleFileSelection = (fileList) => {
-    if (fileList.length === 0) return;
+  const handleFileSelection = async (chosen) => {
+    if (chosen.length === 0) return;
+    let fileList;
+    try {
+      const opened = await expandZips(chosen);
+      fileList = opened.files;
+      if (opened.skipped.length > 0) {
+        toast.error(`Left out of the zip (not a PDF, JPG or PNG): ${opened.skipped.join(', ')}`);
+      }
+    } catch (error) {
+      toast.error(error.message);
+      return;
+    }
 
     setFiles(fileList);
     setSingleResult(null);
@@ -482,8 +494,8 @@ export default function Upload({ examId = '', onGoToDashboard, onGoToReview, onG
         <Dropzone
           multiple
           title="Drop answer sheets here, or click to choose"
-          hint="PDF, JPG or PNG. You can add many at once."
-          accept=".pdf,.jpg,.jpeg,.png"
+          hint="PDF, JPG or PNG. You can add many at once, or one zip file of sheets."
+          accept=".pdf,.jpg,.jpeg,.png,.zip"
           disabled={evaluatingSingle}
           files={files}
           onFiles={handleFileSelection}

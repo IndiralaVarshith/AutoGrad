@@ -7,14 +7,15 @@ from fastapi import HTTPException, UploadFile
 import config
 
 
-async def read_limited(upload: UploadFile) -> bytes:
-    limit = int(config.MAX_UPLOAD_MB * 1024 * 1024)
+async def read_limited(upload: UploadFile, limit_mb: float | None = None) -> bytes:
+    limit_mb = config.MAX_UPLOAD_MB if limit_mb is None else limit_mb
+    limit = int(limit_mb * 1024 * 1024)
     data = await upload.read(limit + 1)
     if len(data) > limit:
         raise HTTPException(
             413,
-            f"'{upload.filename}' is over the {config.MAX_UPLOAD_MB:g} MB limit for one file. "
-            "Scan it at a lower resolution.",
+            f"'{upload.filename}' is over the {limit_mb:g} MB limit for one file. "
+            + ("Split it into smaller zips." if limit_mb != config.MAX_UPLOAD_MB else "Scan it at a lower resolution."),
         )
     return data
 

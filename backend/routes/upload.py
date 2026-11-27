@@ -32,6 +32,8 @@ from services.calibration import applies_to, has_teacher_decisions
 from services.gemini_sheet import grade_sheet
 from models.schemas import PaperResult, QuestionRubric
 from services.upload_limits import read_limited
+from services import sheet_zip
+import config
 from services.queue_manager import queue_manager, QueueJob
 from services import sheet_store
 from services.db import db_service
@@ -83,6 +85,10 @@ async def upload_answer_sheets(
             ),
         )
     _check_expected_version(exam_id, expected_rubric_version, rubric_version)
+
+    # A zip becomes the sheets inside it, so each goes through exactly the same steps below
+    # as a sheet uploaded on its own.
+    files, meta_list, skipped = await _unpack_zips(files, meta_list)
 
     queued = 0
     conflicts: list[str] = []
@@ -153,14 +159,44 @@ async def upload_answer_sheets(
         "exam_id": exam_id,
         "status": "QUEUED",
         "conflicts": conflicts,
+        "skipped": skipped,
         "message": (
             f"Queued {queued} answer sheets. They are graded one at a time."
             + (
                 f" Not queued, because that student already has a different sheet: {', '.join(conflicts)}."
                 if conflicts else ""
             )
+            + (f" Left out of the zip: {', '.join(skipped)}." if skipped else "")
         ),
     }
+
+
+async def _unpack_zips(
+    files: list[UploadFile], meta_list: list,
+) -> tuple[list[UploadFile], list, list[str]]:
+    """Replace each zip with the sheets inside it, as if they had been chosen one by one.
+
+    Each sheet keeps its own file name, so its roll number comes from its name as usual. A zip's
+    own roll number and name (if the page sent any) belong to no student, so they are dropped.
+    """
+    if not any((file.filename or "").lower().endswith(".zip") for file in files):
+        return files, meta_list, []
+    out_files: list[UploadFile] = []
+    out_meta: list = []
+    skipped: list[str] = []
+    for idx, file in enumerate(files):
+        meta = meta_list[idx] if idx < len(meta_list) else {}
+        if not (file.filename or "").lower().endswith(".zip"):
+            out_files.append(file)
+            out_meta.append(meta)
+            continue
+        with timed_stage("pdf_upload_validation", detail=f"Unpacking {file.filename}"):
+            contents = sheet_zip.read_sheets(await read_limited(file, config.MAX_ZIP_MB), file.filename)
+        for sheet in contents.sheets:
+            out_files.append(UploadFile(file=BytesIO(sheet.data), filename=sheet.filename, size=len(sheet.data)))
+            out_meta.append({})
+        skipped += [f"{file.filename}: {item}" for item in contents.skipped]
+    return out_files, out_meta, skipped
 
 
 # =========================================================
