@@ -171,6 +171,54 @@ def test_scanned_page_comes_from_the_local_copy(sheet):
     assert client.get(f"/review/source-page/{sheet}/HT1/3").status_code == 404
 
 
+def test_scanned_page_survives_a_wiped_disk(sheet):
+    """A free host wipes its disk on restart: the page then comes from the Firestore copy."""
+    document = fitz.open()
+    for text in ("first page", "second page"):
+        document.new_page().insert_text((72, 72), text)
+    data = document.tobytes()
+    sheet_store.save(sheet, "HT1", ".pdf", data)
+    assert sheet_store.save_pages(sheet, "HT1", ".pdf", data) == 2
+    sheet_store.delete(sheet, "HT1")  # the restart
+    assert sheet_store.load(sheet, "HT1") is None
+    response = client.get(f"/review/source-page/{sheet}/HT1/2")
+    assert response.status_code == 200 and response.headers["content-type"] == "image/jpeg"
+    assert response.content[:2] == b"\xff\xd8"
+    assert client.get(f"/review/source-page/{sheet}/HT1/3").status_code == 404
+
+
+def test_kept_pages_fit_in_a_firestore_document_and_shrink_on_reupload(sheet):
+    from PIL import Image
+
+    noisy = Image.effect_noise((3000, 4000), 120).convert("RGB")  # hard to compress
+    raw = io.BytesIO()
+    noisy.save(raw, format="PNG")
+    assert sheet_store.save_pages(sheet, "HT2", ".png", raw.getvalue()) == 1
+    page = sheet_store.load_page(sheet, "HT2", 1)
+    assert page and len(page) <= 900_000
+    document = fitz.open()
+    for _ in range(3):
+        document.new_page()
+    assert sheet_store.save_pages(sheet, "HT1", ".pdf", document.tobytes()) == 3
+    single = fitz.open()
+    single.new_page()
+    assert sheet_store.save_pages(sheet, "HT1", ".pdf", single.tobytes()) == 1
+    assert sheet_store.load_page(sheet, "HT1", 2) is None
+
+
+def test_deleting_a_sheet_or_exam_removes_its_kept_pages(sheet):
+    document = fitz.open()
+    document.new_page()
+    data = document.tobytes()
+    for hall_ticket in ("HT1", "HT2"):
+        sheet_store.save_pages(sheet, hall_ticket, ".pdf", data)
+    assert sheet_store.delete_cloud_copies(sheet, "HT1") >= 1
+    assert sheet_store.load_page(sheet, "HT1", 1) is None
+    assert sheet_store.load_page(sheet, "HT2", 1) is not None
+    sheet_store.delete_cloud_copies(sheet)
+    assert sheet_store.load_page(sheet, "HT2", 1) is None
+
+
 def test_store_names_cannot_leave_their_folder(tmp_path, monkeypatch):
     monkeypatch.setattr(sheet_store.config, "QUEUE_DATA_DIR", str(tmp_path))
     sheet_store.save("../../evil", "../../evil", ".pdf", b"x")

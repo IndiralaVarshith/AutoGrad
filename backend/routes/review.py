@@ -131,6 +131,18 @@ async def get_source_page(exam_id: str, hall_ticket: str, page_number: int):
             media_type="image/png",
             headers={"Cache-Control": "private, max-age=300"},
         )
+    # The local copy is gone (the server restarted): use the copy kept in Firestore.
+    try:
+        kept = sheet_store.load_page(exam_id, hall_ticket, page_number)
+    except Exception as error:
+        print(f"[Review] Kept page not read: {type(error).__name__}")
+        kept = None
+    if kept:
+        return Response(
+            content=kept,
+            media_type="image/jpeg",
+            headers={"Cache-Control": "private, max-age=300"},
+        )
     if not source_reference:
         raise HTTPException(status_code=404, detail="Original answer-sheet reference is missing.")
     bucket = get_storage_bucket()

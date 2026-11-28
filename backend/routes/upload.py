@@ -254,6 +254,12 @@ def _execute_grading_job(job: QueueJob):
     ):
         # The local copy is what the review screen shows. Cloud storage is an extra.
         sheet_store.save(job.exam_id, job.hall_ticket, job.file_ext.lower(), file_bytes)
+        # The local disk can be wiped (a free host sleeping or restarting), so the pages
+        # are also kept in Firestore. Marking goes ahead even if this fails.
+        try:
+            sheet_store.save_pages(job.exam_id, job.hall_ticket, job.file_ext.lower(), file_bytes)
+        except Exception as error:
+            _logger.warning("Lasting copy of the sheet's pages was not saved: %s", error)
         try:
             _store_to_firebase(
                 job.exam_id,
