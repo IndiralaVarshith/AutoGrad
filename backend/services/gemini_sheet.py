@@ -318,7 +318,40 @@ def _quote_is_in_text(quote: str, text: str) -> bool:
     parts = [part for part in parts if part]
     if not parts or not text:
         return False
-    return all(part in text or fuzz.partial_ratio(part, text) >= 90 for part in parts)
+    return all(
+        part in text or fuzz.partial_ratio(part, text) >= 90 or _joined_phrases_in_text(part, text)
+        for part in parts
+    )
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", text.casefold())
+
+
+def _joined_phrases_in_text(quote: str, text: str) -> bool:
+    """True when the quote is a few phrases of the answer, in order, joined together.
+
+    Gemini sometimes joins two separate phrases of one sentence ("... in employment and
+    the resources should ...") without marking the gap. Each phrase must be at least 3
+    words, copied exactly, and there may be at most 3 phrases.
+    """
+    quote_words, text_words = _words(quote), _words(text)
+    if len(quote_words) < 6:
+        return False
+    i = start = phrases = 0
+    while i < len(quote_words):
+        best, best_end = 0, start
+        for s in range(start, len(text_words)):
+            k = 0
+            while i + k < len(quote_words) and s + k < len(text_words) and quote_words[i + k] == text_words[s + k]:
+                k += 1
+            if k > best:
+                best, best_end = k, s + k
+        phrases += 1
+        if best < 3 or phrases > 3:
+            return False
+        i, start = i + best, best_end
+    return True
 
 
 def expected_words(max_marks: float) -> int:

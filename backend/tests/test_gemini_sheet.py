@@ -741,3 +741,27 @@ def test_no_extra_request_when_mcq_letters_came_back(client_for):
     client, fake = client_for(good_reply(mcq_answer(letter="A"), answer()))
     result = sheet(client)
     assert len(fake.calls) == 1 and result.total_score == 2
+
+
+def test_a_quote_joining_two_phrases_of_the_answer_is_found():
+    """Real case: Gemini joined two parts of one sentence with "and", without "..."."""
+    from services.gemini_sheet import _quote_is_in_text
+
+    answer = (
+        "The main demands of AASU were that the local people should be given greater preference in "
+        "employment and the outsiders' should be removed and the resources should be used for the "
+        "benefit of the locals."
+    )
+    joined = (
+        "the local people should be given greater preference in employment and the resources should "
+        "be used for the benefit of the locals."
+    )
+    assert _quote_is_in_text(joined, answer)
+    assert _quote_is_in_text("the outsiders' should be removed", answer)
+    # Still not found: words the student never wrote, phrases out of order, or too many pieces.
+    assert not _quote_is_in_text("illegal immigrants should be deported from Assam", answer)
+    assert not _quote_is_in_text(
+        "the resources should be used for the benefit of the locals and the local people should be given",
+        answer,
+    )
+    assert not _quote_is_in_text("main demands of employment and outsiders and benefit of locals", answer)

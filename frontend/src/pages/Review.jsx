@@ -18,7 +18,7 @@ const REASON_TEXT = {
   LOW_CONFIDENCE: 'AutoGrade was unsure',
   PARTIAL_HIGH_VALUE: 'Partial marks: AutoGrade is less reliable on these',
   ZERO_ON_WRITTEN: 'Zero on an answer the student did write',
-  EVIDENCE_NOT_FOUND: 'Quoted evidence is not in the answer',
+  EVIDENCE_NOT_FOUND: 'A quote AutoGrade gave is not word for word in the answer (marked below)',
   INVALID_MARK: 'AutoGrade gave an impossible mark',
   UNCLEAR_OPTION: 'Option choice is unclear',
   NO_KEY: 'No approved key for this question',
@@ -141,7 +141,9 @@ function AnswerEditor({ examId, paper, question, busy, draft, onDecide }) {
     });
   };
 
-  const quote = question.criteria?.[0]?.verbatim_quote;
+  // Every point's quote, so a flag about one quote is never shown beside a different one.
+  const quotes = (question.criteria || []).filter((c) => c.verbatim_quote && c.verbatim_quote.trim());
+  const flaggedQuote = reasons(question).includes('EVIDENCE_NOT_FOUND');
   return (
     <div
       className="page-enter space-y-4"
@@ -181,11 +183,32 @@ function AnswerEditor({ examId, paper, question, busy, draft, onDecide }) {
         </div>
       )}
 
-      {quote && (
-        <blockquote className="border-l-2 border-line-strong pl-3 text-sm">
+      {quotes.length > 0 && (
+        <div className="space-y-2 text-sm">
           <span className="block text-[13px] font-semibold text-muted">Evidence AutoGrade quoted</span>
-          {quote}
-        </blockquote>
+          {quotes.map((c, i) => {
+            const missing = flaggedQuote && !c.quote_verified && Number(c.marks_awarded) > 0;
+            return (
+              <blockquote
+                key={i}
+                className={cx('border-l-2 pl-3', missing ? 'border-warn' : 'border-line-strong')}
+              >
+                {quotes.length > 1 && (
+                  <span className="block text-[12px] text-muted">
+                    {c.criterion || `Point ${i + 1}`} · {c.marks_awarded ?? 0} {Number(c.marks_awarded) === 1 ? 'mark' : 'marks'}
+                  </span>
+                )}
+                {c.verbatim_quote}
+                {missing && (
+                  <span className="mt-0.5 flex items-center gap-1 text-[12px] font-medium text-warn">
+                    <AlertTriangle size={13} aria-hidden="true" />
+                    Not found word for word in the answer. Check it against the page.
+                  </span>
+                )}
+              </blockquote>
+            );
+          })}
+        </div>
       )}
 
       <div>
